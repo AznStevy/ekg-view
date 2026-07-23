@@ -31,12 +31,24 @@ const MARK_COLORS: Record<CycleMark, { idle: string; active: string; text: strin
   TP: { idle: "rgba(138, 160, 174, 0.08)", active: "rgba(138, 160, 174, 0.35)", text: "#8aa0ae" },
 };
 
+export type CustomSampleOpts = {
+  /**
+   * When true, `fn` receives absolute elapsed seconds and the rolling window is
+   * sampled without cycle-wrapping (so one-shot arcs like cardioversion stay continuous).
+   */
+  absolute?: boolean;
+  /** Conduction / phase-bar progress when using absolute sampling. */
+  tCycleAt?: (elapsedSec: number) => number;
+  /** Keep the current strip pixels; next update will rewrite from the sampler. */
+  preserveTrace?: boolean;
+};
+
 export type EkgTrace = {
   canvas: HTMLCanvasElement;
   setFinding: (id: FindingId) => void;
   setCycleSec: (sec: number) => void;
   setUpload: (upload: UploadedEkg | null) => void;
-  setCustomSample: (fn: ((t: number) => WaveSample) | null) => void;
+  setCustomSample: (fn: ((t: number) => WaveSample) | null, opts?: CustomSampleOpts) => void;
   /** Wire scrubbing; return false to ignore */
   onScrub: (handler: (deltaSec: number) => void) => void;
   update: (elapsedSec: number) => Pick<WaveSample, "phase" | "active" | "mark" | "leads"> & { tCycle: number };
@@ -57,6 +69,8 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
   let cycleSec = getFinding("nsr").cycleSec;
   let upload: UploadedEkg | null = null;
   let customSample: ((t: number) => WaveSample) | null = null;
+  let customAbsolute = false;
+  let customTCycleAt: ((elapsedSec: number) => number) | null = null;
   let scrubHandler: ((deltaSec: number) => void) | null = null;
   let dpr = 1;
   let cssW = 0;
@@ -68,9 +82,12 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
     LEADS.map((l) => [l, new Float32Array(SAMPLES)]),
   ) as Record<LeadId, Float32Array>;
 
-  function sampleAt(tNorm: number): WaveSample {
+  function sampleAt(tNorm: number, tAbs?: number): WaveSample {
     if (upload) return sampleUploaded(upload, tNorm);
-    if (customSample) return customSample(tNorm);
+    if (customSample) {
+      if (customAbsolute) return customSample(tAbs ?? tNorm * cycleSec);
+      return customSample(tNorm);
+    }
     return sampleWave(findingId, tNorm);
   }
 
@@ -92,9 +109,12 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
   }
 
   function setFinding(id: FindingId) {
+    const changed = findingId !== id;
     findingId = id;
     if (!upload) cycleSec = getFinding(id).cycleSec;
-    for (const l of LEADS) buffers[l].fill(0);
+    if (changed) {
+      for (const l of LEADS) buffers[l].fill(0);
+    }
   }
 
   function setCycleSec(sec: number) {
@@ -106,9 +126,13 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
     for (const l of LEADS) buffers[l].fill(0);
   }
 
-  function setCustomSample(fn: ((t: number) => WaveSample) | null) {
+  function setCustomSample(fn: ((t: number) => WaveSample) | null, opts?: CustomSampleOpts) {
     customSample = fn;
-    for (const l of LEADS) buffers[l].fill(0);
+    customAbsolute = !!fn && !!opts?.absolute;
+    customTCycleAt = fn && opts?.absolute ? (opts.tCycleAt ?? null) : null;
+    if (!opts?.preserveTrace) {
+      for (const l of LEADS) buffers[l].fill(0);
+    }
   }
 
   function onScrub(handler: (deltaSec: number) => void) {
@@ -378,15 +402,19 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
 
   function update(elapsedSec: number) {
     const cycle = effectiveCycle();
-    const tCycle = ((elapsedSec % cycle) + cycle) % cycle / cycle;
-    const sample = sampleAt(tCycle);
+    const tCycle =
+      customAbsolute && customTCycleAt
+        ? ((customTCycleAt(elapsedSec) % 1) + 1) % 1
+        : (((elapsedSec % cycle) + cycle) % cycle) / cycle;
+    const sample = customAbsolute ? sampleAt(tCycle, elapsedSec) : sampleAt(tCycle);
     const shown = new Set(displayLeads());
 
     for (let i = 0; i < SAMPLES; i++) {
       const age = ((SAMPLES - 1 - i) / (SAMPLES - 1)) * WINDOW_SEC;
       const tAbs = elapsedSec - age;
-      const tc = ((tAbs % cycle) + cycle) % cycle;
-      const s = sampleAt(tc / cycle);
+      const s = customAbsolute
+        ? sampleAt(tCycle, tAbs)
+        : sampleAt((((tAbs % cycle) + cycle) % cycle) / cycle, tAbs);
       for (const lead of LEADS) buffers[lead][i] = shown.has(lead) ? s.leads[lead] : 0;
     }
 

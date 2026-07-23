@@ -49,6 +49,11 @@ import {
   sampleFromBundleBlocks,
   type BundleBlockId,
 } from "./branchBlock";
+import {
+  cardioversionDurationSec,
+  cardioversionTCycle,
+  sampleCardioversionAt,
+} from "./ekgWaveforms";
 
 const BBB_FINDING_IDS = new Set<FindingId>([
   "rbbb",
@@ -58,6 +63,21 @@ const BBB_FINDING_IDS = new Set<FindingId>([
   "rbbbLafb",
   "rbbbLpfb",
 ]);
+
+const CHB_FINDING_IDS = new Set<FindingId>(["av3Junctional", "av3"]);
+
+const CHB_OPTIONS: { id: FindingId; short: string; name: string }[] = [
+  {
+    id: "av3Junctional",
+    short: "Junctional",
+    name: "Narrow escape · supra-His",
+  },
+  {
+    id: "av3",
+    short: "Ventricular",
+    name: "Wide escape · infra-His",
+  },
+];
 
 type AppState = {
   finding: FindingId;
@@ -74,6 +94,14 @@ type AppState = {
   customBlocks: BundleBlockId[];
   /** True when user is driving EKG from customBlocks rather than a preset finding */
   customBlockMode: boolean;
+  /** Post-cardioversion timeline (keeps absolute strip sampler after settling into NSR) */
+  cvRecovery: {
+    from: FindingId;
+    durationSec: number;
+    nsrCycleSec: number;
+    /** True once recovery arc finished — UI shows NSR, sampler stays continuous */
+    settled: boolean;
+  } | null;
   upload: UploadedEkg | null;
   stim: StimState;
 };
@@ -98,12 +126,12 @@ function buildUI(root: HTMLElement): {
     </button>`;
 
   const bbbOptionsHtml = `
-            <div class="bbb-options" id="bbb-options" aria-hidden="true">
-              <div class="bbb-options-inner">
-                <div class="bbb-options-panel">
-                  <div class="bbb-options-head">
+            <div class="finding-expand bbb-options" id="bbb-options" aria-hidden="true" style="display:none">
+              <div class="finding-expand-inner">
+                <div class="finding-expand-panel">
+                  <div class="finding-expand-head">
                     <span>Block which pathway?</span>
-                    <button type="button" id="btn-block-clear" class="bbb-options-clear">Clear</button>
+                    <button type="button" id="btn-block-clear" class="finding-expand-clear">Clear</button>
                   </div>
                   <div class="bbb-lesion-grid" id="branch-block-grid">
                     ${BUNDLE_BLOCK_OPTIONS.map(
@@ -114,13 +142,39 @@ function buildUI(root: HTMLElement): {
                       </label>`,
                     ).join("")}
                   </div>
-                  <div class="bbb-result" id="bbb-result">Select one or more tracts</div>
+                  <div class="finding-expand-result" id="bbb-result">Select one or more tracts</div>
+                </div>
+              </div>
+            </div>`;
+
+  const chbGroupButton = `<button type="button" id="btn-chb" data-chb-group title="Complete heart block · escape rhythm">
+      CHB<small>3° · pick escape</small>
+    </button>`;
+
+  const chbOptionsHtml = `
+            <div class="finding-expand chb-options" id="chb-options" aria-hidden="true" style="display:none">
+              <div class="finding-expand-inner">
+                <div class="finding-expand-panel">
+                  <div class="finding-expand-head">
+                    <span>Escape focus?</span>
+                    <button type="button" id="btn-chb-clear" class="finding-expand-clear">Clear</button>
+                  </div>
+                  <div class="chb-escape-grid" id="chb-escape-grid">
+                    ${CHB_OPTIONS.map(
+                      (o) => `<button type="button" class="chb-escape-chip" data-chb-finding="${o.id}">
+                        <span class="chb-escape-short">${o.short}</span>
+                        <span class="chb-escape-name">${o.name}</span>
+                      </button>`,
+                    ).join("")}
+                  </div>
+                  <div class="finding-expand-result" id="chb-result">Select junctional or ventricular escape</div>
                 </div>
               </div>
             </div>`;
 
   const findingButtonHtml: string[] = [];
   let bbbInserted = false;
+  let chbInserted = false;
   for (const f of FINDINGS) {
     if (f.category === "bbb") {
       if (!bbbInserted) {
@@ -130,10 +184,22 @@ function buildUI(root: HTMLElement): {
       }
       continue;
     }
+    if (CHB_FINDING_IDS.has(f.id)) {
+      if (!chbInserted) {
+        findingButtonHtml.push(chbGroupButton);
+        findingButtonHtml.push(chbOptionsHtml);
+        chbInserted = true;
+      }
+      continue;
+    }
     findingButtonHtml.push(`
     <button type="button" data-finding="${f.id}" title="${f.name}" ${f.id === "nsr" ? 'class="active"' : ""}>
       ${f.short}<small>${f.rateLabel}</small>
     </button>`);
+  }
+  if (!chbInserted) {
+    findingButtonHtml.push(chbGroupButton);
+    findingButtonHtml.push(chbOptionsHtml);
   }
   if (!bbbInserted) {
     findingButtonHtml.push(bbbGroupButton);
@@ -332,6 +398,11 @@ function buildUI(root: HTMLElement): {
     "btn-bbb",
     "bbb-options",
     "bbb-result",
+    "btn-chb",
+    "chb-options",
+    "chb-result",
+    "chb-escape-grid",
+    "btn-chb-clear",
     "finding-grid",
     "finding-search",
     "finding-empty",
@@ -377,6 +448,7 @@ function main() {
     leadsOn: false,
     customBlocks: [],
     customBlockMode: false,
+    cvRecovery: null,
     upload: null,
     stim: { armed: false, site: null },
   };
@@ -585,6 +657,16 @@ function main() {
   applySegmentVisibility();
 
   function applyRateToEkg() {
+    if (state.cvRecovery) {
+      if (state.cvRecovery.settled) {
+        state.cvRecovery.nsrCycleSec = cycleSecForRate(getFinding("nsr"), state.ventRateBpm);
+        ekg.setCycleSec(state.cvRecovery.nsrCycleSec);
+        bindCardioversionSample(true);
+      } else {
+        ekg.setCycleSec(state.cvRecovery.durationSec);
+      }
+      return;
+    }
     if (state.upload) {
       ekg.setCycleSec(state.upload.durationSec);
       return;
@@ -615,6 +697,41 @@ function main() {
     return blocksForFinding(state.finding);
   }
 
+  function setFindingExpand(el: HTMLElement, open: boolean) {
+    if (open) {
+      const wasHidden = el.style.display === "none" || getComputedStyle(el).display === "none";
+      if (wasHidden) {
+        el.style.display = "grid";
+        el.classList.remove("is-open");
+        void el.offsetHeight;
+      }
+      el.classList.add("is-open");
+      el.setAttribute("aria-hidden", "false");
+      return;
+    }
+    if (!el.classList.contains("is-open")) {
+      el.style.display = "none";
+      el.setAttribute("aria-hidden", "true");
+      return;
+    }
+    el.classList.remove("is-open");
+    el.setAttribute("aria-hidden", "true");
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      if (!el.classList.contains("is-open")) el.style.display = "none";
+    };
+    const onEnd = (e: TransitionEvent) => {
+      if (e.target !== el) return;
+      if (e.propertyName !== "grid-template-rows" && e.propertyName !== "opacity") return;
+      el.removeEventListener("transitionend", onEnd);
+      finish();
+    };
+    el.addEventListener("transitionend", onEnd);
+    window.setTimeout(finish, 420);
+  }
+
   function syncBranchBlockCheckboxes() {
     const active = new Set(activeBundleBlocks());
     els["branch-block-grid"].querySelectorAll<HTMLInputElement>("input[data-bundle-block]").forEach((input) => {
@@ -624,14 +741,27 @@ function main() {
     const blocks = activeBundleBlocks();
     const desc = describeBundleBlocks(blocks);
     const bbbOpen =
-      state.customBlockMode ||
-      BBB_FINDING_IDS.has(state.finding) ||
-      blocks.length > 0;
-    els["bbb-options"].classList.toggle("is-open", bbbOpen);
-    els["bbb-options"].setAttribute("aria-hidden", bbbOpen ? "false" : "true");
+      !(state.cvRecovery && !state.cvRecovery.settled) &&
+      (state.customBlockMode || BBB_FINDING_IDS.has(state.finding) || blocks.length > 0);
+    setFindingExpand(els["bbb-options"], bbbOpen);
     els["btn-bbb"].classList.toggle("active", bbbOpen && !state.upload && !state.stim.site);
     els["bbb-result"].textContent =
       blocks.length === 0 ? "Select one or more tracts" : `${desc.short} · ${desc.detail}`;
+  }
+
+  function syncChbOptions() {
+    const chbOpen = !(state.cvRecovery && !state.cvRecovery.settled) && CHB_FINDING_IDS.has(state.finding);
+    setFindingExpand(els["chb-options"], chbOpen);
+    els["btn-chb"].classList.toggle("active", chbOpen && !state.upload && !state.stim.site);
+    els["chb-escape-grid"].querySelectorAll<HTMLButtonElement>("button[data-chb-finding]").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.chbFinding === state.finding);
+    });
+    if (chbOpen) {
+      const f = getFinding(state.finding);
+      els["chb-result"].textContent = `${f.short} · ${f.detail}`;
+    } else {
+      els["chb-result"].textContent = "Select junctional or ventricular escape";
+    }
   }
 
   function syncFindingUI() {
@@ -645,6 +775,10 @@ function main() {
       els["finding-name"].textContent = stimLabel(stimSite);
       els["finding-detail"].textContent = stimDetail(stimSite);
       els["meta-finding"].textContent = "STIM";
+    } else if (state.cvRecovery && !state.cvRecovery.settled) {
+      els["finding-name"].textContent = "Post-cardioversion recovery";
+      els["finding-detail"].textContent = `From ${getFinding(state.cvRecovery.from).short} · returning toward sinus`;
+      els["meta-finding"].textContent = "CV → NSR";
     } else if (usingCustomBlocks) {
       els["finding-name"].textContent = `Custom · ${blockDesc.name}`;
       els["finding-detail"].textContent = blockDesc.detail;
@@ -659,7 +793,11 @@ function main() {
     els["finding-grid"].querySelectorAll<HTMLButtonElement>("button[data-finding]").forEach((btn) => {
       btn.classList.toggle(
         "active",
-        !state.upload && !stimSite && !usingCustomBlocks && btn.dataset.finding === state.finding,
+        !state.upload &&
+          !stimSite &&
+          !usingCustomBlocks &&
+          !(state.cvRecovery && !state.cvRecovery.settled) &&
+          btn.dataset.finding === state.finding,
       );
     });
     ekg.setFinding(state.finding);
@@ -667,6 +805,11 @@ function main() {
     if (stimSite && !state.upload) {
       ekg.setCustomSample((t) => sampleStim(stimSite, t));
       ekg.setCycleSec(cycleSecForRate({ ...f, cycleSec: 0.9, ventRateBpm: 60 }, state.ventRateBpm));
+    } else if (state.cvRecovery) {
+      ekg.setCycleSec(
+        state.cvRecovery.settled ? state.cvRecovery.nsrCycleSec : state.cvRecovery.durationSec,
+      );
+      bindCardioversionSample(state.cvRecovery.settled);
     } else if (usingCustomBlocks) {
       ekg.setCustomSample((t) => sampleFromBundleBlocks(blocks, t));
       ekg.setCycleSec(cycleSecForRate(f, state.ventRateBpm));
@@ -697,18 +840,24 @@ function main() {
       if (input) input.checked = true;
     }
     applySegmentVisibility();
-    if (!(stimSite && !state.upload)) applyRateToEkg();
+    if (!(stimSite && !state.upload) && !state.cvRecovery) applyRateToEkg();
 
+    const cvBusy = !!(state.cvRecovery && !state.cvRecovery.settled);
     conduction.setBlockSite(
-      stimSite || state.upload || usingCustomBlocks ? "none" : blockSiteForFinding(state.finding),
+      stimSite || state.upload || usingCustomBlocks || cvBusy
+        ? "none"
+        : blockSiteForFinding(state.finding),
     );
     conduction.setBranchBlocks(
       stimSite || state.upload ? [] : lesionSegmentsForBlocks(blocks),
     );
     deviceLeads.setMode(
-      stimSite || state.upload || usingCustomBlocks ? "none" : deviceModeForFinding(state.finding),
+      stimSite || state.upload || usingCustomBlocks || cvBusy
+        ? "none"
+        : deviceModeForFinding(state.finding),
     );
     syncBranchBlockCheckboxes();
+    syncChbOptions();
   }
 
   function setStimArmed(armed: boolean) {
@@ -750,6 +899,7 @@ function main() {
     state.finding = id;
     state.elapsed = 0;
     state.upload = null;
+    state.cvRecovery = null;
     state.stim.armed = false;
     state.stim.site = null;
     state.customBlockMode = false;
@@ -823,6 +973,22 @@ function main() {
       } else {
         setFinding("rbbb");
       }
+      return;
+    }
+    const chbBtn = (e.target as HTMLElement).closest("#btn-chb");
+    if (chbBtn) {
+      const open = els["chb-options"].classList.contains("is-open");
+      if (open && CHB_FINDING_IDS.has(state.finding)) {
+        setFinding("nsr");
+      } else {
+        setFinding("av3Junctional");
+      }
+      return;
+    }
+    const chbOpt = (e.target as HTMLElement).closest("button[data-chb-finding]");
+    if (chbOpt) {
+      const id = (chbOpt as HTMLElement).dataset.chbFinding as FindingId;
+      setFinding(id);
       return;
     }
     const btn = (e.target as HTMLElement).closest("button[data-finding]");
@@ -961,16 +1127,33 @@ function main() {
     bbbBtn.hidden = !bbbMatch;
     if (bbbMatch) visible += 1;
 
-    // Deep-link search: jump into matching BBB pattern
+    const chbMatch =
+      q.trim().length === 0 ||
+      FINDINGS.some((f) => CHB_FINDING_IDS.has(f.id) && findingMatchesQuery(f, q));
+    const chbBtn = els["btn-chb"] as HTMLButtonElement;
+    chbBtn.hidden = !chbMatch;
+    if (chbMatch) visible += 1;
+
+    // Deep-link search: jump into matching BBB / CHB pattern
     const qLower = q.trim().toLowerCase();
     if (qLower.length >= 3) {
-      const hit = FINDINGS.find(
-        (f) => f.category === "bbb" && findingMatchesQuery(f, q) && (f.id === qLower || f.short.toLowerCase() === qLower || f.aliases?.some((a) => a === qLower)),
+      const bbbHit = FINDINGS.find(
+        (f) =>
+          f.category === "bbb" &&
+          findingMatchesQuery(f, q) &&
+          (f.id === qLower || f.short.toLowerCase() === qLower || f.aliases?.some((a) => a === qLower)),
       );
-      if (hit && state.finding !== hit.id) {
-        // only auto-open panel; don't fight user mid-typing unless exact-ish
-        els["bbb-options"].classList.add("is-open");
-        els["bbb-options"].setAttribute("aria-hidden", "false");
+      if (bbbHit && state.finding !== bbbHit.id) {
+        setFindingExpand(els["bbb-options"], true);
+      }
+      const chbHit = FINDINGS.find(
+        (f) =>
+          CHB_FINDING_IDS.has(f.id) &&
+          findingMatchesQuery(f, q) &&
+          (f.id === qLower || f.short.toLowerCase() === qLower || f.aliases?.some((a) => a === qLower)),
+      );
+      if (chbHit && state.finding !== chbHit.id) {
+        setFindingExpand(els["chb-options"], true);
       }
     }
 
@@ -986,19 +1169,6 @@ function main() {
 
   els["btn-stim"].addEventListener("click", () => setStimArmed(!state.stim.armed));
   els["btn-stim-clear"].addEventListener("click", () => clearStim());
-
-  const CARDIOVERTIBLE = new Set<FindingId>([
-    "afib",
-    "aflutterCcw",
-    "aflutterCw",
-    "vt",
-    "vtMonoLbbb",
-    "vtMonoRbbb",
-    "vtPoly",
-    "torsades",
-    "vf",
-    "sinusTachy",
-  ]);
 
   function flashCardioversion() {
     const flash = document.createElement("div");
@@ -1017,15 +1187,51 @@ function main() {
     state.upload = null;
     ekg.setUpload(null);
     els["upload-preview"].hidden = true;
-    // Brief post-shock pause then NSR
+    state.customBlockMode = false;
+    state.customBlocks = [];
+
+    const from = state.finding;
+    const durationSec = cardioversionDurationSec(from);
+    const nsrCycleSec = cycleSecForRate(getFinding("nsr"), 62);
+
     state.elapsed = 0;
-    if (CARDIOVERTIBLE.has(state.finding) || state.finding !== "nsr") {
-      setFinding("nsr");
-    } else {
-      state.elapsed = 0;
-    }
+    state.cvRecovery = { from, durationSec, nsrCycleSec, settled: false };
+    state.finding = "nsr";
+    ekg.setFinding("nsr");
+    ekg.setCycleSec(durationSec);
+    syncRateUI(62);
+    // Re-bind after syncRateUI (which may refresh nsrCycleSec when settled — here unsettled)
+    if (state.cvRecovery) state.cvRecovery.nsrCycleSec = cycleSecForRate(getFinding("nsr"), state.ventRateBpm);
+    bindCardioversionSample(false);
+    syncFindingUI();
     setPlaying(true);
-    els["phase-chip"].textContent = "Post-cardioversion · NSR";
+  }
+
+  function bindCardioversionSample(preserveTrace: boolean) {
+    const cv = state.cvRecovery;
+    if (!cv) return;
+    ekg.setCustomSample(
+      (tAbs) => sampleCardioversionAt(tAbs, cv.from, cv.durationSec, cv.nsrCycleSec),
+      {
+        absolute: true,
+        preserveTrace,
+        tCycleAt: (elapsedSec) => cardioversionTCycle(elapsedSec, cv.durationSec, cv.nsrCycleSec),
+      },
+    );
+  }
+
+  function finishCardioversionRecovery() {
+    if (!state.cvRecovery || state.cvRecovery.settled) return;
+    // Keep absolute sampler + elapsed — only flip UI to NSR so the strip never rewrites
+    state.cvRecovery.settled = true;
+    state.cvRecovery.nsrCycleSec = cycleSecForRate(getFinding("nsr"), state.ventRateBpm);
+    state.finding = "nsr";
+    state.customBlockMode = false;
+    state.customBlocks = [];
+    ekg.setCycleSec(state.cvRecovery.nsrCycleSec);
+    bindCardioversionSample(true);
+    syncFindingUI();
+    setPlaying(true);
   }
 
   els["btn-cv"].addEventListener("click", () => cardiovert());
@@ -1108,6 +1314,12 @@ function main() {
     state.customBlockMode = false;
     clearStim();
     if (blocksForFinding(state.finding).length > 0) setFinding("nsr");
+    else syncFindingUI();
+  });
+
+  els["btn-chb-clear"].addEventListener("click", () => {
+    clearStim();
+    if (CHB_FINDING_IDS.has(state.finding)) setFinding("nsr");
     else syncFindingUI();
   });
 
@@ -1512,7 +1724,12 @@ function main() {
       if (state.upload) {
         pace = state.ventRateBpm / Math.max(30, state.upload.rateBpm);
       }
-      state.elapsed += dt * pace * state.playbackSpeed;
+      // Recovery arc runs in real time; after settle, normal pacing applies
+      const cvLive = !!(state.cvRecovery && !state.cvRecovery.settled);
+      state.elapsed += dt * (cvLive ? 1 : pace) * (cvLive ? 1 : state.playbackSpeed);
+      if (state.cvRecovery && !state.cvRecovery.settled && state.elapsed >= state.cvRecovery.durationSec) {
+        finishCardioversionRecovery();
+      }
     }
 
     const { phase, active, mark, tCycle, leads } = ekg.update(state.elapsed);

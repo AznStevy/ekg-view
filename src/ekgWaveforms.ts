@@ -1781,6 +1781,230 @@ const SAMPLERS: Record<FindingId, (t: number) => WaveSample> = {
   tachyBrady: sampleTachyBrady,
 };
 
+function smoothstep(x: number): number {
+  const t = Math.max(0, Math.min(1, x));
+  return t * t * (3 - 2 * t);
+}
+
+function lerpWaveSample(a: WaveSample, b: WaveSample, u: number): WaveSample {
+  const w = Math.max(0, Math.min(1, u));
+  const leads = emptyLeads();
+  for (const lead of LEADS) {
+    leads[lead] = a.leads[lead]! * (1 - w) + b.leads[lead]! * w;
+  }
+  const src = w < 0.45 ? a : b;
+  return pack(leads, { phase: src.phase, active: src.active, mark: src.mark });
+}
+
+/** Suggested wall-clock length for post-shock recovery (5–8 s). */
+export function cardioversionDurationSec(from: FindingId): number {
+  if (from === "vf" || from === "torsades") return 7.8;
+  if (from === "vt" || from === "vtMonoLbbb" || from === "vtMonoRbbb" || from === "vtPoly") return 7.2;
+  if (from === "afib" || from === "aflutterCcw" || from === "aflutterCw") return 6.8;
+  return 6.2;
+}
+
+/**
+ * Continuous post-shock recovery → sinus.
+ * Late portion crossfades into real NSR so handoff is seamless.
+ * `t` is normalized over the recovery window (0…1).
+ */
+export function samplePostCardioversion(t: number, from: FindingId): WaveSample {
+  const tt = Math.max(0, Math.min(1, t));
+  let seed = 0;
+  for (let i = 0; i < from.length; i++) seed = (seed * 33 + from.charCodeAt(i)) >>> 0;
+  const rnd = (i: number) => {
+    const x = Math.sin(seed * 0.001 + i * 12.9898) * 43758.5453;
+    return x - Math.floor(x);
+  };
+  const jitter = (i: number, amt: number) => (rnd(i) - 0.5) * 2 * amt;
+
+  const wasVFib = from === "vf" || from === "torsades" || from === "vtPoly";
+  const wasVt = from.startsWith("vt") || from === "torsades";
+  const wasAf = from === "afib" || from === "aflutterCcw" || from === "aflutterCw";
+
+  // --- Build evolving recovery morphology (same timeline as blend target) ---
+  let leads = emptyLeads();
+  let meta: Pick<WaveSample, "phase" | "active" | "mark"> = {
+    phase: "Post-shock · electrical silence",
+    active: [],
+    mark: "TP",
+  };
+
+  const stun = 0.012 * Math.sin(tt * 90 + seed) * Math.exp(-tt * 10);
+  leads = addLeads(leads, scaleLeads(stun, { II: 1, V1: 0.55, V5: 0.45 }));
+
+  // Continuous beat schedule: times increase, morphology narrows, P waves appear
+  type RecBeat = {
+    t: number;
+    kind: "wide" | "junct" | "sinus";
+    pLead?: number;
+  };
+  const beats: RecBeat[] = [];
+  // Asystole ~0–0.10, then escapes → junctional → sinus
+  if (wasVFib || wasVt) {
+    beats.push({ t: 0.11 + jitter(1, 0.012), kind: "wide" });
+  }
+  beats.push({ t: 0.2 + jitter(2, 0.015), kind: wasVt ? "wide" : "junct" });
+  beats.push({ t: 0.3 + jitter(3, 0.012), kind: "junct" });
+  beats.push({ t: 0.4 + jitter(4, 0.01), kind: "junct", pLead: 0.04 });
+  beats.push({ t: 0.5 + jitter(5, 0.01), kind: "sinus", pLead: 0.055 });
+  beats.push({ t: 0.6 + jitter(6, 0.008), kind: "sinus", pLead: 0.06 });
+  beats.push({ t: 0.7 + jitter(7, 0.006), kind: "sinus", pLead: 0.065 });
+  beats.push({ t: 0.8 + jitter(8, 0.005), kind: "sinus", pLead: 0.07 });
+  beats.push({ t: 0.9 + jitter(9, 0.004), kind: "sinus", pLead: 0.072 });
+
+  if (wasVFib && tt < 0.08) {
+    const rip =
+      0.1 * Math.sin(tt * 240 + seed) * Math.exp(-tt * 55) +
+      0.06 * Math.sin(tt * 330) * Math.exp(-tt * 65);
+    leads = addLeads(leads, scaleLeads(rip, { II: 1, V1: 0.95, V2: 0.7 }));
+    if (tt < 0.055) {
+      meta = { phase: "Post-shock · fibrillatory residual decaying", active: ["myocardiumV"], mark: "QRS" };
+    }
+  } else if (tt < 0.1) {
+    meta = { phase: "Post-shock asystole · myocardial stun", active: [], mark: "TP" };
+  }
+
+  for (let i = 0; i < beats.length; i++) {
+    const b = beats[i]!;
+    const progress = i / Math.max(1, beats.length - 1); // 0 → 1 over recovery beats
+    const widthScale = 1 - 0.55 * progress;
+    const amp = 0.65 + 0.35 * progress;
+
+    if (b.kind === "sinus" && b.pLead != null) {
+      const pT = b.t - b.pLead;
+      if (pT > 0.08) {
+        leads = addLeads(leads, pWaveLeads(tt, pT, 0.1 + 0.08 * progress));
+        if (Math.abs(tt - pT) < 0.028) {
+          meta = {
+            phase: progress < 0.7 ? "Emerging sinus P" : "Sinus P · stabilizing",
+            active: ["sa", "internodal", "myocardiumA"],
+            mark: "P",
+          };
+        }
+      }
+    }
+
+    if (b.kind === "wide") {
+      leads = addLeads(leads, wideQrsLeads(tt, b.t, amp * (0.75 + rnd(20 + i) * 0.2)));
+      leads = addLeads(leads, tWaveLeads(tt, b.t + 0.12, -0.18, 0.035));
+    } else {
+      leads = addLeads(leads, qrsLeads(tt, b.t, 0.022 + 0.012 * widthScale, amp));
+      leads = addLeads(leads, tWaveLeads(tt, b.t + 0.16 + 0.04 * progress, 0.18 + 0.1 * progress, 0.04));
+    }
+
+    if (Math.abs(tt - b.t) < 0.04) {
+      if (b.kind === "wide") {
+        meta = {
+          phase: "Ventricular escape · post-shock",
+          active: ["purkinjeL", "purkinjeR", "myocardiumV"],
+          mark: "QRS",
+        };
+      } else if (b.kind === "junct") {
+        meta = {
+          phase: "Junctional escape · accelerating",
+          active: ["av", "his", "rbb", "lbb", "purkinjeL", "purkinjeR", "myocardiumV"],
+          mark: "QRS",
+        };
+      } else {
+        meta = {
+          phase: "Conducted sinus QRS · recovering",
+          active: ["av", "his", "rbb", "lbb", "purkinjeR", "purkinjeL", "myocardiumV"],
+          mark: "QRS",
+        };
+      }
+    } else if (tt > b.t + 0.05 && tt < b.t + 0.16 && Math.abs(tt - b.t) < 0.2) {
+      if (meta.mark === "TP" || meta.phase.includes("asystole") || meta.phase.includes("silence")) {
+        meta = { phase: "Repolarization · recovery", active: ["myocardiumV"], mark: "T" };
+      }
+    }
+  }
+
+  if (wasAf && tt > 0.15 && tt < 0.45) {
+    const fib =
+      0.035 * (1 - smoothstep((tt - 0.15) / 0.3)) * Math.sin(tt * 130 + seed * 0.02);
+    leads = addLeads(leads, scaleLeads(fib, { II: 1, V1: 1.15, aVF: 0.55 }));
+  }
+
+  const recovery: WaveSample = pack(leads, meta);
+
+  // --- Crossfade into real NSR so the end state *is* sinus ---
+  // NSR phase advances through ~2 cycles during the second half of recovery
+  const nsrAnchor = 0.42;
+  const nsrSpan = 1 - nsrAnchor;
+  const nsrCycles = 2.15;
+  const nsrT =
+    tt <= nsrAnchor ? 0 : clamp01((((tt - nsrAnchor) / nsrSpan) * nsrCycles) % 1);
+  const nsr = sampleWave("nsr", nsrT);
+  // Soft labels while blending
+  const nsrLabeled: WaveSample = {
+    ...nsr,
+    phase:
+      tt < 0.75
+        ? `Merging into sinus · ${nsr.phase}`
+        : tt < 0.9
+          ? `Sinus rhythm restoring · ${nsr.phase}`
+          : nsr.phase,
+  };
+
+  // Blend starts mid-recovery and reaches full NSR before the window ends
+  const blend = smoothstep((tt - 0.5) / 0.38); // 0 @0.50 → 1 @0.88
+  if (blend <= 0.001) return recovery;
+  if (blend >= 0.999) return nsrLabeled;
+  return lerpWaveSample(recovery, nsrLabeled, blend);
+}
+
+/** NSR cycle phase at the end of a recovery window (for seamless handoff). */
+export function cardioversionEndNsrPhase(): number {
+  const nsrAnchor = 0.42;
+  const nsrSpan = 1 - nsrAnchor;
+  const nsrCycles = 2.15;
+  return clamp01(((((1 - nsrAnchor) / nsrSpan) * nsrCycles) % 1));
+}
+
+/** Absolute-time NSR / recovery phase for conduction + strip continuity. */
+export function cardioversionTCycle(
+  elapsedSec: number,
+  durationSec: number,
+  nsrCycleSec: number,
+): number {
+  const nsrAnchor = 0.42;
+  const nsrSpan = 1 - nsrAnchor;
+  const nsrCycles = 2.15;
+  const cycle = Math.max(0.25, nsrCycleSec);
+  if (elapsedSec < durationSec) {
+    const tt = Math.max(0, elapsedSec) / Math.max(0.001, durationSec);
+    if (tt <= nsrAnchor) return tt; // progress through early recovery
+    return clamp01((((tt - nsrAnchor) / nsrSpan) * nsrCycles) % 1);
+  }
+  const post = elapsedSec - durationSec;
+  return clamp01(cardioversionEndNsrPhase() + post / cycle);
+}
+
+/**
+ * Absolute-time cardioversion sampler: recovery arc, then unbroken NSR.
+ * Negative times (strip lookback before the shock) stay silent.
+ */
+export function sampleCardioversionAt(
+  tAbs: number,
+  from: FindingId,
+  durationSec: number,
+  nsrCycleSec: number,
+): WaveSample {
+  if (tAbs <= 0) {
+    return pack(emptyLeads(), {
+      phase: "Pre-shock",
+      active: [],
+      mark: "TP",
+    });
+  }
+  if (tAbs < durationSec) {
+    return samplePostCardioversion(tAbs / durationSec, from);
+  }
+  return sampleWave("nsr", cardioversionTCycle(tAbs, durationSec, nsrCycleSec));
+}
+
 export function sampleWave(id: FindingId, t: number): WaveSample {
   return SAMPLERS[id](clamp01(t));
 }
