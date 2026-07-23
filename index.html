@@ -4,6 +4,33 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>EKG View</title>
+    <!-- Inline shell so a stale/cached asset miss isn't a blank white page -->
+    <style>
+      html,
+      body,
+      #app {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        background: #0a1218;
+        color: #e6eaed;
+        font-family: "Outfit", "Segoe UI", system-ui, sans-serif;
+      }
+      #boot-error {
+        max-width: 36rem;
+        margin: 2rem auto;
+        padding: 1rem 1.25rem;
+        border: 1px solid rgba(94, 160, 180, 0.35);
+        border-radius: 10px;
+        background: rgba(12, 22, 30, 0.92);
+        line-height: 1.45;
+      }
+      #boot-error code {
+        font-family: "IBM Plex Mono", Consolas, monospace;
+        font-size: 0.85em;
+        word-break: break-word;
+      }
+    </style>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link

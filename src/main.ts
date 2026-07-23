@@ -1227,4 +1227,13 @@ function main() {
   requestAnimationFrame(animate);
 }
 
-main();
+try {
+  main();
+} catch (err) {
+  const app = document.querySelector("#app");
+  const msg = err instanceof Error ? err.message : String(err);
+  if (app) {
+    app.innerHTML = `<div id="boot-error"><strong>EKG View failed to start.</strong><p>Try a hard refresh (Ctrl+Shift+R). If it keeps failing, open the browser console for details.</p><p><code>${msg}</code></p></div>`;
+  }
+  console.error(err);
+}
