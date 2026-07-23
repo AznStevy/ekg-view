@@ -874,6 +874,8 @@ export type ConductionSystem = {
     branches?: import("./pathwayTiming").BranchWindow[];
   }) => void;
   getPathwayProbes: () => PathwayProbePoint[];
+  /** World-space anchor for a nodal landmark (after model centering). */
+  getLandmarkWorld: (id: "sa" | "av") => THREE.Vector3;
   getActiveFronts: (opts: {
     tCycle: number;
     finding?: string;
@@ -1277,6 +1279,12 @@ export function createConductionSystem(): ConductionSystem {
   const center = box.getCenter(new THREE.Vector3());
   root.position.sub(center);
 
+  function getLandmarkWorld(id: "sa" | "av"): THREE.Vector3 {
+    const local = new THREE.Vector3(...(id === "av" ? AV : SA));
+    root.updateMatrixWorld(true);
+    return root.localToWorld(local);
+  }
+
   return {
     root,
     heartShell,
@@ -1284,6 +1292,7 @@ export function createConductionSystem(): ConductionSystem {
     setSegmentActive,
     updateImpulse,
     getPathwayProbes,
+    getLandmarkWorld,
     getActiveFronts,
     setSegmentVisibility,
     setAccessoryVisible,

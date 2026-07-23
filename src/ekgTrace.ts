@@ -48,7 +48,7 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
   const canvas = document.createElement("canvas");
   canvas.className = "ekg-canvas";
   canvas.style.cursor = "ew-resize";
-  canvas.title = "Drag or scroll to scrub the EKG";
+  canvas.title = "Drag or swipe to scrub the EKG";
   host.appendChild(canvas);
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("2d context unavailable");
@@ -115,28 +115,54 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
     scrubHandler = handler;
   }
 
-  // Scrub interactions
+  // Scrub interactions (pointer + touch)
   let dragging = false;
   let lastX = 0;
+  let activePointerId: number | null = null;
 
-  canvas.addEventListener("pointerdown", (e) => {
-    dragging = true;
-    lastX = e.clientX;
-    canvas.setPointerCapture(e.pointerId);
-  });
-  canvas.addEventListener("pointermove", (e) => {
-    if (!dragging || !scrubHandler) return;
-    const dx = e.clientX - lastX;
-    lastX = e.clientX;
-    // Drag right → earlier time (strip moves with hand), left → later
-    const deltaSec = (-dx / Math.max(1, cssW)) * WINDOW_SEC;
-    scrubHandler(deltaSec);
-  });
-  canvas.addEventListener("pointerup", () => {
+  canvas.style.touchAction = "none";
+
+  canvas.addEventListener(
+    "pointerdown",
+    (e) => {
+      if (!e.isPrimary) return;
+      e.preventDefault();
+      dragging = true;
+      activePointerId = e.pointerId;
+      lastX = e.clientX;
+      try {
+        canvas.setPointerCapture(e.pointerId);
+      } catch {
+        /* older WebViews */
+      }
+    },
+    { passive: false },
+  );
+  canvas.addEventListener(
+    "pointermove",
+    (e) => {
+      if (!dragging || !scrubHandler) return;
+      if (activePointerId !== null && e.pointerId !== activePointerId) return;
+      e.preventDefault();
+      const dx = e.clientX - lastX;
+      lastX = e.clientX;
+      // Touch needs more gain — finger travel is short vs strip width
+      const gain = e.pointerType === "touch" ? 2.1 : 1;
+      const deltaSec = (-dx / Math.max(1, cssW)) * WINDOW_SEC * gain;
+      if (dx !== 0) scrubHandler(deltaSec);
+    },
+    { passive: false },
+  );
+  const endDrag = (e: PointerEvent) => {
+    if (activePointerId !== null && e.pointerId !== activePointerId) return;
     dragging = false;
-  });
-  canvas.addEventListener("pointercancel", () => {
+    activePointerId = null;
+  };
+  canvas.addEventListener("pointerup", endDrag);
+  canvas.addEventListener("pointercancel", endDrag);
+  canvas.addEventListener("lostpointercapture", () => {
     dragging = false;
+    activePointerId = null;
   });
   canvas.addEventListener(
     "wheel",

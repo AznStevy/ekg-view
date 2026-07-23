@@ -96,7 +96,7 @@ function buildUI(root: HTMLElement): {
         </div>
         <div class="ekg-body" id="ekg-host"></div>
         <div class="ekg-footer" id="ekg-footer">
-          Drag / scroll the EKG to scrub · playing auto-pauses while scrubbing.
+          Drag / swipe the EKG to scrub · playing auto-pauses while scrubbing.
         </div>
       </section>
     </div>
@@ -336,9 +336,8 @@ function main() {
   scene.add(new THREE.Mesh(bgGeo, bgMat));
 
   const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
-  const defaultCamPos = new THREE.Vector3(0.2, 0.35, 4.2);
-  const defaultTarget = new THREE.Vector3(0, 0, 0);
-  camera.position.copy(defaultCamPos);
+  const defaultCamPos = new THREE.Vector3();
+  const defaultTarget = new THREE.Vector3();
   camera.up.set(0, 1, 0);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -348,16 +347,66 @@ function main() {
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
-  controls.minDistance = 2.0;
-  controls.maxDistance = 9;
-  controls.target.copy(defaultTarget);
+  controls.minDistance = 0.8;
+  controls.maxDistance = 16;
   controls.update();
 
-  function resetCameraView() {
-    camera.position.copy(defaultCamPos);
+  /** While true, splitter/resize re-applies the default AP framing in the 3D pane. */
+  let framingLocked = true;
+  controls.addEventListener("start", () => {
+    framingLocked = false;
+  });
+
+  /**
+   * AP head-on. Puts the AV node on the geometric center of the 3D pane
+   * (NDC 0,0), and fits the full model to the pane aspect.
+   */
+  function frameDefaultView() {
+    const w = Math.max(1, canvasHost.clientWidth || window.innerWidth);
+    const h = Math.max(1, canvasHost.clientHeight || window.innerHeight);
+    camera.aspect = w / h;
+    camera.clearViewOffset();
+    camera.updateProjectionMatrix();
+
+    conduction.root.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(conduction.root);
+    const sphere = box.getBoundingSphere(new THREE.Sphere());
+
+    // Prefer the live AV mesh world position (true visual center target)
+    const focus = new THREE.Vector3();
+    let foundAv = false;
+    conduction.root.traverse((obj) => {
+      if (foundAv) return;
+      if (obj instanceof THREE.Mesh && obj.userData.segmentId === "av") {
+        obj.getWorldPosition(focus);
+        foundAv = true;
+      }
+    });
+    if (!foundAv) focus.copy(conduction.getLandmarkWorld("av"));
+
+    const vFov = THREE.MathUtils.degToRad(camera.fov);
+    const hFov = 2 * Math.atan(Math.tan(vFov / 2) * camera.aspect);
+    const limFov = Math.min(vFov, hFov);
+    const fitRadius = sphere.radius + sphere.center.distanceTo(focus);
+    // ~2.25× tighter than a full-sphere fit so the heart fills the pane
+    const dist = (fitRadius * 1.06) / Math.tan(limFov / 2) / 2.25;
+
+    // AP: camera on +Z looking at AV — AV projects to pane center
+    camera.position.set(focus.x, focus.y, focus.z + dist);
     camera.up.set(0, 1, 0);
-    controls.target.copy(defaultTarget);
+    camera.lookAt(focus);
+    controls.target.copy(focus);
+    controls.minDistance = Math.max(0.6, dist * 0.25);
+    controls.maxDistance = Math.max(10, dist * 4);
     controls.update();
+
+    defaultCamPos.copy(camera.position);
+    defaultTarget.copy(focus);
+  }
+
+  function resetCameraView() {
+    framingLocked = true;
+    frameDefaultView();
   }
 
   scene.add(new THREE.AmbientLight(0xffffff, 0.45));
@@ -1060,25 +1109,37 @@ function main() {
 
   function resize() {
     const host = canvasHost;
-    const w = host.clientWidth || window.innerWidth;
-    const h = host.clientHeight || window.innerHeight;
+    const w = Math.max(1, host.clientWidth || window.innerWidth);
+    const h = Math.max(1, host.clientHeight || window.innerHeight);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
-    renderer.setSize(w, h, false);
+    // updateStyle=true so CSS size matches the pane (avoids DPR canvas overflow
+    // clipping the projection center into the lower-right)
+    renderer.setSize(w, h, true);
+    renderer.domElement.style.width = "100%";
+    renderer.domElement.style.height = "100%";
     ekg.resize();
+    if (framingLocked) frameDefaultView();
   }
 
-  // Draggable splitter: default EKG is slightly larger (CSS 1fr / 1.35fr)
+  // Draggable splitter: stacked only in portrait; landscape stays side-by-side
   const stage = document.querySelector("#stage") as HTMLElement;
   const splitter = document.querySelector("#splitter") as HTMLElement;
-  const MOBILE_SPLIT = 900;
-  const MIN_PANE = 220;
+  const STACK_MAX_WIDTH = 900;
+  const MIN_PANE = 180;
+
+  function useStackedSplit(): boolean {
+    return (
+      window.innerWidth <= STACK_MAX_WIDTH &&
+      window.matchMedia("(orientation: portrait)").matches
+    );
+  }
 
   function applySplit(primaryPx: number) {
     const rect = stage.getBoundingClientRect();
     const splitSize = 6;
-    const mobile = window.innerWidth <= MOBILE_SPLIT;
-    if (mobile) {
+    const stacked = useStackedSplit();
+    if (stacked) {
       const max = rect.height - splitSize - MIN_PANE;
       const clamped = Math.max(MIN_PANE, Math.min(max, primaryPx));
       stage.style.gridTemplateRows = `${clamped}px ${splitSize}px 1fr`;
@@ -1094,12 +1155,12 @@ function main() {
 
   function startSplitDrag(clientPos: number) {
     const rect = stage.getBoundingClientRect();
-    const mobile = window.innerWidth <= MOBILE_SPLIT;
-    const origin = mobile ? rect.top : rect.left;
+    const stacked = useStackedSplit();
+    const origin = stacked ? rect.top : rect.left;
     document.body.classList.add("is-resizing");
 
     const onMove = (ev: PointerEvent) => {
-      const pos = mobile ? ev.clientY : ev.clientX;
+      const pos = stacked ? ev.clientY : ev.clientX;
       applySplit(pos - origin);
     };
     const onUp = () => {
@@ -1115,14 +1176,14 @@ function main() {
   splitter.addEventListener("pointerdown", (e) => {
     e.preventDefault();
     splitter.setPointerCapture?.(e.pointerId);
-    const mobile = window.innerWidth <= MOBILE_SPLIT;
-    startSplitDrag(mobile ? e.clientY : e.clientX);
+    const stacked = useStackedSplit();
+    startSplitDrag(stacked ? e.clientY : e.clientX);
   });
 
   splitter.addEventListener("keydown", (e) => {
-    const mobile = window.innerWidth <= MOBILE_SPLIT;
+    const stacked = useStackedSplit();
     const rect = stage.getBoundingClientRect();
-    const current = mobile
+    const current = stacked
       ? (document.querySelector("#view-3d") as HTMLElement).offsetHeight
       : (document.querySelector("#view-3d") as HTMLElement).offsetWidth;
     const step = e.shiftKey ? 40 : 16;
@@ -1134,13 +1195,14 @@ function main() {
       applySplit(current + step);
     } else if (e.key === "Home") {
       e.preventDefault();
-      applySplit(mobile ? rect.height * 0.45 : rect.width / (1 + 1.35));
+      applySplit(stacked ? rect.height * 0.45 : rect.width / (1 + 1.35));
     }
   });
 
   window.addEventListener("resize", () => {
-    // Drop locked px sizes on breakpoint flip so CSS defaults apply again
-    if (window.innerWidth <= MOBILE_SPLIT) {
+    // Drop locked px sizes when orientation / breakpoint flips so CSS defaults apply
+    const stacked = useStackedSplit();
+    if (stacked) {
       if (stage.style.gridTemplateColumns !== "1fr") {
         stage.style.gridTemplateColumns = "";
         stage.style.gridTemplateRows = "";
@@ -1149,6 +1211,12 @@ function main() {
       stage.style.gridTemplateColumns = "";
       stage.style.gridTemplateRows = "";
     }
+    resize();
+  });
+  // Phones fire this on rotate even when width stays similar
+  window.matchMedia("(orientation: portrait)").addEventListener("change", () => {
+    stage.style.gridTemplateColumns = "";
+    stage.style.gridTemplateRows = "";
     resize();
   });
   resize();

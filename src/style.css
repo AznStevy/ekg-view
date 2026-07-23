@@ -119,11 +119,19 @@ body.is-resizing canvas {
   display: flex;
   flex-direction: column;
   background: #05080c;
+  touch-action: none;
+  overscroll-behavior: none;
 }
 
 #viewport {
   position: absolute;
   inset: 0;
+}
+
+#viewport canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
 }
 
 .pane-chrome {
@@ -230,12 +238,17 @@ body.is-resizing canvas {
   position: relative;
   min-height: 0;
   padding: 0.35rem 0.5rem 0.25rem;
+  touch-action: none;
+  overscroll-behavior: none;
 }
 
 .ekg-canvas {
   display: block;
   width: 100%;
   height: 100%;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .ekg-footer {
@@ -929,7 +942,7 @@ body.is-resizing canvas {
   line-height: 1.3;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 900px) and (orientation: portrait) {
   #stage {
     grid-template-columns: 1fr;
     grid-template-rows: 1fr 6px 0.95fr;
@@ -987,8 +1000,33 @@ body.is-resizing canvas {
   }
 }
 
-@media (max-width: 560px) {
-  /* Bottom sheet only on narrow phones — capped height. */
+/* Phone landscape: keep horizontal 3D | EKG split; compact side panel */
+@media (max-width: 900px) and (orientation: landscape) {
+  #stage {
+    grid-template-columns: 1fr 6px 1.2fr;
+    grid-template-rows: 1fr;
+  }
+
+  .panel-shell {
+    top: 0.5rem;
+    bottom: 0.5rem;
+    left: 0.5rem;
+    width: min(240px, 36vw);
+    max-height: none;
+  }
+
+  .brand {
+    top: 0.45rem;
+    left: 0.5rem;
+  }
+
+  .brand h1 {
+    font-size: 0.95rem;
+  }
+}
+
+@media (max-width: 560px) and (orientation: portrait) {
+  /* Bottom sheet only on narrow phones in portrait */
   .panel-shell {
     left: 0;
     right: 0;
