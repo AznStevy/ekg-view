@@ -1,0 +1,1292 @@
+import * as THREE from "three";
+import type { SegmentId } from "./findings";
+import {
+  branchesForFinding,
+  refractoryGlow,
+  type PathwayProbePoint,
+} from "./pathwayTiming";
+
+export type SegmentMeta = {
+  id: SegmentId;
+  label: string;
+  color: string;
+  defaultOn: boolean;
+};
+
+export const SEGMENT_META: SegmentMeta[] = [
+  { id: "sa", label: "SA node", color: "#f0c040", defaultOn: true },
+  { id: "internodal", label: "Internodal tracts", color: "#e8a838", defaultOn: true },
+  { id: "flutter", label: "Flutter circuit (CTI)", color: "#8a9aa8", defaultOn: false },
+  { id: "av", label: "AV node", color: "#ff7a4a", defaultOn: true },
+  { id: "his", label: "Bundle of His", color: "#ff5e6c", defaultOn: true },
+  { id: "rbb", label: "Right bundle", color: "#5ec8ff", defaultOn: true },
+  { id: "lbb", label: "Left bundle", color: "#6ae0a8", defaultOn: true },
+  { id: "lbba", label: "Left anterior fascicle", color: "#4ec890", defaultOn: true },
+  { id: "lbbp", label: "Left posterior fascicle", color: "#3ab078", defaultOn: true },
+  { id: "purkinjeR", label: "Purkinje (RV)", color: "#7ad4ff", defaultOn: true },
+  { id: "purkinjeL", label: "Purkinje (LV)", color: "#88f0c0", defaultOn: true },
+  { id: "accessory", label: "Accessory pathway", color: "#c070ff", defaultOn: false },
+  { id: "myocardiumA", label: "Atrial myocardium", color: "#d08090", defaultOn: false },
+  { id: "myocardiumV", label: "Ventricular myocardium", color: "#c06070", defaultOn: false },
+];
+
+const SEGMENT_COLORS: Record<SegmentId, number> = {
+  sa: 0xf0c040,
+  internodal: 0xe8a838,
+  flutter: 0x8a9aa8,
+  av: 0xff7a4a,
+  his: 0xff5e6c,
+  rbb: 0x5ec8ff,
+  lbb: 0x6ae0a8,
+  lbba: 0x4ec890,
+  lbbp: 0x3ab078,
+  purkinjeR: 0x7ad4ff,
+  purkinjeL: 0x88f0c0,
+  accessory: 0xc070ff,
+  myocardiumA: 0xd08090,
+  myocardiumV: 0xc06070,
+};
+
+type PathSpec = {
+  id: SegmentId;
+  name: string;
+  detail: string;
+  points: [number, number, number][];
+  radiusStart: number;
+  radiusEnd: number;
+  tubularSegments?: number;
+};
+
+type GuideSpec = {
+  name: string;
+  detail: string;
+  points: [number, number, number][];
+  radius?: number;
+  tubularSegments?: number;
+};
+
+/** Thin grey anatomic landmarks (context only — not impulse pathways) */
+const ANATOMY_GUIDES: GuideSpec[] = [
+  {
+    name: "Tricuspid annulus",
+    detail: "RA–RV junction · flutter circuit boundary",
+    radius: 0.007,
+    tubularSegments: 64,
+    points: [
+      [-0.42, 0.08, 0.22],
+      [-0.2, -0.02, 0.28],
+      [0.05, -0.06, 0.18],
+      [0.12, 0.05, -0.02],
+      [0.02, 0.18, -0.18],
+      [-0.2, 0.22, -0.12],
+      [-0.4, 0.16, 0.05],
+      [-0.42, 0.08, 0.22],
+    ],
+  },
+  {
+    name: "IVC–RA junction",
+    detail: "Inferior vena cava orifice · CTI lateral margin",
+    radius: 0.008,
+    points: [
+      [-0.35, -0.22, 0.05],
+      [-0.42, -0.12, 0.12],
+      [-0.48, -0.02, 0.18],
+      [-0.4, 0.02, 0.1],
+    ],
+  },
+  {
+    name: "Coronary sinus ostium",
+    detail: "Posteroseptal RA · near triangle of Koch",
+    radius: 0.007,
+    points: [
+      [-0.12, -0.06, -0.22],
+      [-0.06, -0.02, -0.18],
+      [0.0, 0.02, -0.14],
+      [0.04, 0.06, -0.1],
+    ],
+  },
+  {
+    name: "Eustachian ridge",
+    detail: "IVC to CS · forms CTI posterior border",
+    radius: 0.006,
+    points: [
+      [-0.45, -0.08, 0.08],
+      [-0.32, -0.04, -0.02],
+      [-0.18, -0.02, -0.12],
+      [-0.08, 0.0, -0.16],
+    ],
+  },
+  {
+    name: "Fossa ovalis (septum)",
+    detail: "Interatrial septum landmark",
+    radius: 0.006,
+    points: [
+      [-0.05, 0.35, -0.08],
+      [0.0, 0.28, -0.12],
+      [0.02, 0.18, -0.14],
+      [0.0, 0.08, -0.12],
+    ],
+  },
+  {
+    name: "SVC–RA junction",
+    detail: "Superior vena cava · near SA node",
+    radius: 0.008,
+    points: [
+      [-0.4, 0.78, 0.08],
+      [-0.48, 0.68, 0.15],
+      [-0.52, 0.58, 0.22],
+      [-0.48, 0.5, 0.18],
+    ],
+  },
+  {
+    name: "Mitral annulus (guide)",
+    detail: "LA–LV junction · anatomic reference",
+    radius: 0.006,
+    tubularSegments: 48,
+    points: [
+      [0.35, 0.12, -0.15],
+      [0.48, 0.02, -0.05],
+      [0.42, -0.12, 0.1],
+      [0.22, -0.08, 0.18],
+      [0.18, 0.08, 0.02],
+      [0.28, 0.16, -0.1],
+      [0.35, 0.12, -0.15],
+    ],
+  },
+];
+
+function createGuideMesh(spec: GuideSpec): THREE.Mesh {
+  const curve = makeCurve(spec.points);
+  const r = spec.radius ?? 0.007;
+  const geo = createTaperedTubeGeometry(
+    curve,
+    spec.tubularSegments ?? 40,
+    r,
+    r * 0.85,
+    6,
+  );
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0x7a8a96,
+    roughness: 0.55,
+    metalness: 0.05,
+    emissive: 0x3a4550,
+    emissiveIntensity: 0.08,
+    transparent: true,
+    opacity: 0.42,
+    depthWrite: false,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.name = spec.name;
+  mesh.userData.segmentName = spec.name;
+  mesh.userData.segmentDetail = spec.detail;
+  mesh.userData.segmentId = "guide";
+  mesh.userData.isConduction = false;
+  mesh.userData.isAnatomyGuide = true;
+  mesh.userData.baseEmissive = 0.08;
+  return mesh;
+}
+
+/**
+ * Patient frame: +X left, +Y superior, +Z anterior.
+ *
+ * Layout inside a ~unit heart sphere (apex left-inferior-anterior):
+ * - SA node: SVC–RA junction (right, superior, along sulcus terminalis)
+ * - AV node: triangle of Koch (inferior RA septum, near CS)
+ * - His: central fibrous body → crest of muscular IV septum
+ * - RBB: right septal surface → moderator band → anterior papillary
+ * - LBB: left septal cascade → anterior / posterior fascicles
+ * - Purkinje: endocardial arborization of both ventricles
+ */
+const SA: [number, number, number] = [-0.52, 0.58, 0.22];
+const AV: [number, number, number] = [0.0, 0.02, -0.12];
+const HIS_PEN: [number, number, number] = [0.04, -0.1, -0.08];
+const HIS_BRANCH: [number, number, number] = [0.05, -0.28, -0.04];
+const LBB_ORIGIN: [number, number, number] = [0.14, -0.34, 0.0];
+const RBB_MID: [number, number, number] = [-0.08, -0.55, 0.18];
+const RBB_APEX: [number, number, number] = [-0.18, -0.95, 0.32];
+const MOD_BAND_END: [number, number, number] = [-0.48, -0.62, 0.48];
+
+/** CTI flutter ring landmarks (RA around tricuspid annulus) */
+const CTI_LAT: [number, number, number] = [-0.48, -0.02, 0.18];
+const CTI_MED: [number, number, number] = [-0.06, 0.0, -0.14];
+const SEPT_SUP: [number, number, number] = [0.06, 0.42, -0.16];
+const ROOF_LAT: [number, number, number] = [-0.42, 0.62, 0.2];
+
+const PATHS: PathSpec[] = [
+  // —— Internodal / atrial ——
+  {
+    id: "internodal",
+    name: "Anterior internodal tract",
+    detail: "SA → anterior RA → septum → AV",
+    radiusStart: 0.028,
+    radiusEnd: 0.016,
+    tubularSegments: 56,
+    points: [
+      SA,
+      [-0.38, 0.52, 0.32],
+      [-0.18, 0.42, 0.22],
+      [-0.02, 0.28, 0.05],
+      [0.02, 0.14, -0.06],
+      AV,
+    ],
+  },
+  {
+    id: "internodal",
+    name: "Bachmann bundle",
+    detail: "Interatrial conduction · superior LA",
+    radiusStart: 0.03,
+    radiusEnd: 0.014,
+    tubularSegments: 48,
+    points: [
+      SA,
+      [-0.28, 0.68, 0.08],
+      [-0.05, 0.74, -0.05],
+      [0.22, 0.7, -0.15],
+      [0.45, 0.58, -0.22],
+      [0.55, 0.42, -0.18],
+    ],
+  },
+  {
+    id: "internodal",
+    name: "Middle internodal tract",
+    detail: "Wenckebach · through atrial septum",
+    radiusStart: 0.022,
+    radiusEnd: 0.014,
+    points: [
+      SA,
+      [-0.3, 0.45, 0.05],
+      [-0.12, 0.28, -0.08],
+      AV,
+    ],
+  },
+  {
+    id: "internodal",
+    name: "Posterior internodal (Thorel)",
+    detail: "Crista terminalis → CS ostium → AV",
+    radiusStart: 0.024,
+    radiusEnd: 0.014,
+    tubularSegments: 56,
+    points: [
+      SA,
+      [-0.58, 0.4, 0.18],
+      [-0.55, 0.22, 0.12],
+      [-0.4, 0.1, -0.02],
+      [-0.18, 0.04, -0.18],
+      [-0.06, 0.02, -0.16],
+      AV,
+    ],
+  },
+  {
+    id: "internodal",
+    name: "SA node extension (sulcus)",
+    detail: "Crescent along sulcus terminalis",
+    radiusStart: 0.032,
+    radiusEnd: 0.018,
+    points: [
+      [-0.48, 0.68, 0.18],
+      SA,
+      [-0.55, 0.48, 0.28],
+      [-0.58, 0.35, 0.22],
+    ],
+  },
+
+  // —— CTI-dependent flutter macro-reentry (CCW order: CTI → septum → roof → crista) ——
+  {
+    id: "flutter",
+    name: "Cavotricuspid isthmus",
+    detail: "IVC–tricuspid corridor · typical flutter slow zone",
+    radiusStart: 0.008,
+    radiusEnd: 0.007,
+    tubularSegments: 40,
+    points: [
+      CTI_LAT,
+      [-0.38, -0.04, 0.1],
+      [-0.22, -0.02, -0.02],
+      CTI_MED,
+    ],
+  },
+  {
+    id: "flutter",
+    name: "Septal ascending limb",
+    detail: "CS / Koch → superior RA septum",
+    radiusStart: 0.008,
+    radiusEnd: 0.007,
+    tubularSegments: 48,
+    points: [
+      CTI_MED,
+      [-0.02, 0.12, -0.14],
+      [0.02, 0.28, -0.16],
+      SEPT_SUP,
+    ],
+  },
+  {
+    id: "flutter",
+    name: "RA roof",
+    detail: "Superior RA · toward SVC / sulcus",
+    radiusStart: 0.008,
+    radiusEnd: 0.007,
+    tubularSegments: 48,
+    points: [
+      SEPT_SUP,
+      [-0.12, 0.55, -0.05],
+      [-0.28, 0.62, 0.08],
+      ROOF_LAT,
+    ],
+  },
+  {
+    id: "flutter",
+    name: "Crista terminalis (descending)",
+    detail: "Lateral RA · crista toward IVC / CTI",
+    radiusStart: 0.008,
+    radiusEnd: 0.007,
+    tubularSegments: 56,
+    points: [
+      ROOF_LAT,
+      [-0.52, 0.4, 0.24],
+      [-0.55, 0.2, 0.22],
+      [-0.52, 0.08, 0.2],
+      CTI_LAT,
+    ],
+  },
+
+  // —— His ——
+  {
+    id: "his",
+    name: "Penetrating His bundle",
+    detail: "AV node → central fibrous body",
+    radiusStart: 0.034,
+    radiusEnd: 0.028,
+    points: [AV, [0.02, -0.04, -0.1], HIS_PEN],
+  },
+  {
+    id: "his",
+    name: "Branching His bundle",
+    detail: "Membranous septum → bifurcation",
+    radiusStart: 0.028,
+    radiusEnd: 0.026,
+    points: [HIS_PEN, [0.05, -0.18, -0.06], HIS_BRANCH],
+  },
+
+  // —— Right bundle ——
+  {
+    id: "rbb",
+    name: "Right bundle branch",
+    detail: "Right septal subendocardium",
+    radiusStart: 0.022,
+    radiusEnd: 0.014,
+    tubularSegments: 72,
+    points: [
+      HIS_BRANCH,
+      [-0.02, -0.38, 0.06],
+      RBB_MID,
+      [-0.12, -0.72, 0.26],
+      RBB_APEX,
+    ],
+  },
+  {
+    id: "rbb",
+    name: "Moderator band",
+    detail: "Septomarginal trabecula → ant. papillary",
+    radiusStart: 0.018,
+    radiusEnd: 0.012,
+    tubularSegments: 40,
+    points: [
+      RBB_APEX,
+      [-0.3, -0.85, 0.42],
+      [-0.42, -0.72, 0.5],
+      MOD_BAND_END,
+    ],
+  },
+
+  // —— Left bundle / fascicles ——
+  {
+    id: "lbb",
+    name: "Left bundle (cascade)",
+    detail: "Left septal surface under aortic cusp",
+    radiusStart: 0.036,
+    radiusEnd: 0.028,
+    points: [HIS_BRANCH, [0.1, -0.3, -0.02], LBB_ORIGIN],
+  },
+  {
+    id: "lbba",
+    name: "Left anterior fascicle",
+    detail: "Thin · anterosuperior LV / AL papillary",
+    radiusStart: 0.02,
+    radiusEnd: 0.01,
+    tubularSegments: 56,
+    points: [
+      LBB_ORIGIN,
+      [0.28, -0.32, 0.15],
+      [0.42, -0.38, 0.32],
+      [0.55, -0.52, 0.4],
+      [0.58, -0.72, 0.35],
+      [0.5, -0.9, 0.22],
+    ],
+  },
+  {
+    id: "lbbp",
+    name: "Left posterior fascicle",
+    detail: "Broad · inferior / PM papillary",
+    radiusStart: 0.026,
+    radiusEnd: 0.012,
+    tubularSegments: 56,
+    points: [
+      LBB_ORIGIN,
+      [0.26, -0.48, -0.08],
+      [0.38, -0.68, -0.1],
+      [0.42, -0.9, -0.02],
+      [0.35, -1.08, 0.06],
+      [0.22, -1.15, 0.08],
+    ],
+  },
+  {
+    id: "lbb",
+    name: "Left septal fascicle",
+    detail: "Mid-septal fibers (variable)",
+    radiusStart: 0.016,
+    radiusEnd: 0.008,
+    tubularSegments: 40,
+    points: [
+      LBB_ORIGIN,
+      [0.12, -0.5, 0.08],
+      [0.08, -0.7, 0.12],
+      [0.06, -0.92, 0.1],
+      [0.05, -1.1, 0.04],
+    ],
+  },
+
+  // —— RV Purkinje ——
+  {
+    id: "purkinjeR",
+    name: "RV free wall Purkinje · superior",
+    detail: "From anterior papillary region",
+    radiusStart: 0.012,
+    radiusEnd: 0.005,
+    tubularSegments: 40,
+    points: [
+      MOD_BAND_END,
+      [-0.58, -0.55, 0.42],
+      [-0.62, -0.42, 0.28],
+      [-0.55, -0.28, 0.15],
+    ],
+  },
+  {
+    id: "purkinjeR",
+    name: "RV free wall Purkinje · mid",
+    detail: "Lateral RV endocardium",
+    radiusStart: 0.011,
+    radiusEnd: 0.004,
+    points: [
+      MOD_BAND_END,
+      [-0.6, -0.7, 0.38],
+      [-0.58, -0.88, 0.25],
+      [-0.45, -1.02, 0.12],
+    ],
+  },
+  {
+    id: "purkinjeR",
+    name: "RV free wall Purkinje · inferior",
+    detail: "Inferior RV",
+    radiusStart: 0.01,
+    radiusEnd: 0.004,
+    points: [
+      RBB_APEX,
+      [-0.32, -1.05, 0.22],
+      [-0.38, -1.12, 0.08],
+      [-0.28, -1.15, -0.02],
+    ],
+  },
+  {
+    id: "purkinjeR",
+    name: "RV apical Purkinje",
+    detail: "RV apex network",
+    radiusStart: 0.01,
+    radiusEnd: 0.004,
+    points: [
+      RBB_APEX,
+      [-0.08, -1.12, 0.2],
+      [0.05, -1.18, 0.08],
+      [0.12, -1.12, -0.02],
+    ],
+  },
+  {
+    id: "purkinjeR",
+    name: "RV septal Purkinje",
+    detail: "Right septal arborization",
+    radiusStart: 0.01,
+    radiusEnd: 0.004,
+    points: [
+      RBB_MID,
+      [-0.05, -0.68, 0.12],
+      [0.0, -0.85, 0.08],
+      [0.02, -1.0, 0.02],
+    ],
+  },
+
+  // —— LV Purkinje ——
+  {
+    id: "purkinjeL",
+    name: "LV anterolateral Purkinje",
+    detail: "From LAF · free wall",
+    radiusStart: 0.012,
+    radiusEnd: 0.004,
+    tubularSegments: 40,
+    points: [
+      [0.5, -0.9, 0.22],
+      [0.58, -1.0, 0.12],
+      [0.48, -1.12, 0.02],
+      [0.28, -1.18, -0.02],
+    ],
+  },
+  {
+    id: "purkinjeL",
+    name: "LV anterolateral Purkinje · base",
+    detail: "Toward LVOT / base",
+    radiusStart: 0.01,
+    radiusEnd: 0.004,
+    points: [
+      [0.58, -0.72, 0.35],
+      [0.65, -0.58, 0.28],
+      [0.62, -0.42, 0.15],
+      [0.5, -0.3, 0.05],
+    ],
+  },
+  {
+    id: "purkinjeL",
+    name: "LV inferior Purkinje",
+    detail: "From LPF",
+    radiusStart: 0.012,
+    radiusEnd: 0.004,
+    points: [
+      [0.22, -1.15, 0.08],
+      [0.08, -1.2, 0.0],
+      [-0.05, -1.15, -0.06],
+      [-0.12, -1.02, -0.1],
+    ],
+  },
+  {
+    id: "purkinjeL",
+    name: "LV inferior Purkinje · mid",
+    detail: "Posterolateral LV",
+    radiusStart: 0.01,
+    radiusEnd: 0.004,
+    points: [
+      [0.35, -1.08, 0.06],
+      [0.48, -1.05, -0.05],
+      [0.55, -0.9, -0.12],
+      [0.52, -0.72, -0.15],
+    ],
+  },
+  {
+    id: "purkinjeL",
+    name: "LV septal Purkinje · superior",
+    detail: "Left mid-septum",
+    radiusStart: 0.01,
+    radiusEnd: 0.004,
+    points: [
+      [0.06, -0.92, 0.1],
+      [0.1, -0.78, 0.05],
+      [0.12, -0.62, 0.0],
+      [0.1, -0.48, -0.04],
+    ],
+  },
+  {
+    id: "purkinjeL",
+    name: "LV septal Purkinje · apex",
+    detail: "Apical left septum",
+    radiusStart: 0.01,
+    radiusEnd: 0.004,
+    points: [
+      [0.05, -1.1, 0.04],
+      [0.12, -1.18, -0.02],
+      [0.22, -1.2, -0.05],
+      [0.32, -1.15, -0.02],
+    ],
+  },
+  {
+    id: "purkinjeL",
+    name: "LV apical Purkinje fan",
+    detail: "Dense apical network",
+    radiusStart: 0.009,
+    radiusEnd: 0.0035,
+    points: [
+      [0.28, -1.18, -0.02],
+      [0.18, -1.22, 0.05],
+      [0.05, -1.2, 0.1],
+      [-0.05, -1.15, 0.08],
+    ],
+  },
+
+  // —— Accessory (WPW) ——
+  {
+    id: "accessory",
+    name: "Kent bundle (left lateral)",
+    detail: "Accessory AV connection · mitral annulus",
+    radiusStart: 0.018,
+    radiusEnd: 0.01,
+    points: [
+      [0.48, 0.28, 0.12],
+      [0.55, 0.12, 0.25],
+      [0.58, -0.08, 0.32],
+      [0.5, -0.28, 0.28],
+    ],
+  },
+];
+
+function makeCurve(points: [number, number, number][]): THREE.CatmullRomCurve3 {
+  const vecs = points.map(([x, y, z]) => new THREE.Vector3(x, y, z));
+  // Centripetal avoids the end-loop / overshoot common with "catmullrom" + tension,
+  // which made distal vectors aim sideways or backward near fiber tips.
+  return new THREE.CatmullRomCurve3(vecs, false, "centripetal", 0.5);
+}
+
+/**
+ * Direction of travel along a curve toward a parametric terminus.
+ * Prefer a finite look-ahead toward uEnd over getTangentAt(), which is unreliable
+ * near endpoints (and after Catmull-Rom curls).
+ */
+function travelDirAt(
+  curve: THREE.Curve<THREE.Vector3>,
+  u: number,
+  uEnd: number,
+): THREE.Vector3 {
+  const u0 = THREE.MathUtils.clamp(u, 0, 1);
+  const end = THREE.MathUtils.clamp(uEnd, 0, 1);
+  const toward = Math.sign(end - u0) || (end >= 0.5 ? 1 : -1);
+  const span = 0.08;
+
+  let from = u0;
+  let to = THREE.MathUtils.clamp(u0 + toward * span, 0, 1);
+  // Already at / past the tip: sample the last segment leading into the end
+  if (Math.abs(to - from) < 1e-5) {
+    to = end;
+    from = THREE.MathUtils.clamp(end - toward * span, 0, 1);
+  }
+
+  const a = curve.getPointAt(from, new THREE.Vector3());
+  const b = curve.getPointAt(to, new THREE.Vector3());
+  const dir = b.sub(a);
+  if (dir.lengthSq() > 1e-10) return dir.normalize();
+
+  // Ultra-short leftover: chord from a bit before the tip into the tip
+  const tip = curve.getPointAt(end, new THREE.Vector3());
+  const prev = curve.getPointAt(
+    THREE.MathUtils.clamp(end - toward * Math.max(span, 0.02), 0, 1),
+    new THREE.Vector3(),
+  );
+  const fallback = tip.sub(prev);
+  if (fallback.lengthSq() > 1e-10) return fallback.normalize();
+  return new THREE.Vector3(0, toward > 0 ? -1 : 1, 0);
+}
+
+/** Tube with radius taper along the path (same approach as cath-view) */
+function createTaperedTubeGeometry(
+  curve: THREE.Curve<THREE.Vector3>,
+  tubularSegments: number,
+  radiusStart: number,
+  radiusEnd: number,
+  radialSegments: number,
+): THREE.BufferGeometry {
+  const frames = curve.computeFrenetFrames(tubularSegments, false);
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+
+  const normal = new THREE.Vector3();
+  const vertex = new THREE.Vector3();
+
+  for (let i = 0; i <= tubularSegments; i++) {
+    const t = i / tubularSegments;
+    const p = curve.getPointAt(t);
+    const N = frames.normals[i]!;
+    const B = frames.binormals[i]!;
+    const radius = THREE.MathUtils.lerp(radiusStart, radiusEnd, t * t * (3 - 2 * t));
+
+    for (let j = 0; j <= radialSegments; j++) {
+      const v = j / radialSegments;
+      const angle = v * Math.PI * 2;
+      const sin = Math.sin(angle);
+      const cos = -Math.cos(angle);
+
+      normal.x = cos * N.x + sin * B.x;
+      normal.y = cos * N.y + sin * B.y;
+      normal.z = cos * N.z + sin * B.z;
+      normal.normalize();
+
+      vertex.x = p.x + radius * normal.x;
+      vertex.y = p.y + radius * normal.y;
+      vertex.z = p.z + radius * normal.z;
+
+      positions.push(vertex.x, vertex.y, vertex.z);
+      normals.push(normal.x, normal.y, normal.z);
+      uvs.push(t, v);
+    }
+  }
+
+  for (let i = 0; i < tubularSegments; i++) {
+    for (let j = 0; j < radialSegments; j++) {
+      const a = i * (radialSegments + 1) + j;
+      const b = (i + 1) * (radialSegments + 1) + j;
+      const c = (i + 1) * (radialSegments + 1) + j + 1;
+      const d = i * (radialSegments + 1) + j + 1;
+      indices.push(a, b, d, b, c, d);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setIndex(indices);
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
+  geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  return geo;
+}
+
+function createPathMesh(spec: PathSpec): THREE.Mesh {
+  const curve = makeCurve(spec.points);
+  const geo = createTaperedTubeGeometry(
+    curve,
+    spec.tubularSegments ?? 48,
+    spec.radiusStart,
+    spec.radiusEnd,
+    spec.id === "flutter" ? 6 : 10,
+  );
+  const isFlutter = spec.id === "flutter";
+  const isAccessory = spec.id === "accessory";
+  const color = isFlutter ? 0x7a8a96 : SEGMENT_COLORS[spec.id];
+  const mat = new THREE.MeshStandardMaterial({
+    color,
+    roughness: isFlutter ? 0.55 : 0.35,
+    metalness: isFlutter ? 0.05 : 0.08,
+    emissive: isFlutter ? 0x3a4550 : color,
+    emissiveIntensity: isFlutter ? 0.08 : 0.12,
+    transparent: true,
+    opacity: isFlutter ? 0.45 : isAccessory ? 0.35 : 0.95,
+    depthWrite: isFlutter ? false : true,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.name = spec.name;
+  mesh.userData.segmentId = spec.id;
+  mesh.userData.segmentName = spec.name;
+  mesh.userData.segmentDetail = spec.detail;
+  mesh.userData.isConduction = true;
+  mesh.userData.baseEmissive = isFlutter ? 0.08 : 0.12;
+  mesh.userData.curve = curve;
+  mesh.userData.pathPoints = spec.points;
+  return mesh;
+}
+
+function createNode(
+  position: [number, number, number],
+  radius: number,
+  color: number,
+  name: string,
+  detail: string,
+  id: SegmentId,
+): THREE.Mesh {
+  const mat = new THREE.MeshStandardMaterial({
+    color,
+    roughness: 0.3,
+    metalness: 0.1,
+    emissive: color,
+    emissiveIntensity: 0.4,
+    transparent: true,
+    opacity: 0.95,
+  });
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(radius, 20, 16), mat);
+  mesh.position.set(...position);
+  mesh.name = name;
+  mesh.userData.segmentId = id;
+  mesh.userData.segmentName = name;
+  mesh.userData.segmentDetail = detail;
+  mesh.userData.isConduction = true;
+  mesh.userData.baseEmissive = 0.4;
+  return mesh;
+}
+
+/** Simple translucent heart sphere (slightly ovoid), matching cath-view restraint */
+function createHeartShell(): THREE.Group {
+  const group = new THREE.Group();
+  group.name = "heartShell";
+
+  const geo = new THREE.SphereGeometry(1, 48, 36);
+  const pos = geo.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    v.x *= 1.05;
+    v.y *= 1.22;
+    v.z *= 1.0;
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  geo.computeVertexNormals();
+
+  const ovoid = new THREE.Mesh(
+    geo,
+    new THREE.MeshStandardMaterial({
+      color: 0x5a3038,
+      roughness: 0.65,
+      metalness: 0.0,
+      transparent: true,
+      opacity: 0.28,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    }),
+  );
+  ovoid.position.set(0.05, -0.2, 0.02);
+  ovoid.rotation.z = THREE.MathUtils.degToRad(-12);
+  ovoid.rotation.x = THREE.MathUtils.degToRad(10);
+  ovoid.scale.setScalar(1.12);
+  ovoid.name = "heartBody";
+  group.add(ovoid);
+
+  return group;
+}
+
+function createPulseSprite(radius = 0.05, color = 0xffffff): THREE.Mesh {
+  const mat = new THREE.MeshBasicMaterial({
+    color,
+    transparent: true,
+    opacity: 0.95,
+    depthWrite: false,
+  });
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(radius, 12, 10), mat);
+  mesh.name = "pulse";
+  mesh.visible = false;
+  return mesh;
+}
+
+export type ConductionSystem = {
+  root: THREE.Group;
+  heartShell: THREE.Group;
+  pulse: THREE.Mesh;
+  setSegmentActive: (opts: {
+    active: SegmentId[];
+    tCycle: number;
+    finding?: string;
+    branches?: import("./pathwayTiming").BranchWindow[];
+    intensity?: number;
+  }) => void;
+  updateImpulse: (opts: {
+    tCycle: number;
+    active: SegmentId[];
+    finding?: string;
+    branches?: import("./pathwayTiming").BranchWindow[];
+  }) => void;
+  getPathwayProbes: () => PathwayProbePoint[];
+  getActiveFronts: (opts: {
+    tCycle: number;
+    finding?: string;
+    branches?: import("./pathwayTiming").BranchWindow[];
+  }) => import("./pathwayTiming").ActiveFront[];
+  setSegmentVisibility: (id: SegmentId, visible: boolean) => void;
+  setAccessoryVisible: (visible: boolean) => void;
+  resetGlow: () => void;
+};
+
+type CurveEntry = {
+  id: SegmentId;
+  curve: THREE.CatmullRomCurve3;
+  color: number;
+};
+
+export function createConductionSystem(): ConductionSystem {
+  const root = new THREE.Group();
+  root.name = "conductionSystem";
+
+  const heartShell = createHeartShell();
+  root.add(heartShell);
+
+  const pathways = new THREE.Group();
+  pathways.name = "pathways";
+
+  const curveEntries: CurveEntry[] = [];
+  const curvesBySegment = new Map<SegmentId, THREE.CatmullRomCurve3[]>();
+
+  for (const path of PATHS) {
+    const mesh = createPathMesh(path);
+    pathways.add(mesh);
+    const curve = mesh.userData.curve as THREE.CatmullRomCurve3;
+    const list = curvesBySegment.get(path.id) ?? [];
+    mesh.userData.curveIndex = list.length;
+    list.push(curve);
+    curvesBySegment.set(path.id, list);
+    curveEntries.push({ id: path.id, curve, color: SEGMENT_COLORS[path.id] });
+  }
+
+  const saMain = createNode(SA, 0.055, SEGMENT_COLORS.sa, "SA node", "SVC–RA junction · primary pacemaker", "sa");
+  const saSup = createNode(
+    [-0.48, 0.68, 0.18],
+    0.032,
+    SEGMENT_COLORS.sa,
+    "SA node (superior pole)",
+    "Superior extent along sulcus terminalis",
+    "sa",
+  );
+  const saInf = createNode(
+    [-0.55, 0.48, 0.28],
+    0.028,
+    SEGMENT_COLORS.sa,
+    "SA node (inferior pole)",
+    "Inferior extent along sulcus terminalis",
+    "sa",
+  );
+  const avNode = createNode(
+    AV,
+    0.048,
+    SEGMENT_COLORS.av,
+    "AV node",
+    "Triangle of Koch · delay & filter",
+    "av",
+  );
+  const hisBranch = createNode(
+    HIS_BRANCH,
+    0.03,
+    SEGMENT_COLORS.his,
+    "His bifurcation",
+    "Crest of muscular IV septum",
+    "his",
+  );
+
+  pathways.add(saMain, saSup, saInf, avNode, hisBranch);
+  root.add(pathways);
+
+  const guides = new THREE.Group();
+  guides.name = "anatomyGuides";
+  for (const g of ANATOMY_GUIDES) {
+    guides.add(createGuideMesh(g));
+  }
+  root.add(guides);
+
+  // Pool of pulses for parallel branch fronts
+  const PULSE_POOL = 28;
+  const pulsePool: THREE.Mesh[] = [];
+  for (let i = 0; i < PULSE_POOL; i++) {
+    const p = createPulseSprite(i === 0 ? 0.052 : 0.038);
+    pulsePool.push(p);
+    root.add(p);
+  }
+  const pulse = pulsePool[0]!;
+
+  function resetGlow() {
+    pathways.traverse((obj) => {
+      if (!(obj instanceof THREE.Mesh)) return;
+      const mat = obj.material;
+      if (!(mat instanceof THREE.MeshStandardMaterial)) return;
+      const base = Number(obj.userData.baseEmissive ?? 0.12);
+      let intensity = base;
+      if (obj.userData.hovered) intensity = Math.max(intensity, 1.15);
+      mat.emissiveIntensity = intensity;
+      if (obj.userData.segmentId === "accessory") mat.opacity = 0.35;
+      if (obj.userData.segmentId === "flutter") mat.opacity = 0.45;
+    });
+  }
+
+  /**
+   * Light segments that are conducting now, and keep a softer afterglow
+   * through their refractory period until they can activate again.
+   */
+  function setSegmentActive(opts: {
+    active: SegmentId[];
+    tCycle: number;
+    finding?: string;
+    branches?: import("./pathwayTiming").BranchWindow[];
+    intensity?: number;
+  }) {
+    const peak = opts.intensity ?? 0.95;
+    const branches = opts.branches ?? branchesForFinding(opts.finding);
+    const ekgActive = new Set(opts.active);
+
+    pathways.traverse((obj) => {
+      if (!(obj instanceof THREE.Mesh)) return;
+      const mat = obj.material;
+      if (!(mat instanceof THREE.MeshStandardMaterial)) return;
+
+      const id = obj.userData.segmentId as SegmentId | undefined;
+      if (!id) return;
+
+      const base = Number(obj.userData.baseEmissive ?? 0.12);
+      const ci =
+        typeof obj.userData.curveIndex === "number" ? obj.userData.curveIndex : undefined;
+      const glow = refractoryGlow(opts.tCycle, branches, id, ci);
+
+      let intensity = base;
+      if (glow >= 0.95 || ekgActive.has(id)) {
+        intensity = peak;
+      } else if (glow > 0) {
+        // Refractory afterglow — still clearly lit, fading toward recovery
+        intensity = base + (0.48 - base) * (glow / 0.55);
+      }
+      if (obj.userData.hovered) intensity = Math.max(intensity, 1.15);
+      mat.emissiveIntensity = intensity;
+
+      if (id === "accessory") {
+        mat.opacity = glow > 0 || ekgActive.has(id) ? 0.85 : 0.35;
+      }
+      if (id === "flutter") {
+        mat.opacity = glow > 0 || ekgActive.has(id) ? 0.7 : 0.45;
+      }
+    });
+  }
+
+  function pointOnSegment(id: SegmentId, u: number, curveIndex = 0): THREE.Vector3 | null {
+    const curves = curvesBySegment.get(id);
+    if (!curves?.length) {
+      if (id === "sa") return new THREE.Vector3(...SA);
+      if (id === "av") return new THREE.Vector3(...AV);
+      return null;
+    }
+    const curve = curves[Math.min(curveIndex, curves.length - 1)]!;
+    return curve.getPointAt(THREE.MathUtils.clamp(u, 0, 1), new THREE.Vector3());
+  }
+
+  function travelOnSegment(
+    id: SegmentId,
+    u: number,
+    uEnd: number,
+    curveIndex = 0,
+  ): THREE.Vector3 | null {
+    const curves = curvesBySegment.get(id);
+    if (!curves?.length) {
+      if (id === "sa") return new THREE.Vector3(0.4, -0.5, -0.2).normalize();
+      if (id === "av") return new THREE.Vector3(0.1, -0.9, 0.1).normalize();
+      return null;
+    }
+    const curve = curves[Math.min(curveIndex, curves.length - 1)]!;
+    return travelDirAt(curve, u, uEnd);
+  }
+
+  /**
+   * Impulse fronts for every branch window active at tCycle, with travel direction
+   * (respects reverse / u0–u1 so CW flutter and retrograde tracts point correctly).
+   */
+  function getActiveFronts(opts: {
+    tCycle: number;
+    finding?: string;
+    branches?: import("./pathwayTiming").BranchWindow[];
+  }): import("./pathwayTiming").ActiveFront[] {
+    const t = ((opts.tCycle % 1) + 1) % 1;
+    const branches = opts.branches ?? branchesForFinding(opts.finding);
+    const out: import("./pathwayTiming").ActiveFront[] = [];
+
+    for (const b of branches) {
+      if (t < b.t0 || t > b.t1) continue;
+      const span = Math.max(1e-4, b.t1 - b.t0);
+      const progress = (t - b.t0) / span;
+      const uStart = b.u0 ?? (b.reverse ? 1 : 0);
+      const uEnd = b.u1 ?? (b.reverse ? 0 : 1);
+      const u = uStart + (uEnd - uStart) * progress;
+      const curves = curvesBySegment.get(b.id);
+      const color = SEGMENT_COLORS[b.id];
+
+      const pushFront = (curveIndex: number) => {
+        const pt = pointOnSegment(b.id, u, curveIndex);
+        const dir = travelOnSegment(b.id, u, uEnd, curveIndex);
+        if (!pt || !dir) return;
+        out.push({
+          id: b.id,
+          pos: [pt.x, pt.y, pt.z],
+          dir: [dir.x, dir.y, dir.z],
+          color,
+          progress,
+        });
+      };
+
+      if (!curves?.length) {
+        if (b.id === "sa" || b.id === "av") pushFront(0);
+        continue;
+      }
+      if (b.curveIndex != null) pushFront(b.curveIndex);
+      else {
+        for (let ci = 0; ci < curves.length; ci++) pushFront(ci);
+      }
+    }
+    return out;
+  }
+
+  function getPathwayProbes(): PathwayProbePoint[] {
+    const branches = branchesForFinding("nsr");
+    const timing = new Map<SegmentId, { t0: number; t1: number }>();
+    for (const b of branches) {
+      const prev = timing.get(b.id);
+      if (!prev) timing.set(b.id, { t0: b.t0, t1: b.t1 });
+      else timing.set(b.id, { t0: Math.min(prev.t0, b.t0), t1: Math.max(prev.t1, b.t1) });
+    }
+
+    const probes: PathwayProbePoint[] = [];
+    const samplesPerCurve = 24;
+
+    for (const entry of curveEntries) {
+      const win = timing.get(entry.id) ?? { t0: 0.3, t1: 0.5 };
+      for (let i = 0; i <= samplesPerCurve; i++) {
+        const u = i / samplesPerCurve;
+        const pos = entry.curve.getPointAt(u);
+        const tan = travelDirAt(entry.curve, u, 1);
+        probes.push({
+          pos: [pos.x, pos.y, pos.z],
+          tangent: [tan.x, tan.y, tan.z],
+          segmentId: entry.id,
+          color: entry.color,
+          pathU: u,
+          enterT: win.t0,
+          exitT: win.t1,
+        });
+      }
+    }
+
+    // Node anchors
+    probes.push({
+      pos: [...SA],
+      tangent: [0.4, -0.5, -0.2],
+      segmentId: "sa",
+      color: SEGMENT_COLORS.sa,
+      pathU: 0,
+      enterT: 0.05,
+      exitT: 0.09,
+    });
+    probes.push({
+      pos: [...AV],
+      tangent: [0.1, -0.9, 0.1],
+      segmentId: "av",
+      color: SEGMENT_COLORS.av,
+      pathU: 0.5,
+      enterT: 0.17,
+      exitT: 0.28,
+    });
+
+    return probes;
+  }
+
+  function updateImpulse(opts: {
+    tCycle: number;
+    active: SegmentId[];
+    finding?: string;
+    branches?: import("./pathwayTiming").BranchWindow[];
+  }) {
+    const t = ((opts.tCycle % 1) + 1) % 1;
+    const branches = opts.branches ?? branchesForFinding(opts.finding);
+    const activeSet = new Set(opts.active);
+
+    type Front = {
+      id: SegmentId;
+      curveIndex: number;
+      u: number;
+      color: number;
+    };
+    const fronts: Front[] = [];
+
+    for (const b of branches) {
+      if (t < b.t0 || t > b.t1) continue;
+      // Prefer lighting whatever is physiologically on schedule;
+      // if EKG active set is present, still show scheduled anatomic branches
+      // but boost those also in activeSet
+      const uRaw = (t - b.t0) / Math.max(1e-4, b.t1 - b.t0);
+      const uStart = b.u0 ?? (b.reverse ? 1 : 0);
+      const uEnd = b.u1 ?? (b.reverse ? 0 : 1);
+      const u = uStart + (uEnd - uStart) * uRaw;
+      const curves = curvesBySegment.get(b.id);
+
+      if (!curves?.length) {
+        if (b.id === "sa" || b.id === "av") {
+          fronts.push({
+            id: b.id,
+            curveIndex: 0,
+            u,
+            color: SEGMENT_COLORS[b.id],
+          });
+        }
+        continue;
+      }
+
+      if (b.curveIndex != null) {
+        fronts.push({
+          id: b.id,
+          curveIndex: b.curveIndex,
+          u,
+          color: SEGMENT_COLORS[b.id],
+        });
+      } else {
+        // All parallel tracts of this segment (e.g. three internodal + Bachmann)
+        for (let ci = 0; ci < curves.length; ci++) {
+          fronts.push({
+            id: b.id,
+            curveIndex: ci,
+            u,
+            color: SEGMENT_COLORS[b.id],
+          });
+        }
+      }
+    }
+
+    // Hide unused pool slots
+    for (const p of pulsePool) p.visible = false;
+
+    if (!fronts.length) {
+      // Soft hold on last active node if EKG says something is lit
+      if (activeSet.has("av")) {
+        pulse.visible = true;
+        pulse.position.set(...AV);
+        if (pulse.material instanceof THREE.MeshBasicMaterial) {
+          pulse.material.color.setHex(SEGMENT_COLORS.av);
+        }
+      }
+      return;
+    }
+
+    for (let i = 0; i < fronts.length && i < pulsePool.length; i++) {
+      const f = fronts[i]!;
+      const mesh = pulsePool[i]!;
+      const pt = pointOnSegment(f.id, f.u, f.curveIndex);
+      if (!pt) {
+        if (f.id === "sa") {
+          mesh.visible = true;
+          mesh.position.set(...SA);
+        } else if (f.id === "av") {
+          mesh.visible = true;
+          mesh.position.set(...AV);
+        }
+      } else {
+        mesh.visible = true;
+        mesh.position.copy(pt);
+      }
+      mesh.scale.setScalar(i < 3 ? 1.15 : 0.9);
+      if (mesh.material instanceof THREE.MeshBasicMaterial) {
+        // Flutter circuit is thin grey — keep pulse bright so the lap is followable
+        mesh.material.color.setHex(f.id === "flutter" ? 0xe8f0f4 : f.color);
+        mesh.material.opacity = activeSet.has(f.id) || activeSet.size === 0 ? 0.95 : 0.7;
+      }
+    }
+  }
+
+  function setSegmentVisibility(id: SegmentId, visible: boolean) {
+    pathways.traverse((obj) => {
+      if (obj.userData.segmentId === id) obj.visible = visible;
+    });
+  }
+
+  function setAccessoryVisible(visible: boolean) {
+    setSegmentVisibility("accessory", visible);
+  }
+
+  resetGlow();
+  setAccessoryVisible(false);
+  setSegmentVisibility("flutter", false);
+
+  root.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(root);
+  const center = box.getCenter(new THREE.Vector3());
+  root.position.sub(center);
+
+  return {
+    root,
+    heartShell,
+    pulse,
+    setSegmentActive,
+    updateImpulse,
+    getPathwayProbes,
+    getActiveFronts,
+    setSegmentVisibility,
+    setAccessoryVisible,
+    resetGlow,
+  };
+}
