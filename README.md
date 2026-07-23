@@ -4,30 +4,7 @@ Interactive 3D cardiac conduction system with a live, time-synced **12-lead EKG*
 
 Pick classic findings (NSR, blocks, bundle branch block, AFib/flutter, VT, WPW, STEMI, and more). As the strip advances, matching pathways light up on the heart, and the cycle bar (P · PR · QRS · ST · T · TP) highlights the active ECG segment.
 
-## Local
-
-```bash
-npm install
-npm run dev
-```
-
-Build:
-
-```bash
-npm run build
-```
-
-Output is in `dist/`.
-
-## Deploy (GitHub Pages)
-
-1. Push this repo to GitHub.
-2. Repo **Settings → Pages → Build and deployment → Source: GitHub Actions**
-3. Push to `main` (or re-run the **Deploy** workflow under the Actions tab).
-
-Site URL: `https://<user>.github.io/ekg-view/`
-
-The deploy workflow runs `npm run mirror:physio` before the build so curated PhysioNet records (mitdb, afdb, …) ship as static `wfdb/` assets. That avoids browser CORS limits on physionet.org — **search + load of those teaching sets works on the live Pages site**. Local `npm run dev` still uses the Vite `/physionet` proxy for live PhysioNet access.
+**Live site:** [https://aznstevy.github.io/ekg-view/](https://aznstevy.github.io/ekg-view/)
 
 ## Controls
 
