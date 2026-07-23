@@ -265,6 +265,8 @@ function isDiscordantRepol(finding: FindingId): boolean {
   switch (finding) {
     case "lbbb":
     case "rbbb":
+    case "rbbbLafb":
+    case "rbbbLpfb":
     case "pvc":
     case "vt":
     case "vtMonoLbbb":
@@ -274,6 +276,8 @@ function isDiscordantRepol(finding: FindingId): boolean {
     case "vf":
     case "pacedVentricular":
     case "pacedDual":
+    case "pacedBiv":
+    case "av3":
     case "wpw":
       return true;
     default:
@@ -476,7 +480,8 @@ function repolFlipsDepol(finding: FindingId, mark: CycleMark): boolean {
           s.tissue === "ventricular" ||
           s.nearestId === "his" ||
           s.nearestId === "accessory" ||
-          opts.finding === "av3";
+          opts.finding === "av3" ||
+          opts.finding === "av3Junctional";
       } else if (opts.mark === "TP") {
         chamberOk = false;
       }

@@ -382,27 +382,31 @@ function sampleAfib(t: number): WaveSample {
   // Irregularly irregular narrow QRS (uneven RR)
   const beats = [0.06, 0.27, 0.41, 0.68, 0.91];
   let meta: Pick<WaveSample, "phase" | "active" | "mark"> = {
-    phase: "Fibrillatory atria · no P waves",
+    phase: "Fibrillatory atria · SA quiescent · no P waves",
     active: ["myocardiumA", "internodal"],
     mark: "TP",
   };
 
   for (const b of beats) {
-    const d = tt - b;
-    if (d >= -0.02 && d < 0.05) {
+    const inQrs = tt >= b - 0.02 && tt < b + 0.1;
+    const inT = tt >= b + 0.1 && tt < b + 0.18;
+    if (inQrs || inT) {
       leads = addLeads(leads, qrsLeads(tt, b, 0.024, 1.0, -0.06, -0.18));
-      if (Math.abs(d) < 0.035) {
+      leads = addLeads(leads, tWaveLeads(tt, b + 0.12, 0.24, 0.038));
+    }
+    if (inQrs) {
       meta = {
-        phase: "Irregular QRS (no preceding P)",
-        active: ["av", "his", "rbb", "lbb", "purkinjeR", "purkinjeL", "myocardiumV", "internodal", "myocardiumA"],
+        phase: "Irregular QRS · no preceding P · SA still silent",
+        // No "sa" — ventricles conduct without sinus origin
+        active: ["av", "his", "rbb", "lbb", "lbba", "lbbp", "purkinjeR", "purkinjeL", "myocardiumV", "internodal", "myocardiumA"],
         mark: "QRS",
       };
-      }
-    } else if (d >= 0.05 && d < 0.16) {
-      leads = addLeads(leads, tWaveLeads(tt, b + 0.11, 0.24, 0.038));
-      if (meta.mark === "TP") {
-        meta = { phase: "T wave", active: ["myocardiumV"], mark: "T" };
-      }
+    } else if (inT) {
+      meta = {
+        phase: "T wave · atria still fibrillating",
+        active: ["myocardiumV", "myocardiumA", "internodal"],
+        mark: "T",
+      };
     }
   }
 
@@ -539,16 +543,32 @@ function sampleAflutter(t: number, dir: "ccw" | "cw"): WaveSample {
   }
 
   for (const b of qrsTimes) {
-    const d = Math.abs(tt - b);
-    if (d < 0.045) {
+    const inQrs = tt >= b - 0.02 && tt < b + 0.11;
+    const inSt = tt >= b + 0.11 && tt < b + 0.16;
+    const inT = tt >= b + 0.16 && tt < b + 0.24;
+    if (inQrs || inSt || inT) {
       leads = addLeads(leads, qrsLeads(tt, b, 0.024, 1.0, -0.05, -0.16));
+      leads = addLeads(leads, tWaveLeads(tt, b + 0.15, 0.04, 0.022));
+    }
+    // QRS/ST/T meta must win over continuous F-wave "P" so the model stays in sync
+    if (inQrs) {
       meta = {
         phase: "Conducted QRS (2:1) · F waves continue",
-        active: ["av", "his", "rbb", "lbb", "purkinjeR", "purkinjeL", "myocardiumV", "flutter"],
+        active: ["av", "his", "rbb", "lbb", "lbba", "lbbp", "purkinjeR", "purkinjeL", "myocardiumV", "flutter"],
         mark: "QRS",
       };
-    } else if (tt > b && tt < b + 0.1) {
-      leads = addLeads(leads, tWaveLeads(tt, b + 0.07, 0.04, 0.022));
+    } else if (inSt) {
+      meta = {
+        phase: "ST · flutter continues",
+        active: ["myocardiumV", "flutter"],
+        mark: "ST",
+      };
+    } else if (inT) {
+      meta = {
+        phase: "T wave · flutter continues",
+        active: ["myocardiumV", "flutter"],
+        mark: "T",
+      };
     }
   }
 
@@ -590,13 +610,15 @@ function sampleAv2i(t: number): WaveSample {
     }
     if (e.qrs != null) {
       leads = addLeads(leads, addLeads(qrsLeads(tt, e.qrs), tWaveLeads(tt, e.qrs + 0.16, 0.22, 0.035)));
-      if (Math.abs(tt - e.qrs) < 0.045) {
+      if (tt >= e.qrs - 0.02 && tt < e.qrs + 0.11) {
         const pr = e.qrs - e.p;
         meta = {
           phase: pr < 0.18 ? "Conducted (shorter PR)" : pr < 0.24 ? "Conducted (longer PR)" : "Conducted (longest PR)",
-          active: ["av", "his", "rbb", "lbb", "purkinjeR", "purkinjeL", "myocardiumV"],
+          active: ["av", "his", "rbb", "lbb", "lbba", "lbbp", "purkinjeR", "purkinjeL", "myocardiumV"],
           mark: "QRS",
         };
+      } else if (tt >= e.qrs + 0.11 && tt < e.qrs + 0.22) {
+        meta = { phase: "T wave", active: ["myocardiumV"], mark: "T" };
       } else if (tt > e.p && tt < e.qrs) {
         meta = { phase: "Lengthening AV delay", active: ["av"], mark: "PR" };
       }
@@ -628,17 +650,51 @@ function sampleAv2ii(t: number): WaveSample {
     }
     if (e.qrs != null) {
       leads = addLeads(leads, addLeads(qrsLeads(tt, e.qrs), tWaveLeads(tt, e.qrs + 0.2, 0.28, 0.04)));
-      if (Math.abs(tt - e.qrs) < 0.05) {
+      if (tt >= e.qrs - 0.02 && tt < e.qrs + 0.11) {
         meta = {
           phase: "Conducted · infra-His intact",
-          active: ["his", "rbb", "lbb", "purkinjeR", "purkinjeL", "myocardiumV"],
+          active: ["his", "rbb", "lbb", "lbba", "lbbp", "purkinjeR", "purkinjeL", "myocardiumV"],
           mark: "QRS",
         };
+      } else if (tt >= e.qrs + 0.11 && tt < e.qrs + 0.24) {
+        meta = { phase: "T wave", active: ["myocardiumV"], mark: "T" };
       } else if (tt > e.p && tt < e.qrs) {
         meta = { phase: "PR interval (stable)", active: ["av"], mark: "PR" };
       }
     } else if (tt > e.p && tt < e.p + 0.16) {
       meta = { phase: "Sudden block in His–Purkinje", active: ["his"], mark: "PR" };
+    }
+  }
+  return pack(leads, meta);
+}
+
+function sampleAv3Junctional(t: number): WaveSample {
+  const tt = clamp01(t);
+  let leads = emptyLeads();
+  // Atrial ~100 · narrow junctional escape ~45
+  const pTimes = [0.04, 0.28, 0.52, 0.76];
+  for (const p of pTimes) leads = addLeads(leads, pWaveLeads(tt, p, 0.16));
+  const escapes = [0.22, 0.72];
+  for (const escape of escapes) {
+    leads = addLeads(leads, addLeads(qrsLeads(tt, escape, 0.022, 0.95), tWaveLeads(tt, escape + 0.18, 0.28, 0.045)));
+  }
+  let meta: Pick<WaveSample, "phase" | "active" | "mark"> = {
+    phase: "Complete block · junctional escape (supra-His)",
+    active: [],
+    mark: "TP",
+  };
+  if (pTimes.some((p) => Math.abs(tt - p) < 0.035)) {
+    meta = { phase: "Atrial depolarization · blocked at AV node", active: ["sa", "internodal", "myocardiumA"], mark: "P" };
+  }
+  for (const escape of escapes) {
+    if (tt >= escape - 0.02 && tt < escape + 0.1) {
+      meta = {
+        phase: "Junctional / His escape · narrow QRS",
+        active: ["his", "rbb", "lbb", "lbba", "lbbp", "purkinjeR", "purkinjeL", "myocardiumV"],
+        mark: "QRS",
+      };
+    } else if (tt >= escape + 0.1 && tt < escape + 0.24) {
+      meta = { phase: "Escape T · A–V dissociation", active: ["myocardiumV"], mark: "T" };
     }
   }
   return pack(leads, meta);
@@ -658,16 +714,16 @@ function sampleAv3(t: number): WaveSample {
     );
   }
   let meta: Pick<WaveSample, "phase" | "active" | "mark"> = {
-    phase: "A–V dissociation",
+    phase: "Complete block · ventricular escape (infra-His)",
     active: [],
     mark: "TP",
   };
   if (pTimes.some((p) => Math.abs(tt - p) < 0.035)) {
-    meta = { phase: "Atrial depolarization (no conduction)", active: ["sa", "internodal", "myocardiumA"], mark: "P" };
+    meta = { phase: "Atrial depolarization · blocked below His", active: ["sa", "internodal", "myocardiumA"], mark: "P" };
   }
   for (const escape of escapes) {
     if (Math.abs(tt - escape) < 0.07) {
-      meta = { phase: "Ventricular escape focus", active: ["purkinjeL", "purkinjeR", "myocardiumV"], mark: "QRS" };
+      meta = { phase: "Ventricular escape focus · wide QRS", active: ["purkinjeL", "purkinjeR", "myocardiumV"], mark: "QRS" };
     } else if (tt > escape + 0.07 && tt < escape + 0.22) {
       meta = { phase: "Escape repolarization · dissociated", active: ["myocardiumV"], mark: "T" };
     }
@@ -730,10 +786,10 @@ function sampleRbbb(t: number): WaveSample {
     phaseFor(tt, [
       { start: 0.05, end: 0.16, phase: "SA · atria", active: ["sa", "internodal", "myocardiumA"], mark: "P" },
       { start: 0.16, end: 0.28, phase: "AV · His", active: ["av", "his"], mark: "PR" },
-      { start: 0.28, end: 0.36, phase: "Left bundle first", active: ["lbb", "lbba", "lbbp", "purkinjeL", "myocardiumV"], mark: "QRS" },
-      { start: 0.36, end: 0.48, phase: "Delayed right bundle / RV", active: ["rbb", "purkinjeR", "myocardiumV"], mark: "QRS" },
-      { start: 0.48, end: 0.55, phase: "ST segment", active: ["myocardiumV"], mark: "ST" },
-      { start: 0.55, end: 0.72, phase: "Secondary T-wave changes", active: ["myocardiumV"], mark: "T" },
+      { start: 0.28, end: 0.38, phase: "Left bundle first · LV (RBB blocked)", active: ["lbb", "lbba", "lbbp", "purkinjeL", "myocardiumV"], mark: "QRS" },
+      { start: 0.38, end: 0.52, phase: "Transseptal → distal right / RV", active: ["rbb", "purkinjeR", "myocardiumV"], mark: "QRS" },
+      { start: 0.52, end: 0.58, phase: "ST segment", active: ["myocardiumV"], mark: "ST" },
+      { start: 0.58, end: 0.75, phase: "Secondary T-wave changes", active: ["myocardiumV"], mark: "T" },
     ]),
   );
 }
@@ -764,10 +820,182 @@ function sampleLbbb(t: number): WaveSample {
     phaseFor(tt, [
       { start: 0.05, end: 0.16, phase: "SA · atria", active: ["sa", "internodal", "myocardiumA"], mark: "P" },
       { start: 0.16, end: 0.28, phase: "AV · His", active: ["av", "his"], mark: "PR" },
-      { start: 0.28, end: 0.36, phase: "Right bundle first", active: ["rbb", "purkinjeR", "myocardiumV"], mark: "QRS" },
-      { start: 0.36, end: 0.52, phase: "Delayed left bundle / LV", active: ["lbb", "lbba", "lbbp", "purkinjeL", "myocardiumV"], mark: "QRS" },
-      { start: 0.52, end: 0.58, phase: "ST segment", active: ["myocardiumV"], mark: "ST" },
-      { start: 0.58, end: 0.78, phase: "Discordant T waves", active: ["myocardiumV"], mark: "T" },
+      { start: 0.28, end: 0.38, phase: "Right bundle first · RV (LBB blocked)", active: ["rbb", "purkinjeR", "myocardiumV"], mark: "QRS" },
+      { start: 0.38, end: 0.54, phase: "Transseptal → distal left / LV", active: ["lbb", "lbba", "lbbp", "purkinjeL", "myocardiumV"], mark: "QRS" },
+      { start: 0.54, end: 0.6, phase: "ST segment", active: ["myocardiumV"], mark: "ST" },
+      { start: 0.6, end: 0.8, phase: "Discordant T waves", active: ["myocardiumV"], mark: "T" },
+    ]),
+  );
+}
+
+/** Classic LAFB: left axis, qR I/aVL, rS inferior — QRS usually not very wide */
+function sampleLafb(t: number): WaveSample {
+  const tt = clamp01(t);
+  const axis: Partial<Record<LeadId, number>> = {
+    I: 0.75,
+    II: -0.55,
+    III: -0.85,
+    aVR: -0.15,
+    aVL: 0.95,
+    aVF: -0.7,
+    V1: -0.35,
+    V2: -0.15,
+    V3: 0.35,
+    V4: 0.75,
+    V5: 0.85,
+    V6: 0.7,
+  };
+  let leads = pWaveLeads(tt, 0.1);
+  leads = addLeads(
+    leads,
+    scaleLeads(
+      gauss(tt, 0.3, 0.012, -0.12) + gauss(tt, 0.325, 0.02, 0.85) + gauss(tt, 0.355, 0.018, -0.2),
+      axis,
+    ),
+  );
+  leads = addLeads(leads, tWaveLeads(tt, 0.58, 0.28, 0.045));
+  return pack(
+    leads,
+    phaseFor(tt, [
+      { start: 0.05, end: 0.16, phase: "SA · atria", active: ["sa", "internodal", "myocardiumA"], mark: "P" },
+      { start: 0.16, end: 0.28, phase: "AV · His", active: ["av", "his"], mark: "PR" },
+      { start: 0.28, end: 0.36, phase: "RBB + LPF (LAF blocked)", active: ["rbb", "lbb", "lbbp", "purkinjeR", "purkinjeL", "myocardiumV"], mark: "QRS" },
+      { start: 0.36, end: 0.46, phase: "Late anterior LV via myocardium", active: ["lbba", "myocardiumV"], mark: "QRS" },
+      { start: 0.46, end: 0.54, phase: "ST", active: ["myocardiumV"], mark: "ST" },
+      { start: 0.54, end: 0.72, phase: "T wave", active: ["myocardiumV"], mark: "T" },
+    ]),
+  );
+}
+
+/** Classic LPFB: right axis, rS I/aVL, qR inferior */
+function sampleLpfb(t: number): WaveSample {
+  const tt = clamp01(t);
+  const axis: Partial<Record<LeadId, number>> = {
+    I: -0.55,
+    II: 0.85,
+    III: 0.95,
+    aVR: -0.25,
+    aVL: -0.7,
+    aVF: 0.9,
+    V1: -0.3,
+    V2: -0.1,
+    V3: 0.4,
+    V4: 0.8,
+    V5: 0.7,
+    V6: 0.45,
+  };
+  let leads = pWaveLeads(tt, 0.1);
+  leads = addLeads(
+    leads,
+    scaleLeads(
+      gauss(tt, 0.3, 0.012, -0.1) + gauss(tt, 0.325, 0.02, 0.85) + gauss(tt, 0.355, 0.018, -0.18),
+      axis,
+    ),
+  );
+  leads = addLeads(leads, tWaveLeads(tt, 0.58, 0.28, 0.045));
+  return pack(
+    leads,
+    phaseFor(tt, [
+      { start: 0.05, end: 0.16, phase: "SA · atria", active: ["sa", "internodal", "myocardiumA"], mark: "P" },
+      { start: 0.16, end: 0.28, phase: "AV · His", active: ["av", "his"], mark: "PR" },
+      { start: 0.28, end: 0.36, phase: "RBB + LAF (LPF blocked)", active: ["rbb", "lbb", "lbba", "purkinjeR", "purkinjeL", "myocardiumV"], mark: "QRS" },
+      { start: 0.36, end: 0.46, phase: "Late posterior LV via myocardium", active: ["lbbp", "myocardiumV"], mark: "QRS" },
+      { start: 0.46, end: 0.54, phase: "ST", active: ["myocardiumV"], mark: "ST" },
+      { start: 0.54, end: 0.72, phase: "T wave", active: ["myocardiumV"], mark: "T" },
+    ]),
+  );
+}
+
+/** RBBB + left axis (LAFB) */
+function sampleRbbbLafb(t: number): WaveSample {
+  const tt = clamp01(t);
+  const early: Partial<Record<LeadId, number>> = {
+    I: 0.7,
+    II: -0.45,
+    III: -0.75,
+    aVR: -0.2,
+    aVL: 0.9,
+    aVF: -0.6,
+    V1: -0.3,
+    V2: -0.2,
+    V3: 0.2,
+    V4: 0.55,
+    V5: 0.65,
+    V6: 0.55,
+  };
+  const lateR: Partial<Record<LeadId, number>> = {
+    I: -0.4,
+    II: -0.2,
+    III: 0.1,
+    aVR: 0.3,
+    aVL: -0.35,
+    aVF: -0.05,
+    V1: 1.1,
+    V2: 0.9,
+    V3: 0.3,
+    V4: -0.1,
+    V5: -0.4,
+    V6: -0.5,
+  };
+  let leads = pWaveLeads(tt, 0.1);
+  leads = addLeads(leads, scaleLeads(gauss(tt, 0.3, 0.018, -0.1) + gauss(tt, 0.325, 0.022, 0.7), early));
+  leads = addLeads(leads, scaleLeads(gauss(tt, 0.38, 0.028, -0.12) + gauss(tt, 0.42, 0.03, 0.55), lateR));
+  leads = addLeads(leads, tWaveLeads(tt, 0.64, 0.22, 0.05, { V1: -0.5, I: 0.35, aVL: 0.4, II: -0.2 }));
+  return pack(
+    leads,
+    phaseFor(tt, [
+      { start: 0.05, end: 0.16, phase: "SA · atria", active: ["sa", "internodal", "myocardiumA"], mark: "P" },
+      { start: 0.16, end: 0.28, phase: "AV · His", active: ["av", "his"], mark: "PR" },
+      { start: 0.28, end: 0.38, phase: "LPF only (RBB + LAF blocked)", active: ["lbb", "lbbp", "purkinjeL", "myocardiumV"], mark: "QRS" },
+      { start: 0.38, end: 0.54, phase: "Delayed RBB + anterior LV", active: ["rbb", "lbba", "purkinjeR", "myocardiumV"], mark: "QRS" },
+      { start: 0.54, end: 0.75, phase: "Secondary T changes", active: ["myocardiumV"], mark: "T" },
+    ]),
+  );
+}
+
+/** RBBB + right axis (LPFB) */
+function sampleRbbbLpfb(t: number): WaveSample {
+  const tt = clamp01(t);
+  const early: Partial<Record<LeadId, number>> = {
+    I: -0.45,
+    II: 0.75,
+    III: 0.9,
+    aVR: -0.2,
+    aVL: -0.65,
+    aVF: 0.85,
+    V1: -0.3,
+    V2: -0.15,
+    V3: 0.25,
+    V4: 0.6,
+    V5: 0.55,
+    V6: 0.35,
+  };
+  const lateR: Partial<Record<LeadId, number>> = {
+    I: -0.35,
+    II: -0.15,
+    III: 0.15,
+    aVR: 0.3,
+    aVL: -0.3,
+    aVF: 0.05,
+    V1: 1.1,
+    V2: 0.9,
+    V3: 0.3,
+    V4: -0.1,
+    V5: -0.35,
+    V6: -0.45,
+  };
+  let leads = pWaveLeads(tt, 0.1);
+  leads = addLeads(leads, scaleLeads(gauss(tt, 0.3, 0.018, -0.1) + gauss(tt, 0.325, 0.022, 0.7), early));
+  leads = addLeads(leads, scaleLeads(gauss(tt, 0.38, 0.028, -0.12) + gauss(tt, 0.42, 0.03, 0.55), lateR));
+  leads = addLeads(leads, tWaveLeads(tt, 0.64, 0.22, 0.05, { V1: -0.5, III: 0.35, aVF: 0.3, I: -0.2 }));
+  return pack(
+    leads,
+    phaseFor(tt, [
+      { start: 0.05, end: 0.16, phase: "SA · atria", active: ["sa", "internodal", "myocardiumA"], mark: "P" },
+      { start: 0.16, end: 0.28, phase: "AV · His", active: ["av", "his"], mark: "PR" },
+      { start: 0.28, end: 0.38, phase: "LAF only (RBB + LPF blocked)", active: ["lbb", "lbba", "purkinjeL", "myocardiumV"], mark: "QRS" },
+      { start: 0.38, end: 0.54, phase: "Delayed RBB + posterior LV", active: ["rbb", "lbbp", "purkinjeR", "myocardiumV"], mark: "QRS" },
+      { start: 0.54, end: 0.75, phase: "Secondary T changes", active: ["myocardiumV"], mark: "T" },
     ]),
   );
 }
@@ -1164,7 +1392,7 @@ function samplePacedAtrial(t: number): WaveSample {
   return pack(
     leads,
     phaseFor(tt, [
-      { start: 0.05, end: 0.1, phase: "Atrial pacing spike", active: ["sa", "myocardiumA"], mark: "P" },
+      { start: 0.05, end: 0.1, phase: "Atrial pacing spike", active: [], mark: "P" },
       { start: 0.1, end: 0.18, phase: "Captured P wave", active: ["sa", "internodal", "myocardiumA"], mark: "P" },
       { start: 0.18, end: 0.3, phase: "AV conduction", active: ["av"], mark: "PR" },
       { start: 0.3, end: 0.42, phase: "Narrow QRS", active: ["his", "rbb", "lbb", "purkinjeR", "purkinjeL", "myocardiumV"], mark: "QRS" },
@@ -1176,11 +1404,13 @@ function samplePacedAtrial(t: number): WaveSample {
 
 function samplePacedVentricular(t: number): WaveSample {
   const tt = clamp01(t);
-  let leads = paceSpike(tt, 0.22, 0.6);
-  leads = addLeads(leads, pacedQrsLeads(tt, 0.28, 1.0));
+  const spikeT = 0.22;
+  const qrsMu = 0.3;
+  let leads = paceSpike(tt, spikeT, 0.6);
+  leads = addLeads(leads, pacedQrsLeads(tt, qrsMu, 1.0));
   leads = addLeads(
     leads,
-    scaleLeads(gauss(tt, 0.62, 0.055, 0.32), {
+    scaleLeads(gauss(tt, 0.64, 0.055, 0.32), {
       I: -0.7,
       II: -0.35,
       III: 0.25,
@@ -1198,9 +1428,9 @@ function samplePacedVentricular(t: number): WaveSample {
   return pack(
     leads,
     phaseFor(tt, [
-      { start: 0.18, end: 0.24, phase: "Ventricular pacing spike", active: ["purkinjeR", "myocardiumV"], mark: "QRS" },
-      { start: 0.24, end: 0.48, phase: "Captured wide QRS (LBBB-like)", active: ["purkinjeR", "purkinjeL", "myocardiumV"], mark: "QRS" },
-      { start: 0.48, end: 0.58, phase: "ST", active: ["myocardiumV"], mark: "ST" },
+      { start: 0.2, end: 0.24, phase: "Ventricular pacing spike", active: [], mark: "QRS" },
+      { start: 0.24, end: 0.5, phase: "Captured wide QRS (LBBB-like)", active: ["purkinjeR", "purkinjeL", "rbb", "myocardiumV"], mark: "QRS" },
+      { start: 0.5, end: 0.58, phase: "ST", active: ["myocardiumV"], mark: "ST" },
       { start: 0.58, end: 0.8, phase: "Discordant T", active: ["myocardiumV"], mark: "T" },
     ]),
   );
@@ -1211,10 +1441,10 @@ function samplePacedDual(t: number): WaveSample {
   let leads = paceSpike(tt, 0.08, 0.45);
   leads = addLeads(leads, pWaveLeads(tt, 0.12, 0.16));
   leads = addLeads(leads, paceSpike(tt, 0.28, 0.55));
-  leads = addLeads(leads, pacedQrsLeads(tt, 0.34, 0.95));
+  leads = addLeads(leads, pacedQrsLeads(tt, 0.36, 0.95));
   leads = addLeads(
     leads,
-    scaleLeads(gauss(tt, 0.66, 0.05, 0.3), {
+    scaleLeads(gauss(tt, 0.68, 0.05, 0.3), {
       I: -0.65,
       II: -0.3,
       III: 0.2,
@@ -1232,12 +1462,64 @@ function samplePacedDual(t: number): WaveSample {
   return pack(
     leads,
     phaseFor(tt, [
-      { start: 0.05, end: 0.11, phase: "Atrial pacing spike", active: ["sa", "myocardiumA"], mark: "P" },
+      { start: 0.05, end: 0.11, phase: "Atrial pacing spike · RA lead", active: ["sa", "myocardiumA"], mark: "P" },
       { start: 0.11, end: 0.2, phase: "Captured P", active: ["internodal", "myocardiumA"], mark: "P" },
       { start: 0.2, end: 0.28, phase: "AV delay (paced)", active: ["av"], mark: "PR" },
-      { start: 0.28, end: 0.34, phase: "Ventricular pacing spike", active: ["myocardiumV"], mark: "QRS" },
-      { start: 0.34, end: 0.52, phase: "Captured wide QRS", active: ["purkinjeR", "purkinjeL", "myocardiumV"], mark: "QRS" },
+      { start: 0.28, end: 0.32, phase: "Ventricular pacing spike · RV apical", active: [], mark: "QRS" },
+      { start: 0.32, end: 0.52, phase: "Captured wide QRS", active: ["purkinjeR", "purkinjeL", "myocardiumV"], mark: "QRS" },
       { start: 0.52, end: 0.8, phase: "Repolarization", active: ["myocardiumV"], mark: "T" },
+    ]),
+  );
+}
+
+function samplePacedLbap(t: number): WaveSample {
+  const tt = clamp01(t);
+  let leads = paceSpike(tt, 0.08, 0.4);
+  leads = addLeads(leads, pWaveLeads(tt, 0.12, 0.16));
+  leads = addLeads(leads, paceSpike(tt, 0.26, 0.5));
+  // Narrower than RV apical — conduction-system capture after spike
+  leads = addLeads(leads, qrsLeads(tt, 0.34, 0.026, 1.05));
+  leads = addLeads(leads, scaleLeads(gauss(tt, 0.36, 0.02, 0.15), { V1: -0.2, I: 0.15, V6: 0.2 }));
+  leads = addLeads(leads, tWaveLeads(tt, 0.6, 0.26, 0.045));
+  return pack(
+    leads,
+    phaseFor(tt, [
+      { start: 0.05, end: 0.11, phase: "Atrial pacing spike · RA", active: ["sa", "myocardiumA"], mark: "P" },
+      { start: 0.11, end: 0.2, phase: "Captured P", active: ["internodal", "myocardiumA"], mark: "P" },
+      { start: 0.2, end: 0.26, phase: "AV delay", active: ["av"], mark: "PR" },
+      { start: 0.26, end: 0.3, phase: "LBAP spike · left bundle area", active: [], mark: "QRS" },
+      { start: 0.3, end: 0.48, phase: "Physiologic / narrow QRS", active: ["lbb", "lbba", "lbbp", "rbb", "purkinjeL", "purkinjeR", "myocardiumV"], mark: "QRS" },
+      { start: 0.48, end: 0.75, phase: "Repolarization", active: ["myocardiumV"], mark: "T" },
+    ]),
+  );
+}
+
+function samplePacedBiv(t: number): WaveSample {
+  const tt = clamp01(t);
+  let leads = paceSpike(tt, 0.08, 0.4);
+  leads = addLeads(leads, pWaveLeads(tt, 0.12, 0.15));
+  leads = addLeads(leads, paceSpike(tt, 0.27, 0.55));
+  // Fusion QRS — after BiV spike
+  leads = addLeads(leads, pacedQrsLeads(tt, 0.34, 0.7));
+  leads = addLeads(leads, qrsLeads(tt, 0.36, 0.022, 0.45));
+  leads = addLeads(
+    leads,
+    scaleLeads(gauss(tt, 0.66, 0.05, 0.22), {
+      I: -0.35,
+      II: -0.15,
+      V1: 0.4,
+      V6: -0.4,
+    }),
+  );
+  return pack(
+    leads,
+    phaseFor(tt, [
+      { start: 0.05, end: 0.11, phase: "Atrial pacing spike · RA", active: ["sa", "myocardiumA"], mark: "P" },
+      { start: 0.11, end: 0.2, phase: "Captured P", active: ["internodal", "myocardiumA"], mark: "P" },
+      { start: 0.2, end: 0.27, phase: "AV delay", active: ["av"], mark: "PR" },
+      { start: 0.27, end: 0.31, phase: "BiV spike · RV + LV (CS)", active: [], mark: "QRS" },
+      { start: 0.31, end: 0.5, phase: "Fusion QRS · CRT capture", active: ["purkinjeR", "purkinjeL", "rbb", "lbb", "myocardiumV"], mark: "QRS" },
+      { start: 0.5, end: 0.8, phase: "Repolarization", active: ["myocardiumV"], mark: "T" },
     ]),
   );
 }
@@ -1282,10 +1564,12 @@ function sampleFailureToCapture(t: number): WaveSample {
     mark: "TP",
   };
   if ([0.12, 0.38, 0.64].some((s) => Math.abs(tt - s) < 0.04)) {
-    meta = { phase: "Pacing spike · no capture", active: [], mark: "QRS" };
+    meta = { phase: "Pacing spike · no capture", active: [], mark: "TP" };
   }
-  if (Math.abs(tt - 0.7) < 0.08) {
-    meta = { phase: "Spike with capture", active: ["purkinjeR", "myocardiumV"], mark: "QRS" };
+  if (tt >= 0.68 && tt < 0.88) {
+    meta = { phase: "Spike with capture", active: ["purkinjeR", "purkinjeL", "myocardiumV"], mark: "QRS" };
+  } else if (tt >= 0.88 && tt < 0.98) {
+    meta = { phase: "Captured T wave", active: ["myocardiumV"], mark: "T" };
   }
   return pack(leads, meta);
 }
@@ -1467,8 +1751,13 @@ const SAMPLERS: Record<FindingId, (t: number) => WaveSample> = {
   av2i: sampleAv2i,
   av2ii: sampleAv2ii,
   av3: sampleAv3,
+  av3Junctional: sampleAv3Junctional,
   rbbb: sampleRbbb,
   lbbb: sampleLbbb,
+  lafb: sampleLafb,
+  lpfb: sampleLpfb,
+  rbbbLafb: sampleRbbbLafb,
+  rbbbLpfb: sampleRbbbLpfb,
   pvc: samplePvc,
   vt: sampleVt,
   vtMonoLbbb: sampleVtMonoLbbb,
@@ -1481,6 +1770,8 @@ const SAMPLERS: Record<FindingId, (t: number) => WaveSample> = {
   pacedAtrial: samplePacedAtrial,
   pacedVentricular: samplePacedVentricular,
   pacedDual: samplePacedDual,
+  pacedLbap: samplePacedLbap,
+  pacedBiv: samplePacedBiv,
   failureToPace: sampleFailureToPace,
   failureToCapture: sampleFailureToCapture,
   failureToSense: sampleFailureToSense,

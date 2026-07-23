@@ -864,6 +864,7 @@ export type ConductionSystem = {
     active: SegmentId[];
     tCycle: number;
     finding?: string;
+    mark?: string;
     branches?: import("./pathwayTiming").BranchWindow[];
     intensity?: number;
   }) => void;
@@ -871,6 +872,7 @@ export type ConductionSystem = {
     tCycle: number;
     active: SegmentId[];
     finding?: string;
+    mark?: string;
     branches?: import("./pathwayTiming").BranchWindow[];
   }) => void;
   getPathwayProbes: () => PathwayProbePoint[];
@@ -879,10 +881,16 @@ export type ConductionSystem = {
   getActiveFronts: (opts: {
     tCycle: number;
     finding?: string;
+    mark?: string;
     branches?: import("./pathwayTiming").BranchWindow[];
   }) => import("./pathwayTiming").ActiveFront[];
   setSegmentVisibility: (id: SegmentId, visible: boolean) => void;
   setAccessoryVisible: (visible: boolean) => void;
+  /** Highlight AV-nodal (supra-His) vs infra-His block level */
+  setBlockSite: (site: "none" | "supra-his" | "infra-his") => void;
+  /** Place lesion markers on blocked bundle / fascicle segments */
+  setBranchBlocks: (segmentIds: SegmentId[]) => void;
+  updateBlockSitePulse: (timeSec: number) => void;
   resetGlow: () => void;
 };
 
@@ -905,6 +913,18 @@ export function createConductionSystem(): ConductionSystem {
   const curveEntries: CurveEntry[] = [];
   const curvesBySegment = new Map<SegmentId, THREE.CatmullRomCurve3[]>();
 
+  function isVentricularSeg(id: SegmentId): boolean {
+    return (
+      id === "his" ||
+      id === "rbb" ||
+      id === "lbb" ||
+      id === "lbba" ||
+      id === "lbbp" ||
+      id === "purkinjeR" ||
+      id === "purkinjeL" ||
+      id === "myocardiumV"
+    );
+  }
   for (const path of PATHS) {
     const mesh = createPathMesh(path);
     pathways.add(mesh);
@@ -953,6 +973,256 @@ export function createConductionSystem(): ConductionSystem {
   pathways.add(saMain, saSup, saInf, avNode, hisBranch);
   root.add(pathways);
 
+  // Animated “block level” markers (supra-His vs infra-His)
+  const blockSiteGroup = new THREE.Group();
+  blockSiteGroup.name = "blockSite";
+  blockSiteGroup.visible = false;
+
+  function makeBlockMarker(color: number, label: string, tangent: [number, number, number]): THREE.Group {
+    const g = new THREE.Group();
+    const n = new THREE.Vector3(...tangent).normalize();
+    const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
+
+    const disc = new THREE.Mesh(
+      new THREE.CircleGeometry(0.1, 28),
+      new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.45,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    disc.setRotationFromQuaternion(quat);
+    const rim = new THREE.Mesh(
+      new THREE.RingGeometry(0.09, 0.11, 28),
+      new THREE.MeshBasicMaterial({
+        color: 0xffe8ec,
+        transparent: true,
+        opacity: 0.9,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    rim.setRotationFromQuaternion(quat);
+    g.add(disc, rim);
+
+    const hatch = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.14, 0.014),
+      new THREE.MeshBasicMaterial({
+        color: 0xfff6f8,
+        transparent: true,
+        opacity: 0.95,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    hatch.setRotationFromQuaternion(quat);
+    g.add(hatch);
+    const hatch2 = hatch.clone();
+    hatch2.rotateZ(Math.PI / 2);
+    g.add(hatch2);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 256;
+    canvas.height = 64;
+    const ctx = canvas.getContext("2d")!;
+    ctx.clearRect(0, 0, 256, 64);
+    ctx.font = "600 26px Outfit, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "#e8eef2";
+    ctx.fillText(label, 128, 32);
+    const sprite = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: new THREE.CanvasTexture(canvas),
+        transparent: true,
+        depthTest: false,
+        depthWrite: false,
+      }),
+    );
+    sprite.scale.set(0.55, 0.14, 1);
+    sprite.position.set(0.2, 0.08, 0.05);
+    g.add(sprite);
+    return g;
+  }
+
+  // Plane normals ≈ conduction direction at the block level
+  const supraMarker = makeBlockMarker(0xff7a4a, "Block · supra-His", [0.15, -0.9, 0.2]);
+  supraMarker.position.set(...AV);
+  supraMarker.position.y += 0.02;
+  const infraMarker = makeBlockMarker(0xff5e6c, "Block · infra-His", [0.05, -0.95, 0.15]);
+  infraMarker.position.set(...HIS_PEN);
+  blockSiteGroup.add(supraMarker, infraMarker);
+  root.add(blockSiteGroup);
+
+  let blockSiteMode: "none" | "supra-his" | "infra-his" = "none";
+
+  function setBlockSite(site: "none" | "supra-his" | "infra-his") {
+    blockSiteMode = site;
+    blockSiteGroup.visible = site !== "none";
+    supraMarker.visible = site === "supra-his";
+    infraMarker.visible = site === "infra-his";
+  }
+
+  const branchLesionGroup = new THREE.Group();
+  branchLesionGroup.name = "branchLesions";
+  root.add(branchLesionGroup);
+
+  function makeBranchLesionMarker(color: number, label: string, tangent: THREE.Vector3): THREE.Group {
+    const g = new THREE.Group();
+
+    // Thin disc cutting across the conduction tract (normal ≈ travel direction)
+    const disc = new THREE.Mesh(
+      new THREE.CircleGeometry(0.09, 28),
+      new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.42,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    const rim = new THREE.Mesh(
+      new THREE.RingGeometry(0.082, 0.098, 28),
+      new THREE.MeshBasicMaterial({
+        color: 0xffe8ec,
+        transparent: true,
+        opacity: 0.85,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    // Default CircleGeometry faces +Z; aim +Z along pathway tangent
+    const n = tangent.clone().normalize();
+    if (n.lengthSq() < 1e-8) n.set(0, 1, 0);
+    const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
+    disc.setRotationFromQuaternion(quat);
+    rim.setRotationFromQuaternion(quat);
+    g.add(disc, rim);
+
+    // Small hatch on the plane to read as a “cut”
+    const hatch = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.12, 0.012),
+      new THREE.MeshBasicMaterial({
+        color: 0xfff6f8,
+        transparent: true,
+        opacity: 0.9,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    hatch.setRotationFromQuaternion(quat);
+    g.add(hatch);
+    const hatch2 = hatch.clone();
+    hatch2.rotateZ(Math.PI / 2);
+    g.add(hatch2);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 192;
+    canvas.height = 48;
+    const ctx = canvas.getContext("2d")!;
+    ctx.clearRect(0, 0, 192, 48);
+    ctx.font = "600 22px Outfit, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "#f0e6e8";
+    ctx.fillText(label, 96, 24);
+    const sprite = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: new THREE.CanvasTexture(canvas),
+        transparent: true,
+        depthTest: false,
+        depthWrite: false,
+      }),
+    );
+    sprite.scale.set(0.42, 0.11, 1);
+    sprite.position.copy(n.clone().multiplyScalar(0.02)).add(new THREE.Vector3(0.12, 0.05, 0));
+    g.add(sprite);
+    return g;
+  }
+
+  const LESION_LABEL: Partial<Record<SegmentId, string>> = {
+    rbb: "Block · RBB",
+    lbb: "Block · LBB",
+    lbba: "Block · LAF",
+    lbbp: "Block · LPF",
+  };
+
+  function setBranchBlocks(segmentIds: SegmentId[]) {
+    while (branchLesionGroup.children.length) {
+      branchLesionGroup.remove(branchLesionGroup.children[0]!);
+    }
+    const unique = [...new Set(segmentIds)];
+    for (const id of unique) {
+      const curves = curvesBySegment.get(id);
+      if (!curves?.length) continue;
+      // Proximal lesion on primary tract
+      const u = 0.22;
+      const curve = curves[0]!;
+      const pt = curve.getPointAt(u);
+      const tangent = curve.getTangentAt(u).normalize();
+      const marker = makeBranchLesionMarker(
+        SEGMENT_COLORS[id] ?? 0xff6680,
+        LESION_LABEL[id] ?? `Block · ${id}`,
+        tangent,
+      );
+      marker.position.copy(pt);
+      branchLesionGroup.add(marker);
+
+      // Dim proximal pathway meshes for this segment
+      pathways.traverse((obj) => {
+        if (!(obj instanceof THREE.Mesh)) return;
+        if (obj.userData.segmentId !== id) return;
+        const mat = obj.material;
+        if (mat instanceof THREE.MeshStandardMaterial) {
+          mat.color.setHex(0x4a5058);
+          mat.emissive.setHex(0x2a1018);
+          mat.emissiveIntensity = 0.2;
+          mat.opacity = 0.45;
+          mat.transparent = true;
+          obj.userData.lesioned = true;
+        }
+      });
+    }
+    // Restore non-lesioned pathways that may have been dimmed previously
+    pathways.traverse((obj) => {
+      if (!(obj instanceof THREE.Mesh)) return;
+      const id = obj.userData.segmentId as SegmentId | undefined;
+      if (!id || unique.includes(id)) return;
+      if (!obj.userData.lesioned) return;
+      obj.userData.lesioned = false;
+      const mat = obj.material;
+      if (mat instanceof THREE.MeshStandardMaterial) {
+        mat.color.setHex(SEGMENT_COLORS[id] ?? 0xffffff);
+        mat.emissive.setHex(SEGMENT_COLORS[id] ?? 0xffffff);
+        mat.emissiveIntensity = Number(obj.userData.baseEmissive ?? 0.12);
+        mat.opacity = id === "accessory" ? 0.35 : id === "flutter" ? 0.45 : 1;
+        mat.transparent = id === "accessory" || id === "flutter";
+      }
+    });
+    branchLesionGroup.visible = unique.length > 0;
+  }
+
+  function updateBlockSitePulse(timeSec: number) {
+    if (blockSiteMode === "none" && branchLesionGroup.children.length === 0) return;
+    if (blockSiteMode !== "none") {
+      const m = blockSiteMode === "supra-his" ? supraMarker : infraMarker;
+      const pulse = 0.85 + 0.15 * Math.sin(timeSec * 4.2);
+      m.scale.setScalar(pulse);
+      m.traverse((obj) => {
+        if (obj instanceof THREE.Mesh && obj.material instanceof THREE.MeshBasicMaterial) {
+          obj.material.opacity = 0.55 + 0.4 * (0.5 + 0.5 * Math.sin(timeSec * 5));
+        }
+      });
+    }
+    for (let i = 0; i < branchLesionGroup.children.length; i++) {
+      const child = branchLesionGroup.children[i]!;
+      const pulse = 0.9 + 0.12 * Math.sin(timeSec * 4.5 + i);
+      child.scale.setScalar(pulse);
+    }
+  }
+
   const guides = new THREE.Group();
   guides.name = "anatomyGuides";
   for (const g of ANATOMY_GUIDES) {
@@ -988,16 +1258,23 @@ export function createConductionSystem(): ConductionSystem {
    * Light segments that are conducting now, and keep a softer afterglow
    * through their refractory period until they can activate again.
    */
+  /**
+   * Drive pathway emissive glow. Ventricular tracts only light during QRS/ST/T
+   * (or when EKG explicitly lists them) so atrial marks can't leave the ventricles lit.
+   */
   function setSegmentActive(opts: {
     active: SegmentId[];
     tCycle: number;
     finding?: string;
+    mark?: string;
     branches?: import("./pathwayTiming").BranchWindow[];
     intensity?: number;
   }) {
     const peak = opts.intensity ?? 0.95;
     const branches = opts.branches ?? branchesForFinding(opts.finding);
     const ekgActive = new Set(opts.active);
+    const mark = opts.mark ?? "TP";
+    const ventPhase = mark === "QRS" || mark === "ST" || mark === "T";
 
     pathways.traverse((obj) => {
       if (!(obj instanceof THREE.Mesh)) return;
@@ -1010,13 +1287,25 @@ export function createConductionSystem(): ConductionSystem {
       const base = Number(obj.userData.baseEmissive ?? 0.12);
       const ci =
         typeof obj.userData.curveIndex === "number" ? obj.userData.curveIndex : undefined;
-      const glow = refractoryGlow(opts.tCycle, branches, id, ci);
+      let glow = refractoryGlow(opts.tCycle, branches, id, ci);
+
+      // AFib: SA node is not the pacemaker — keep it visually quenched
+      if (id === "sa") {
+        if (opts.finding === "afib") {
+          mat.emissiveIntensity = 0.03;
+          mat.opacity = 0.32;
+          return;
+        }
+        mat.opacity = 0.95;
+      }
+
+      // Schedule alone must not light ventricles during atrial / idle marks
+      if (isVentricularSeg(id) && !ventPhase && !ekgActive.has(id)) glow = 0;
 
       let intensity = base;
       if (glow >= 0.95 || ekgActive.has(id)) {
         intensity = peak;
       } else if (glow > 0) {
-        // Refractory afterglow — still clearly lit, fading toward recovery
         intensity = base + (0.48 - base) * (glow / 0.55);
       }
       if (obj.userData.hovered) intensity = Math.max(intensity, 1.15);
@@ -1065,14 +1354,18 @@ export function createConductionSystem(): ConductionSystem {
   function getActiveFronts(opts: {
     tCycle: number;
     finding?: string;
+    mark?: string;
     branches?: import("./pathwayTiming").BranchWindow[];
   }): import("./pathwayTiming").ActiveFront[] {
     const t = ((opts.tCycle % 1) + 1) % 1;
     const branches = opts.branches ?? branchesForFinding(opts.finding);
+    const mark = opts.mark ?? "TP";
+    const ventPhase = mark === "QRS" || mark === "ST" || mark === "T";
     const out: import("./pathwayTiming").ActiveFront[] = [];
 
     for (const b of branches) {
       if (t < b.t0 || t > b.t1) continue;
+      if (!ventPhase && isVentricularSeg(b.id)) continue;
       const span = Math.max(1e-4, b.t1 - b.t0);
       const progress = (t - b.t0) / span;
       const uStart = b.u0 ?? (b.reverse ? 1 : 0);
@@ -1163,11 +1456,14 @@ export function createConductionSystem(): ConductionSystem {
     tCycle: number;
     active: SegmentId[];
     finding?: string;
+    mark?: string;
     branches?: import("./pathwayTiming").BranchWindow[];
   }) {
     const t = ((opts.tCycle % 1) + 1) % 1;
     const branches = opts.branches ?? branchesForFinding(opts.finding);
     const activeSet = new Set(opts.active);
+    const mark = opts.mark ?? "TP";
+    const ventPhase = mark === "QRS" || mark === "ST" || mark === "T";
 
     type Front = {
       id: SegmentId;
@@ -1179,9 +1475,7 @@ export function createConductionSystem(): ConductionSystem {
 
     for (const b of branches) {
       if (t < b.t0 || t > b.t1) continue;
-      // Prefer lighting whatever is physiologically on schedule;
-      // if EKG active set is present, still show scheduled anatomic branches
-      // but boost those also in activeSet
+      if (!ventPhase && isVentricularSeg(b.id)) continue;
       const uRaw = (t - b.t0) / Math.max(1e-4, b.t1 - b.t0);
       const uStart = b.u0 ?? (b.reverse ? 1 : 0);
       const uEnd = b.u1 ?? (b.reverse ? 0 : 1);
@@ -1296,6 +1590,9 @@ export function createConductionSystem(): ConductionSystem {
     getActiveFronts,
     setSegmentVisibility,
     setAccessoryVisible,
+    setBlockSite,
+    setBranchBlocks,
+    updateBlockSitePulse,
     resetGlow,
   };
 }

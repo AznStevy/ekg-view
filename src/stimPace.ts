@@ -132,12 +132,12 @@ export function branchesFromStim(site: StimSite): BranchWindow[] {
     return out;
   }
 
-  // Ventricular / bundle / Purkinje origin
+  // Ventricular / bundle / Purkinje origin — after pace spike @ 0.12
   out.push({
     id: site.segmentId,
     curveIndex: ci,
-    t0: 0.14,
-    t1: 0.4,
+    t0: 0.16,
+    t1: 0.42,
     group: "ectopy",
     u0: u,
     u1: 1,
@@ -146,8 +146,8 @@ export function branchesFromStim(site: StimSite): BranchWindow[] {
     out.push({
       id: site.segmentId,
       curveIndex: ci,
-      t0: 0.14,
-      t1: 0.32,
+      t0: 0.16,
+      t1: 0.34,
       group: "ectopy",
       u0: u,
       u1: 0,
@@ -156,20 +156,20 @@ export function branchesFromStim(site: StimSite): BranchWindow[] {
 
   if (kind === "rightVent") {
     out.push(
-      { id: "rbb", t0: 0.2, t1: 0.38, group: "ectopy", reverse: true },
-      { id: "purkinjeL", t0: 0.28, t1: 0.55, group: "ectopy" },
-      { id: "lbb", t0: 0.3, t1: 0.5, group: "ectopy" },
+      { id: "rbb", t0: 0.22, t1: 0.4, group: "ectopy", reverse: true },
+      { id: "purkinjeL", t0: 0.3, t1: 0.55, group: "ectopy" },
+      { id: "lbb", t0: 0.32, t1: 0.5, group: "ectopy" },
     );
   } else if (kind === "leftVent") {
     out.push(
-      { id: "lbb", t0: 0.2, t1: 0.4, group: "ectopy", reverse: true },
-      { id: "purkinjeR", t0: 0.28, t1: 0.55, group: "ectopy" },
-      { id: "rbb", t0: 0.3, t1: 0.5, group: "ectopy" },
+      { id: "lbb", t0: 0.22, t1: 0.4, group: "ectopy", reverse: true },
+      { id: "purkinjeR", t0: 0.3, t1: 0.55, group: "ectopy" },
+      { id: "rbb", t0: 0.32, t1: 0.5, group: "ectopy" },
     );
   } else {
     out.push(
-      { id: "purkinjeL", t0: 0.22, t1: 0.5, group: "ectopy" },
-      { id: "purkinjeR", t0: 0.24, t1: 0.52, group: "ectopy" },
+      { id: "purkinjeL", t0: 0.24, t1: 0.5, group: "ectopy" },
+      { id: "purkinjeR", t0: 0.26, t1: 0.52, group: "ectopy" },
     );
   }
 

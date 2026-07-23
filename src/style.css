@@ -543,6 +543,150 @@ body.is-resizing canvas {
   grid-template-columns: 2.6rem 1fr auto;
 }
 
+.speed-row {
+  grid-template-columns: 2.6rem 1fr auto;
+  margin-top: 0.35rem;
+}
+
+.bbb-options {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 0.38s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.28s ease;
+  pointer-events: none;
+}
+
+.bbb-options.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.bbb-options-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+.bbb-options-panel {
+  margin: 0.05rem 0 0.15rem;
+  padding: 0.55rem 0.55rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.28);
+  transform: translateY(-0.35rem);
+  transition: transform 0.38s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.bbb-options.is-open .bbb-options-panel {
+  transform: translateY(0);
+}
+
+.bbb-options-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.bbb-options-clear {
+  font-size: 0.68rem;
+  padding: 0.2rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.bbb-options-clear:hover {
+  color: var(--text);
+  border-color: rgba(74, 158, 176, 0.4);
+}
+
+.bbb-lesion-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.3rem;
+}
+
+.bbb-lesion-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.4rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.22);
+  cursor: pointer;
+  user-select: none;
+}
+
+.bbb-lesion-chip input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+  width: 0;
+  height: 0;
+}
+
+.bbb-lesion-short {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--text);
+}
+
+.bbb-lesion-name {
+  font-size: 0.62rem;
+  color: var(--muted);
+  line-height: 1.25;
+}
+
+.bbb-lesion-chip:hover {
+  border-color: rgba(74, 158, 176, 0.4);
+}
+
+.bbb-lesion-chip:has(input:checked) {
+  border-color: rgba(255, 110, 130, 0.55);
+  background: rgba(255, 80, 100, 0.12);
+}
+
+.bbb-lesion-chip:has(input:checked) .bbb-lesion-short {
+  color: #ffb4be;
+}
+
+.bbb-result {
+  margin-top: 0.45rem;
+  font-size: 0.68rem;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+#btn-bbb.active {
+  background: var(--accent-soft);
+  border-color: rgba(74, 158, 176, 0.45);
+  color: var(--accent);
+}
+
+.cv-flash {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  background: radial-gradient(circle at 50% 40%, rgba(255, 250, 240, 0.95), rgba(180, 220, 255, 0.35) 40%, transparent 70%);
+  opacity: 0;
+  transition: opacity 80ms ease-out;
+}
+
+.cv-flash.on {
+  opacity: 1;
+}
+
 .slider-row > label {
   font-size: 0.78rem;
   color: var(--muted);

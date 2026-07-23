@@ -38,16 +38,42 @@ import {
   type StimSite,
   type StimState,
 } from "./stimPace";
+import { createDeviceLeads, deviceModeForFinding } from "./deviceLeads";
+import { blockSiteForFinding, branchesFromBundleBlocks } from "./pathwayTiming";
+import {
+  BUNDLE_BLOCK_OPTIONS,
+  blocksForFinding,
+  describeBundleBlocks,
+  findingIdForBlocks,
+  lesionSegmentsForBlocks,
+  sampleFromBundleBlocks,
+  type BundleBlockId,
+} from "./branchBlock";
+
+const BBB_FINDING_IDS = new Set<FindingId>([
+  "rbbb",
+  "lbbb",
+  "lafb",
+  "lpfb",
+  "rbbbLafb",
+  "rbbbLpfb",
+]);
 
 type AppState = {
   finding: FindingId;
   playing: boolean;
   ventRateBpm: number;
+  /** Multiplier on animation time (independent of physiologic HR) */
+  playbackSpeed: number;
   elapsed: number;
   heartVisible: boolean;
   vectorsOn: boolean;
   fieldOn: boolean;
   leadsOn: boolean;
+  /** Custom His–Purkinje lesions (empty = use finding defaults) */
+  customBlocks: BundleBlockId[];
+  /** True when user is driving EKG from customBlocks rather than a preset finding */
+  customBlockMode: boolean;
   upload: UploadedEkg | null;
   stim: StimState;
 };
@@ -67,12 +93,53 @@ function buildUI(root: HTMLElement): {
     )
     .join("");
 
-  const findingButtons = FINDINGS.map(
-    (f) => `
+  const bbbGroupButton = `<button type="button" id="btn-bbb" data-bbb-group title="Bundle branch / fascicular blocks">
+      BBB<small>RBB · LBB · fascicles</small>
+    </button>`;
+
+  const bbbOptionsHtml = `
+            <div class="bbb-options" id="bbb-options" aria-hidden="true">
+              <div class="bbb-options-inner">
+                <div class="bbb-options-panel">
+                  <div class="bbb-options-head">
+                    <span>Block which pathway?</span>
+                    <button type="button" id="btn-block-clear" class="bbb-options-clear">Clear</button>
+                  </div>
+                  <div class="bbb-lesion-grid" id="branch-block-grid">
+                    ${BUNDLE_BLOCK_OPTIONS.map(
+                      (o) => `<label class="bbb-lesion-chip">
+                        <input type="checkbox" data-bundle-block="${o.id}" />
+                        <span class="bbb-lesion-short">${o.short}</span>
+                        <span class="bbb-lesion-name">${o.label}</span>
+                      </label>`,
+                    ).join("")}
+                  </div>
+                  <div class="bbb-result" id="bbb-result">Select one or more tracts</div>
+                </div>
+              </div>
+            </div>`;
+
+  const findingButtonHtml: string[] = [];
+  let bbbInserted = false;
+  for (const f of FINDINGS) {
+    if (f.category === "bbb") {
+      if (!bbbInserted) {
+        findingButtonHtml.push(bbbGroupButton);
+        findingButtonHtml.push(bbbOptionsHtml);
+        bbbInserted = true;
+      }
+      continue;
+    }
+    findingButtonHtml.push(`
     <button type="button" data-finding="${f.id}" title="${f.name}" ${f.id === "nsr" ? 'class="active"' : ""}>
       ${f.short}<small>${f.rateLabel}</small>
-    </button>`,
-  ).join("");
+    </button>`);
+  }
+  if (!bbbInserted) {
+    findingButtonHtml.push(bbbGroupButton);
+    findingButtonHtml.push(bbbOptionsHtml);
+  }
+  const findingButtons = findingButtonHtml.join("");
 
   root.innerHTML = `
     <div id="stage">
@@ -139,6 +206,7 @@ function buildUI(root: HTMLElement): {
             <div class="transport-row">
               <button type="button" id="btn-stim" title="Click a pathway to pace from that site">Stimulate</button>
               <button type="button" id="btn-stim-clear" title="Clear stimulated pace site">Clear stim</button>
+              <button type="button" id="btn-cv" title="Synchronized cardioversion → NSR">Cardiovert</button>
             </div>
             <p class="stim-hint" id="stim-hint" hidden>Click a conduction pathway on the heart to pace from that site.</p>
             <div class="slider-row rate-row">
@@ -147,6 +215,14 @@ function buildUI(root: HTMLElement): {
               <div class="num-wrap">
                 <input id="rate-input" type="number" min="30" max="200" step="1" value="70" aria-label="Ventricular rate" />
                 <span class="unit">bpm</span>
+              </div>
+            </div>
+            <div class="slider-row speed-row">
+              <label for="speed-input">Speed</label>
+              <input id="speed-slider" type="range" min="25" max="200" value="100" step="5" />
+              <div class="num-wrap">
+                <input id="speed-input" type="number" min="25" max="200" step="5" value="100" aria-label="Depolarization animation speed" />
+                <span class="unit">%</span>
               </div>
             </div>
           </div>
@@ -245,9 +321,17 @@ function buildUI(root: HTMLElement): {
     "btn-leads",
     "btn-stim",
     "btn-stim-clear",
+    "btn-cv",
     "stim-hint",
     "rate-slider",
     "rate-input",
+    "speed-slider",
+    "speed-input",
+    "branch-block-grid",
+    "btn-block-clear",
+    "btn-bbb",
+    "bbb-options",
+    "bbb-result",
     "finding-grid",
     "finding-search",
     "finding-empty",
@@ -285,11 +369,14 @@ function main() {
     finding: "nsr",
     playing: true,
     ventRateBpm: 70,
+    playbackSpeed: 1,
     elapsed: 0,
     heartVisible: true,
     vectorsOn: false,
     fieldOn: false,
     leadsOn: false,
+    customBlocks: [],
+    customBlockMode: false,
     upload: null,
     stim: { armed: false, site: null },
   };
@@ -463,6 +550,10 @@ function main() {
   stimMarker.name = "stimMarker";
   scene.add(stimMarker);
 
+  const deviceLeads = createDeviceLeads();
+  deviceLeads.root.position.copy(conduction.root.position);
+  scene.add(deviceLeads.root);
+
   // Place ground under centered model
   {
     const box = new THREE.Box3().setFromObject(conduction.root);
@@ -519,13 +610,45 @@ function main() {
     applyRateToEkg();
   }
 
+  function activeBundleBlocks(): BundleBlockId[] {
+    if (state.customBlockMode) return state.customBlocks;
+    return blocksForFinding(state.finding);
+  }
+
+  function syncBranchBlockCheckboxes() {
+    const active = new Set(activeBundleBlocks());
+    els["branch-block-grid"].querySelectorAll<HTMLInputElement>("input[data-bundle-block]").forEach((input) => {
+      const id = input.dataset.bundleBlock as BundleBlockId;
+      input.checked = active.has(id);
+    });
+    const blocks = activeBundleBlocks();
+    const desc = describeBundleBlocks(blocks);
+    const bbbOpen =
+      state.customBlockMode ||
+      BBB_FINDING_IDS.has(state.finding) ||
+      blocks.length > 0;
+    els["bbb-options"].classList.toggle("is-open", bbbOpen);
+    els["bbb-options"].setAttribute("aria-hidden", bbbOpen ? "false" : "true");
+    els["btn-bbb"].classList.toggle("active", bbbOpen && !state.upload && !state.stim.site);
+    els["bbb-result"].textContent =
+      blocks.length === 0 ? "Select one or more tracts" : `${desc.short} · ${desc.detail}`;
+  }
+
   function syncFindingUI() {
     const f = getFinding(state.finding);
     const stimSite = state.stim.site;
+    const blocks = activeBundleBlocks();
+    const blockDesc = describeBundleBlocks(blocks);
+    const usingCustomBlocks = state.customBlockMode && blocks.length > 0;
+
     if (stimSite && !state.upload) {
       els["finding-name"].textContent = stimLabel(stimSite);
       els["finding-detail"].textContent = stimDetail(stimSite);
       els["meta-finding"].textContent = "STIM";
+    } else if (usingCustomBlocks) {
+      els["finding-name"].textContent = `Custom · ${blockDesc.name}`;
+      els["finding-detail"].textContent = blockDesc.detail;
+      els["meta-finding"].textContent = blockDesc.short;
     } else {
       els["finding-name"].textContent = state.upload ? `Upload · ${state.upload.name}` : f.name;
       els["finding-detail"].textContent = state.upload
@@ -536,7 +659,7 @@ function main() {
     els["finding-grid"].querySelectorAll<HTMLButtonElement>("button[data-finding]").forEach((btn) => {
       btn.classList.toggle(
         "active",
-        !state.upload && !stimSite && btn.dataset.finding === state.finding,
+        !state.upload && !stimSite && !usingCustomBlocks && btn.dataset.finding === state.finding,
       );
     });
     ekg.setFinding(state.finding);
@@ -544,6 +667,9 @@ function main() {
     if (stimSite && !state.upload) {
       ekg.setCustomSample((t) => sampleStim(stimSite, t));
       ekg.setCycleSec(cycleSecForRate({ ...f, cycleSec: 0.9, ventRateBpm: 60 }, state.ventRateBpm));
+    } else if (usingCustomBlocks) {
+      ekg.setCustomSample((t) => sampleFromBundleBlocks(blocks, t));
+      ekg.setCycleSec(cycleSecForRate(f, state.ventRateBpm));
     } else {
       ekg.setCustomSample(null);
     }
@@ -572,6 +698,17 @@ function main() {
     }
     applySegmentVisibility();
     if (!(stimSite && !state.upload)) applyRateToEkg();
+
+    conduction.setBlockSite(
+      stimSite || state.upload || usingCustomBlocks ? "none" : blockSiteForFinding(state.finding),
+    );
+    conduction.setBranchBlocks(
+      stimSite || state.upload ? [] : lesionSegmentsForBlocks(blocks),
+    );
+    deviceLeads.setMode(
+      stimSite || state.upload || usingCustomBlocks ? "none" : deviceModeForFinding(state.finding),
+    );
+    syncBranchBlockCheckboxes();
   }
 
   function setStimArmed(armed: boolean) {
@@ -615,6 +752,8 @@ function main() {
     state.upload = null;
     state.stim.armed = false;
     state.stim.site = null;
+    state.customBlockMode = false;
+    state.customBlocks = blocksForFinding(id);
     stimMarker.visible = false;
     ekg.setUpload(null);
     ekg.setCustomSample(null);
@@ -676,6 +815,16 @@ function main() {
   });
 
   els["finding-grid"].addEventListener("click", (e) => {
+    const bbbBtn = (e.target as HTMLElement).closest("#btn-bbb");
+    if (bbbBtn) {
+      const open = els["bbb-options"].classList.contains("is-open");
+      if (open && (BBB_FINDING_IDS.has(state.finding) || state.customBlockMode)) {
+        setFinding("nsr");
+      } else {
+        setFinding("rbbb");
+      }
+      return;
+    }
     const btn = (e.target as HTMLElement).closest("button[data-finding]");
     if (!btn) return;
     const id = (btn as HTMLElement).dataset.finding as FindingId;
@@ -805,6 +954,26 @@ function main() {
       btn.hidden = !show;
       if (show) visible += 1;
     });
+    const bbbMatch =
+      q.trim().length === 0 ||
+      FINDINGS.some((f) => f.category === "bbb" && findingMatchesQuery(f, q));
+    const bbbBtn = els["btn-bbb"] as HTMLButtonElement;
+    bbbBtn.hidden = !bbbMatch;
+    if (bbbMatch) visible += 1;
+
+    // Deep-link search: jump into matching BBB pattern
+    const qLower = q.trim().toLowerCase();
+    if (qLower.length >= 3) {
+      const hit = FINDINGS.find(
+        (f) => f.category === "bbb" && findingMatchesQuery(f, q) && (f.id === qLower || f.short.toLowerCase() === qLower || f.aliases?.some((a) => a === qLower)),
+      );
+      if (hit && state.finding !== hit.id) {
+        // only auto-open panel; don't fight user mid-typing unless exact-ish
+        els["bbb-options"].classList.add("is-open");
+        els["bbb-options"].setAttribute("aria-hidden", "false");
+      }
+    }
+
     findingEmpty.hidden = visible > 0 || q.trim().length === 0;
     void runPhysioSearch(q);
   }
@@ -817,6 +986,49 @@ function main() {
 
   els["btn-stim"].addEventListener("click", () => setStimArmed(!state.stim.armed));
   els["btn-stim-clear"].addEventListener("click", () => clearStim());
+
+  const CARDIOVERTIBLE = new Set<FindingId>([
+    "afib",
+    "aflutterCcw",
+    "aflutterCw",
+    "vt",
+    "vtMonoLbbb",
+    "vtMonoRbbb",
+    "vtPoly",
+    "torsades",
+    "vf",
+    "sinusTachy",
+  ]);
+
+  function flashCardioversion() {
+    const flash = document.createElement("div");
+    flash.className = "cv-flash";
+    document.body.appendChild(flash);
+    requestAnimationFrame(() => flash.classList.add("on"));
+    window.setTimeout(() => {
+      flash.classList.remove("on");
+      window.setTimeout(() => flash.remove(), 280);
+    }, 120);
+  }
+
+  function cardiovert() {
+    flashCardioversion();
+    clearStim();
+    state.upload = null;
+    ekg.setUpload(null);
+    els["upload-preview"].hidden = true;
+    // Brief post-shock pause then NSR
+    state.elapsed = 0;
+    if (CARDIOVERTIBLE.has(state.finding) || state.finding !== "nsr") {
+      setFinding("nsr");
+    } else {
+      state.elapsed = 0;
+    }
+    setPlaying(true);
+    els["phase-chip"].textContent = "Post-cardioversion · NSR";
+  }
+
+  els["btn-cv"].addEventListener("click", () => cardiovert());
 
   els["btn-play"].addEventListener("click", () => setPlaying(!state.playing));
   els["btn-reset"].addEventListener("click", () => {
@@ -844,6 +1056,59 @@ function main() {
   });
   els["rate-input"].addEventListener("change", () => {
     onRateChange(Number((els["rate-input"] as HTMLInputElement).value) || 70);
+  });
+
+  function syncSpeedUI(pct: number) {
+    const clamped = Math.max(25, Math.min(200, Math.round(pct / 5) * 5));
+    state.playbackSpeed = clamped / 100;
+    (els["speed-slider"] as HTMLInputElement).value = String(clamped);
+    (els["speed-input"] as HTMLInputElement).value = String(clamped);
+  }
+
+  els["speed-slider"].addEventListener("input", () => {
+    syncSpeedUI(Number((els["speed-slider"] as HTMLInputElement).value));
+  });
+  els["speed-input"].addEventListener("input", () => {
+    const raw = (els["speed-input"] as HTMLInputElement).value;
+    if (raw === "" || raw === "-") return;
+    syncSpeedUI(Number(raw));
+  });
+  els["speed-input"].addEventListener("change", () => {
+    syncSpeedUI(Number((els["speed-input"] as HTMLInputElement).value) || 100);
+  });
+  syncSpeedUI(100);
+
+  function readBranchBlockToggles(): BundleBlockId[] {
+    const out: BundleBlockId[] = [];
+    els["branch-block-grid"].querySelectorAll<HTMLInputElement>("input[data-bundle-block]").forEach((input) => {
+      if (input.checked) out.push(input.dataset.bundleBlock as BundleBlockId);
+    });
+    return out;
+  }
+
+  els["branch-block-grid"].addEventListener("change", (e) => {
+    const input = e.target as HTMLInputElement;
+    if (!input.dataset.bundleBlock) return;
+    clearStim();
+    state.upload = null;
+    ekg.setUpload(null);
+    els["upload-preview"].hidden = true;
+    const next = readBranchBlockToggles();
+    state.customBlocks = next;
+    state.customBlockMode = next.length > 0;
+    state.finding = findingIdForBlocks(next);
+    state.elapsed = 0;
+    syncRateUI(getFinding(state.finding).ventRateBpm);
+    syncFindingUI();
+    setPlaying(true);
+  });
+
+  els["btn-block-clear"].addEventListener("click", () => {
+    state.customBlocks = [];
+    state.customBlockMode = false;
+    clearStim();
+    if (blocksForFinding(state.finding).length > 0) setFinding("nsr");
+    else syncFindingUI();
   });
 
   els["btn-collapse"].addEventListener("click", () =>
@@ -1247,7 +1512,7 @@ function main() {
       if (state.upload) {
         pace = state.ventRateBpm / Math.max(30, state.upload.rateBpm);
       }
-      state.elapsed += dt * pace;
+      state.elapsed += dt * pace * state.playbackSpeed;
     }
 
     const { phase, active, mark, tCycle, leads } = ekg.update(state.elapsed);
@@ -1256,19 +1521,27 @@ function main() {
 
     const lit = active.filter((id) => segmentVisibility[id] !== false);
     const stimBranches = state.stim.site && !state.upload ? branchesFromStim(state.stim.site) : undefined;
+    const blockBranches =
+      !stimBranches && state.customBlockMode && state.customBlocks.length > 0
+        ? branchesFromBundleBlocks(state.customBlocks)
+        : undefined;
+    const pathBranches = stimBranches ?? blockBranches;
     conduction.setSegmentActive({
       active: lit,
       tCycle,
       finding: state.finding,
-      branches: stimBranches,
+      mark,
+      branches: pathBranches,
       intensity: 0.95,
     });
     conduction.updateImpulse({
       tCycle,
       active: lit,
       finding: state.finding,
-      branches: stimBranches,
+      mark,
+      branches: pathBranches,
     });
+    conduction.updateBlockSitePulse(now / 1000);
 
     vectors.update({
       mark,
@@ -1276,11 +1549,12 @@ function main() {
       finding: state.finding,
       tCycle,
       leads,
-      branches: stimBranches,
+      branches: pathBranches,
       fronts: conduction.getActiveFronts({
         tCycle,
         finding: state.finding,
-        branches: stimBranches,
+        mark,
+        branches: pathBranches,
       }),
     });
 
