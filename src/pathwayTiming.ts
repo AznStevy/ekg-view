@@ -297,12 +297,27 @@ export function branchesFromBundleBlocks(blocks: Iterable<BundleBlockId>): Branc
   ];
 }
 
+const BRANCH_CACHE = new Map<string, BranchWindow[]>();
+
 export function branchesForFinding(finding: FindingId | string | undefined): BranchWindow[] {
+  const key = finding ?? "nsr";
+  const hit = BRANCH_CACHE.get(key);
+  if (hit) return hit;
+
+  let result: BranchWindow[];
+  if (finding === "aflutterCcw") result = flutterCircuitBranches("ccw");
+  else if (finding === "aflutterCw") result = flutterCircuitBranches("cw");
+  else if (finding === "afib") result = afibBranches();
+  else {
+    result = buildBranchesForFinding(finding);
+  }
+  BRANCH_CACHE.set(key, result);
+  return result;
+}
+
+function buildBranchesForFinding(finding: FindingId | string | undefined): BranchWindow[] {
   const base = NSR_BRANCHES.map((b) => ({ ...b }));
 
-  if (finding === "aflutterCcw") return flutterCircuitBranches("ccw");
-  if (finding === "aflutterCw") return flutterCircuitBranches("cw");
-  if (finding === "afib") return afibBranches();
   if (finding === "sinusTachy") {
     return [
       { id: "sa", t0: 0.04, t1: 0.1, group: "pacemaker" },
@@ -454,7 +469,7 @@ export function branchesForFinding(finding: FindingId | string | undefined): Bra
       { id: "purkinjeL", t0: 0.39, t1: 0.52, group: "purkinje" },
     ];
   }
-  if (finding === "vt" || finding === "vf") {
+  if (finding === "vt" || finding === "vfCoarse" || finding === "vfFine") {
     return [
       { id: "purkinjeL", t0: 0.12, t1: 0.55, group: "ectopy" },
       { id: "purkinjeR", t0: 0.14, t1: 0.55, group: "ectopy" },
@@ -503,7 +518,45 @@ export function branchesForFinding(finding: FindingId | string | undefined): Bra
       { id: "purkinjeL", t0: 0.7, t1: 0.9, group: "ectopy" },
     ];
   }
-  if (finding === "pvc" || finding === "failureToSense") {
+  if (finding === "pac") {
+    return [
+      ...atrialAt(0.02),
+      ...ventCascade(0.04),
+      ...atrialAt(0.14),
+      ...ventCascade(0.16),
+      { id: "internodal", t0: 0.22, t1: 0.28, group: "atrial" },
+      ...ventCascade(0.25),
+      ...atrialAt(0.35),
+      ...ventCascade(0.37),
+      ...atrialAt(0.47),
+      ...ventCascade(0.49),
+      { id: "internodal", t0: 0.54, t1: 0.6, group: "atrial" },
+      ...ventCascade(0.57),
+      ...atrialAt(0.67),
+      ...ventCascade(0.69),
+      ...atrialAt(0.8),
+      ...ventCascade(0.82),
+    ];
+  }
+  if (finding === "pvc") {
+    return [
+      ...atrialAt(0.02),
+      ...ventCascade(0.04),
+      ...atrialAt(0.14),
+      ...ventCascade(0.16),
+      { id: "purkinjeL", t0: 0.24, t1: 0.32, group: "ectopy" },
+      { id: "purkinjeR", t0: 0.25, t1: 0.32, group: "ectopy" },
+      ...atrialAt(0.4),
+      ...ventCascade(0.42),
+      ...atrialAt(0.52),
+      ...ventCascade(0.54),
+      { id: "purkinjeL", t0: 0.62, t1: 0.7, group: "ectopy" },
+      { id: "purkinjeR", t0: 0.63, t1: 0.7, group: "ectopy" },
+      ...atrialAt(0.78),
+      ...ventCascade(0.8),
+    ];
+  }
+  if (finding === "failureToSense") {
     return [
       ...base,
       { id: "purkinjeL", t0: 0.55, t1: 0.72, group: "ectopy" },

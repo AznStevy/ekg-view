@@ -47,13 +47,15 @@ export type FindingId =
   | "lpfb"
   | "rbbbLafb"
   | "rbbbLpfb"
+  | "pac"
   | "pvc"
   | "vt"
   | "vtMonoLbbb"
   | "vtMonoRbbb"
   | "vtPoly"
   | "torsades"
-  | "vf"
+  | "vfCoarse"
+  | "vfFine"
   | "asystole"
   | "wpw"
   | "stemiAnt"
@@ -305,14 +307,26 @@ export const FINDINGS: Finding[] = [
     rateLabel: "70 bpm",
   },
   {
+    id: "pac",
+    name: "Premature atrial complex",
+    short: "PAC",
+    detail: "Early ectopic P′ · usually conducts · incomplete compensatory pause",
+    category: "ectopy",
+    tags: ["ectopy", "atrial", "pac"],
+    aliases: ["apc", "atrial ectopic", "atrial premature", "pjc"],
+    cycleSec: 7.0,
+    ventRateBpm: 60,
+    rateLabel: "PAC",
+  },
+  {
     id: "pvc",
     name: "Premature ventricular complex",
     short: "PVC",
-    detail: "Early wide QRS · no preceding P · compensatory pause",
+    detail: "Early wide QRS · no preceding P · full compensatory pause",
     category: "ectopy",
     tags: ["ectopy", "ventricular"],
     aliases: ["vpc", "ventricular ectopic"],
-    cycleSec: 2.0,
+    cycleSec: 7.0,
     ventRateBpm: 60,
     rateLabel: "PVC",
   },
@@ -378,16 +392,28 @@ export const FINDINGS: Finding[] = [
     rateLabel: "Twisting",
   },
   {
-    id: "vf",
-    name: "Ventricular fibrillation",
-    short: "VF",
-    detail: "Chaotic irregular undulations · no QRS · no pulse",
+    id: "vfCoarse",
+    name: "Ventricular fibrillation · coarse",
+    short: "VF coarse",
+    detail: "Large chaotic undulations · no discrete QRS · no pulse",
     category: "vt",
-    tags: ["vf", "arrest"],
-    aliases: ["ventricular fib", "fib"],
-    cycleSec: 1.2,
+    tags: ["vf", "arrest", "coarse"],
+    aliases: ["vf", "ventricular fib", "fib", "coarse vf"],
+    cycleSec: 4.5,
     ventRateBpm: 200,
-    rateLabel: "Chaotic",
+    rateLabel: "Coarse",
+  },
+  {
+    id: "vfFine",
+    name: "Ventricular fibrillation · fine",
+    short: "VF fine",
+    detail: "Low-amplitude chaotic undulations · no QRS · no pulse",
+    category: "vt",
+    tags: ["vf", "arrest", "fine"],
+    aliases: ["fine vf", "fine ventricular fib"],
+    cycleSec: 4.5,
+    ventRateBpm: 200,
+    rateLabel: "Fine",
   },
   {
     id: "asystole",

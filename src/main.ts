@@ -94,6 +94,143 @@ const FLUTTER_OPTIONS: { id: FindingId; short: string; name: string }[] = [
   },
 ];
 
+const VF_FINDING_IDS = new Set<FindingId>(["vfCoarse", "vfFine"]);
+
+const VF_OPTIONS: { id: FindingId; short: string; name: string }[] = [
+  {
+    id: "vfCoarse",
+    short: "Coarse",
+    name: "Larger chaotic undulations",
+  },
+  {
+    id: "vfFine",
+    short: "Fine",
+    name: "Low-amplitude chaos",
+  },
+];
+
+const VT_FINDING_IDS = new Set<FindingId>(["vt", "vtMonoLbbb", "vtMonoRbbb", "vtPoly"]);
+
+const VT_OPTIONS: { id: FindingId; short: string; name: string }[] = [
+  {
+    id: "vt",
+    short: "Mono",
+    name: "Monomorphic · identical wide QRS",
+  },
+  {
+    id: "vtMonoLbbb",
+    short: "LBBB",
+    name: "LBBB morphology · often RV/outflow",
+  },
+  {
+    id: "vtMonoRbbb",
+    short: "RBBB",
+    name: "RBBB morphology · often LV origin",
+  },
+  {
+    id: "vtPoly",
+    short: "Poly",
+    name: "Polymorphic · changing QRS / axis",
+  },
+];
+
+const PACED_FINDING_IDS = new Set<FindingId>([
+  "pacedAtrial",
+  "pacedVentricular",
+  "pacedDual",
+  "pacedLbap",
+  "pacedBiv",
+  "failureToPace",
+  "failureToCapture",
+  "failureToSense",
+]);
+
+const PACED_OPTIONS: { id: FindingId; short: string; name: string }[] = [
+  {
+    id: "pacedAtrial",
+    short: "AAI",
+    name: "Atrial paced · spike → P → QRS",
+  },
+  {
+    id: "pacedVentricular",
+    short: "VVI",
+    name: "RV apical · spike → wide QRS",
+  },
+  {
+    id: "pacedDual",
+    short: "DDD",
+    name: "Dual chamber · A then V spikes",
+  },
+  {
+    id: "pacedLbap",
+    short: "LBAP",
+    name: "Left bundle area · narrower QRS",
+  },
+  {
+    id: "pacedBiv",
+    short: "BiV",
+    name: "CRT · RA + RV + LV capture",
+  },
+  {
+    id: "failureToPace",
+    short: "No pace",
+    name: "Output failure · no spike",
+  },
+  {
+    id: "failureToCapture",
+    short: "No capt.",
+    name: "Spike present · no capture",
+  },
+  {
+    id: "failureToSense",
+    short: "Undersense",
+    name: "Ignores intrinsic · competing spikes",
+  },
+];
+
+/** Keep expand panels open briefly after last option cleared */
+const EXPAND_HOLD_MS = 2000;
+type ExpandHoldKey = "bbb" | "chb" | "flutter" | "vf" | "vt" | "paced";
+const expandHoldUntil: Record<ExpandHoldKey, number> = {
+  bbb: 0,
+  chb: 0,
+  flutter: 0,
+  vf: 0,
+  vt: 0,
+  paced: 0,
+};
+const expandHoldTimers: Record<ExpandHoldKey, number | null> = {
+  bbb: null,
+  chb: null,
+  flutter: null,
+  vf: null,
+  vt: null,
+  paced: null,
+};
+let expandResync: (() => void) | null = null;
+
+function holdExpandOpen(key: ExpandHoldKey) {
+  expandHoldUntil[key] = performance.now() + EXPAND_HOLD_MS;
+  if (expandHoldTimers[key] != null) window.clearTimeout(expandHoldTimers[key]!);
+  expandHoldTimers[key] = window.setTimeout(() => {
+    expandHoldTimers[key] = null;
+    expandHoldUntil[key] = 0;
+    expandResync?.();
+  }, EXPAND_HOLD_MS + 30);
+}
+
+function expandHeld(key: ExpandHoldKey): boolean {
+  return performance.now() < expandHoldUntil[key];
+}
+
+function clearExpandHold(key: ExpandHoldKey) {
+  if (expandHoldTimers[key] != null) {
+    window.clearTimeout(expandHoldTimers[key]!);
+    expandHoldTimers[key] = null;
+  }
+  expandHoldUntil[key] = 0;
+}
+
 type AppState = {
   finding: FindingId;
   playing: boolean;
@@ -218,10 +355,88 @@ function buildUI(root: HTMLElement): {
               </div>
             </div>`;
 
+  const vfGroupButton = `<button type="button" id="btn-vf" data-vf-group title="Ventricular fibrillation">
+      VF<small>Coarse · Fine</small>
+    </button>`;
+
+  const vfOptionsHtml = `
+            <div class="finding-expand vf-options" id="vf-options" aria-hidden="true" style="display:none">
+              <div class="finding-expand-inner">
+                <div class="finding-expand-panel">
+                  <div class="finding-expand-head">
+                    <span>Amplitude?</span>
+                    <button type="button" id="btn-vf-clear" class="finding-expand-clear">Clear</button>
+                  </div>
+                  <div class="chb-escape-grid" id="vf-amp-grid">
+                    ${VF_OPTIONS.map(
+                      (o) => `<button type="button" class="chb-escape-chip" data-vf-finding="${o.id}">
+                        <span class="chb-escape-short">${o.short}</span>
+                        <span class="chb-escape-name">${o.name}</span>
+                      </button>`,
+                    ).join("")}
+                  </div>
+                  <div class="finding-expand-result" id="vf-result">Select coarse or fine VF</div>
+                </div>
+              </div>
+            </div>`;
+
+  const vtGroupButton = `<button type="button" id="btn-vt" data-vt-group title="Ventricular tachycardia">
+      VT<small>Mono · LBBB · RBBB · Poly</small>
+    </button>`;
+
+  const vtOptionsHtml = `
+            <div class="finding-expand vt-options" id="vt-options" aria-hidden="true" style="display:none">
+              <div class="finding-expand-inner">
+                <div class="finding-expand-panel">
+                  <div class="finding-expand-head">
+                    <span>Which VT?</span>
+                    <button type="button" id="btn-vt-clear" class="finding-expand-clear">Clear</button>
+                  </div>
+                  <div class="chb-escape-grid" id="vt-type-grid">
+                    ${VT_OPTIONS.map(
+                      (o) => `<button type="button" class="chb-escape-chip" data-vt-finding="${o.id}">
+                        <span class="chb-escape-short">${o.short}</span>
+                        <span class="chb-escape-name">${o.name}</span>
+                      </button>`,
+                    ).join("")}
+                  </div>
+                  <div class="finding-expand-result" id="vt-result">Select monomorphic, LBBB, RBBB, or poly</div>
+                </div>
+              </div>
+            </div>`;
+
+  const pacedGroupButton = `<button type="button" id="btn-paced" data-paced-group title="Paced rhythms · device modes & failures">
+      Pace<small>AAI · VVI · DDD · BiV</small>
+    </button>`;
+
+  const pacedOptionsHtml = `
+            <div class="finding-expand paced-options" id="paced-options" aria-hidden="true" style="display:none">
+              <div class="finding-expand-inner">
+                <div class="finding-expand-panel">
+                  <div class="finding-expand-head">
+                    <span>Mode or malfunction?</span>
+                    <button type="button" id="btn-paced-clear" class="finding-expand-clear">Clear</button>
+                  </div>
+                  <div class="chb-escape-grid" id="paced-type-grid">
+                    ${PACED_OPTIONS.map(
+                      (o) => `<button type="button" class="chb-escape-chip" data-paced-finding="${o.id}">
+                        <span class="chb-escape-short">${o.short}</span>
+                        <span class="chb-escape-name">${o.name}</span>
+                      </button>`,
+                    ).join("")}
+                  </div>
+                  <div class="finding-expand-result" id="paced-result">Select pacing mode or malfunction</div>
+                </div>
+              </div>
+            </div>`;
+
   const findingButtonHtml: string[] = [];
   let bbbInserted = false;
   let chbInserted = false;
   let flutterInserted = false;
+  let vfInserted = false;
+  let vtInserted = false;
+  let pacedInserted = false;
   for (const f of FINDINGS) {
     if (f.category === "bbb") {
       if (!bbbInserted) {
@@ -247,10 +462,46 @@ function buildUI(root: HTMLElement): {
       }
       continue;
     }
+    if (VT_FINDING_IDS.has(f.id)) {
+      if (!vtInserted) {
+        findingButtonHtml.push(vtGroupButton);
+        findingButtonHtml.push(vtOptionsHtml);
+        vtInserted = true;
+      }
+      continue;
+    }
+    if (VF_FINDING_IDS.has(f.id)) {
+      if (!vfInserted) {
+        findingButtonHtml.push(vfGroupButton);
+        findingButtonHtml.push(vfOptionsHtml);
+        vfInserted = true;
+      }
+      continue;
+    }
+    if (PACED_FINDING_IDS.has(f.id)) {
+      if (!pacedInserted) {
+        findingButtonHtml.push(pacedGroupButton);
+        findingButtonHtml.push(pacedOptionsHtml);
+        pacedInserted = true;
+      }
+      continue;
+    }
     findingButtonHtml.push(`
     <button type="button" data-finding="${f.id}" title="${f.name}" ${f.id === "nsr" ? 'class="active"' : ""}>
       ${f.short}<small>${f.rateLabel}</small>
     </button>`);
+  }
+  if (!vtInserted) {
+    findingButtonHtml.push(vtGroupButton);
+    findingButtonHtml.push(vtOptionsHtml);
+  }
+  if (!vfInserted) {
+    findingButtonHtml.push(vfGroupButton);
+    findingButtonHtml.push(vfOptionsHtml);
+  }
+  if (!pacedInserted) {
+    findingButtonHtml.push(pacedGroupButton);
+    findingButtonHtml.push(pacedOptionsHtml);
   }
   if (!flutterInserted) {
     findingButtonHtml.push(flutterGroupButton);
@@ -514,6 +765,21 @@ function buildUI(root: HTMLElement): {
     "flutter-result",
     "flutter-dir-grid",
     "btn-flutter-clear",
+    "btn-vf",
+    "vf-options",
+    "vf-result",
+    "vf-amp-grid",
+    "btn-vf-clear",
+    "btn-vt",
+    "vt-options",
+    "vt-result",
+    "vt-type-grid",
+    "btn-vt-clear",
+    "btn-paced",
+    "paced-options",
+    "paced-result",
+    "paced-type-grid",
+    "btn-paced-clear",
     "finding-grid",
     "finding-search",
     "finding-empty",
@@ -859,9 +1125,11 @@ function main() {
     });
     const blocks = activeBundleBlocks();
     const desc = describeBundleBlocks(blocks);
-    const bbbOpen =
+    const bbbActive =
       !(state.cvRecovery && !state.cvRecovery.settled) &&
       (state.customBlockMode || BBB_FINDING_IDS.has(state.finding) || blocks.length > 0);
+    if (bbbActive) clearExpandHold("bbb");
+    const bbbOpen = bbbActive || expandHeld("bbb");
     setFindingExpand(els["bbb-options"], bbbOpen);
     els["btn-bbb"].classList.toggle("active", bbbOpen && !state.upload && !state.stim.site);
     els["bbb-result"].textContent =
@@ -870,16 +1138,18 @@ function main() {
 
   function syncChbOptions() {
     // Never open CHB from BBB custom lesions (trifascicular used to set finding=av3)
-    const chbOpen =
+    const chbActive =
       !(state.cvRecovery && !state.cvRecovery.settled) &&
       !state.customBlockMode &&
       CHB_FINDING_IDS.has(state.finding);
+    if (chbActive) clearExpandHold("chb");
+    const chbOpen = chbActive || expandHeld("chb");
     setFindingExpand(els["chb-options"], chbOpen);
     els["btn-chb"].classList.toggle("active", chbOpen && !state.upload && !state.stim.site);
     els["chb-escape-grid"].querySelectorAll<HTMLButtonElement>("button[data-chb-finding]").forEach((btn) => {
-      btn.classList.toggle("active", chbOpen && btn.dataset.chbFinding === state.finding);
+      btn.classList.toggle("active", chbActive && btn.dataset.chbFinding === state.finding);
     });
-    if (chbOpen) {
+    if (chbActive) {
       const f = getFinding(state.finding);
       els["chb-result"].textContent = `${f.short} · ${f.detail}`;
     } else {
@@ -888,18 +1158,74 @@ function main() {
   }
 
   function syncFlutterOptions() {
-    const flutterOpen =
+    const flutterActive =
       !(state.cvRecovery && !state.cvRecovery.settled) && FLUTTER_FINDING_IDS.has(state.finding);
+    if (flutterActive) clearExpandHold("flutter");
+    const flutterOpen = flutterActive || expandHeld("flutter");
     setFindingExpand(els["flutter-options"], flutterOpen);
     els["btn-flutter"].classList.toggle("active", flutterOpen && !state.upload && !state.stim.site);
     els["flutter-dir-grid"].querySelectorAll<HTMLButtonElement>("button[data-flutter-finding]").forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.flutterFinding === state.finding);
     });
-    if (flutterOpen) {
+    if (flutterActive) {
       const f = getFinding(state.finding);
       els["flutter-result"].textContent = `${f.short} · ${f.detail}`;
     } else {
       els["flutter-result"].textContent = "Select counterclockwise or clockwise";
+    }
+  }
+
+  function syncVfOptions() {
+    const vfActive =
+      !(state.cvRecovery && !state.cvRecovery.settled) && VF_FINDING_IDS.has(state.finding);
+    if (vfActive) clearExpandHold("vf");
+    const vfOpen = vfActive || expandHeld("vf");
+    setFindingExpand(els["vf-options"], vfOpen);
+    els["btn-vf"].classList.toggle("active", vfOpen && !state.upload && !state.stim.site);
+    els["vf-amp-grid"].querySelectorAll<HTMLButtonElement>("button[data-vf-finding]").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.vfFinding === state.finding);
+    });
+    if (vfActive) {
+      const f = getFinding(state.finding);
+      els["vf-result"].textContent = `${f.short} · ${f.detail}`;
+    } else {
+      els["vf-result"].textContent = "Select coarse or fine VF";
+    }
+  }
+
+  function syncVtOptions() {
+    const vtActive =
+      !(state.cvRecovery && !state.cvRecovery.settled) && VT_FINDING_IDS.has(state.finding);
+    if (vtActive) clearExpandHold("vt");
+    const vtOpen = vtActive || expandHeld("vt");
+    setFindingExpand(els["vt-options"], vtOpen);
+    els["btn-vt"].classList.toggle("active", vtOpen && !state.upload && !state.stim.site);
+    els["vt-type-grid"].querySelectorAll<HTMLButtonElement>("button[data-vt-finding]").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.vtFinding === state.finding);
+    });
+    if (vtActive) {
+      const f = getFinding(state.finding);
+      els["vt-result"].textContent = `${f.short} · ${f.detail}`;
+    } else {
+      els["vt-result"].textContent = "Select monomorphic, LBBB, RBBB, or poly";
+    }
+  }
+
+  function syncPacedOptions() {
+    const pacedActive =
+      !(state.cvRecovery && !state.cvRecovery.settled) && PACED_FINDING_IDS.has(state.finding);
+    if (pacedActive) clearExpandHold("paced");
+    const pacedOpen = pacedActive || expandHeld("paced");
+    setFindingExpand(els["paced-options"], pacedOpen);
+    els["btn-paced"].classList.toggle("active", pacedOpen && !state.upload && !state.stim.site);
+    els["paced-type-grid"].querySelectorAll<HTMLButtonElement>("button[data-paced-finding]").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.pacedFinding === state.finding);
+    });
+    if (pacedActive) {
+      const f = getFinding(state.finding);
+      els["paced-result"].textContent = `${f.short} · ${f.detail}`;
+    } else {
+      els["paced-result"].textContent = "Select pacing mode or malfunction";
     }
   }
 
@@ -1006,6 +1332,9 @@ function main() {
     syncBranchBlockCheckboxes();
     syncChbOptions();
     syncFlutterOptions();
+    syncVtOptions();
+    syncVfOptions();
+    syncPacedOptions();
     syncCardioversionUi();
   }
 
@@ -1170,6 +1499,14 @@ function main() {
 
   syncRateUI(70);
   syncFindingUI();
+  expandResync = () => {
+    syncBranchBlockCheckboxes();
+    syncChbOptions();
+    syncFlutterOptions();
+    syncVtOptions();
+    syncVfOptions();
+    syncPacedOptions();
+  };
   setPlaying(true);
   setVectors(false);
   setField(false);
@@ -1181,9 +1518,9 @@ function main() {
   });
 
   const FOOTER_SCRUB =
-    "Drag / swipe the EKG to scrub · playing auto-pauses while scrubbing.";
+    "← → scrub (pauses) · ↑ ↓ rate · drag/swipe also scrubs.";
   const FOOTER_CALIPERS =
-    "Drag on the strip to set calipers · drag handles to adjust · wheel still scrubs · March out repeats the interval.";
+    "Drag on the strip to set calipers · ← → / wheel still scrub · March out repeats the interval.";
 
   function syncCalipersUI() {
     const on = ekg.getCalipers().enabled;
@@ -1236,6 +1573,7 @@ function main() {
     if (bbbBtn) {
       const open = els["bbb-options"].classList.contains("is-open");
       if (open && (BBB_FINDING_IDS.has(state.finding) || state.customBlockMode)) {
+        holdExpandOpen("bbb");
         setFinding("nsr");
       } else {
         setFinding("rbbb");
@@ -1252,6 +1590,7 @@ function main() {
       state.customBlocks = blocks;
       state.customBlockMode = blocks.length > 0;
       state.finding = findingIdForBlocks(blocks);
+      if (blocks.length === 0) holdExpandOpen("bbb");
       state.elapsed = 0;
       state.upload = null;
       ekg.setUpload(null);
@@ -1271,6 +1610,7 @@ function main() {
     if (chbBtn) {
       const open = els["chb-options"].classList.contains("is-open");
       if (open && CHB_FINDING_IDS.has(state.finding)) {
+        holdExpandOpen("chb");
         setFinding("nsr");
       } else {
         setFinding("av3Junctional");
@@ -1287,6 +1627,7 @@ function main() {
     if (flutterBtn) {
       const open = els["flutter-options"].classList.contains("is-open");
       if (open && FLUTTER_FINDING_IDS.has(state.finding)) {
+        holdExpandOpen("flutter");
         setFinding("nsr");
       } else {
         setFinding("aflutterCcw");
@@ -1296,6 +1637,57 @@ function main() {
     const flutterOpt = (e.target as HTMLElement).closest("button[data-flutter-finding]");
     if (flutterOpt) {
       const id = (flutterOpt as HTMLElement).dataset.flutterFinding as FindingId;
+      setFinding(id);
+      return;
+    }
+    const vfBtn = (e.target as HTMLElement).closest("#btn-vf");
+    if (vfBtn) {
+      const open = els["vf-options"].classList.contains("is-open");
+      if (open && VF_FINDING_IDS.has(state.finding)) {
+        holdExpandOpen("vf");
+        setFinding("nsr");
+      } else {
+        setFinding("vfCoarse");
+      }
+      return;
+    }
+    const vfOpt = (e.target as HTMLElement).closest("button[data-vf-finding]");
+    if (vfOpt) {
+      const id = (vfOpt as HTMLElement).dataset.vfFinding as FindingId;
+      setFinding(id);
+      return;
+    }
+    const vtBtn = (e.target as HTMLElement).closest("#btn-vt");
+    if (vtBtn) {
+      const open = els["vt-options"].classList.contains("is-open");
+      if (open && VT_FINDING_IDS.has(state.finding)) {
+        holdExpandOpen("vt");
+        setFinding("nsr");
+      } else {
+        setFinding("vt");
+      }
+      return;
+    }
+    const vtOpt = (e.target as HTMLElement).closest("button[data-vt-finding]");
+    if (vtOpt) {
+      const id = (vtOpt as HTMLElement).dataset.vtFinding as FindingId;
+      setFinding(id);
+      return;
+    }
+    const pacedBtn = (e.target as HTMLElement).closest("#btn-paced");
+    if (pacedBtn) {
+      const open = els["paced-options"].classList.contains("is-open");
+      if (open && PACED_FINDING_IDS.has(state.finding)) {
+        holdExpandOpen("paced");
+        setFinding("nsr");
+      } else {
+        setFinding("pacedAtrial");
+      }
+      return;
+    }
+    const pacedOpt = (e.target as HTMLElement).closest("button[data-paced-finding]");
+    if (pacedOpt) {
+      const id = (pacedOpt as HTMLElement).dataset.pacedFinding as FindingId;
       setFinding(id);
       return;
     }
@@ -1449,7 +1841,28 @@ function main() {
     flutterBtn.hidden = !flutterMatch;
     if (flutterMatch) visible += 1;
 
-    // Deep-link search: jump into matching BBB / CHB / flutter pattern
+    const vtMatch =
+      q.trim().length === 0 ||
+      FINDINGS.some((f) => VT_FINDING_IDS.has(f.id) && findingMatchesQuery(f, q));
+    const vtBtn = els["btn-vt"] as HTMLButtonElement;
+    vtBtn.hidden = !vtMatch;
+    if (vtMatch) visible += 1;
+
+    const vfMatch =
+      q.trim().length === 0 ||
+      FINDINGS.some((f) => VF_FINDING_IDS.has(f.id) && findingMatchesQuery(f, q));
+    const vfBtn = els["btn-vf"] as HTMLButtonElement;
+    vfBtn.hidden = !vfMatch;
+    if (vfMatch) visible += 1;
+
+    const pacedMatch =
+      q.trim().length === 0 ||
+      FINDINGS.some((f) => PACED_FINDING_IDS.has(f.id) && findingMatchesQuery(f, q));
+    const pacedBtn = els["btn-paced"] as HTMLButtonElement;
+    pacedBtn.hidden = !pacedMatch;
+    if (pacedMatch) visible += 1;
+
+    // Deep-link search: jump into matching BBB / CHB / flutter / VT / VF / paced pattern
     const qLower = q.trim().toLowerCase();
     if (qLower.length >= 3) {
       const bbbHit = FINDINGS.find(
@@ -1478,6 +1891,33 @@ function main() {
       );
       if (flutterHit && state.finding !== flutterHit.id) {
         setFindingExpand(els["flutter-options"], true);
+      }
+      const vtHit = FINDINGS.find(
+        (f) =>
+          VT_FINDING_IDS.has(f.id) &&
+          findingMatchesQuery(f, q) &&
+          (f.id === qLower || f.short.toLowerCase() === qLower || f.aliases?.some((a) => a === qLower)),
+      );
+      if (vtHit && state.finding !== vtHit.id) {
+        setFindingExpand(els["vt-options"], true);
+      }
+      const vfHit = FINDINGS.find(
+        (f) =>
+          VF_FINDING_IDS.has(f.id) &&
+          findingMatchesQuery(f, q) &&
+          (f.id === qLower || f.short.toLowerCase() === qLower || f.aliases?.some((a) => a === qLower)),
+      );
+      if (vfHit && state.finding !== vfHit.id) {
+        setFindingExpand(els["vf-options"], true);
+      }
+      const pacedHit = FINDINGS.find(
+        (f) =>
+          PACED_FINDING_IDS.has(f.id) &&
+          findingMatchesQuery(f, q) &&
+          (f.id === qLower || f.short.toLowerCase() === qLower || f.aliases?.some((a) => a === qLower)),
+      );
+      if (pacedHit && state.finding !== pacedHit.id) {
+        setFindingExpand(els["paced-options"], true);
       }
     }
 
@@ -1607,6 +2047,16 @@ function main() {
     setPlaying(true);
   }
 
+  /** Once pre-shock history has scrolled off, drop the absolute CV sampler. */
+  function maybeReleaseCardioversionSampler() {
+    const cv = state.cvRecovery;
+    if (!cv?.settled) return;
+    if (state.elapsed < cv.shockAtSec + ekg.getWindowSec()) return;
+    state.cvRecovery = null;
+    ekg.setCustomSample(null, { preserveTrace: true });
+    document.body.classList.remove("cv-active");
+  }
+
   const cvInput = els["cv-target-input"] as HTMLInputElement;
 
   cvInput.addEventListener("focus", () => {
@@ -1733,19 +2183,43 @@ function main() {
     state.customBlocks = [];
     state.customBlockMode = false;
     clearStim();
+    holdExpandOpen("bbb");
     if (blocksForFinding(state.finding).length > 0) setFinding("nsr");
     else syncFindingUI();
   });
 
   els["btn-chb-clear"].addEventListener("click", () => {
     clearStim();
+    holdExpandOpen("chb");
     if (CHB_FINDING_IDS.has(state.finding)) setFinding("nsr");
     else syncFindingUI();
   });
 
   els["btn-flutter-clear"].addEventListener("click", () => {
     clearStim();
+    holdExpandOpen("flutter");
     if (FLUTTER_FINDING_IDS.has(state.finding)) setFinding("nsr");
+    else syncFindingUI();
+  });
+
+  els["btn-vf-clear"].addEventListener("click", () => {
+    clearStim();
+    holdExpandOpen("vf");
+    if (VF_FINDING_IDS.has(state.finding)) setFinding("nsr");
+    else syncFindingUI();
+  });
+
+  els["btn-vt-clear"].addEventListener("click", () => {
+    clearStim();
+    holdExpandOpen("vt");
+    if (VT_FINDING_IDS.has(state.finding)) setFinding("nsr");
+    else syncFindingUI();
+  });
+
+  els["btn-paced-clear"].addEventListener("click", () => {
+    clearStim();
+    holdExpandOpen("paced");
+    if (PACED_FINDING_IDS.has(state.finding)) setFinding("nsr");
     else syncFindingUI();
   });
 
@@ -2141,9 +2615,34 @@ function main() {
   resizeAfterLayout();
 
   window.addEventListener("keydown", (e) => {
+    const t = e.target;
+    if (
+      t instanceof HTMLElement &&
+      (t.tagName === "INPUT" ||
+        t.tagName === "TEXTAREA" ||
+        t.tagName === "SELECT" ||
+        t.isContentEditable)
+    ) {
+      return;
+    }
+    // Splitter owns arrows while focused
+    if (t === splitter || splitter.contains(t as Node)) return;
+
     if (e.code === "Space") {
       e.preventDefault();
       setPlaying(!state.playing);
+    } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      e.preventDefault();
+      if (state.playing) setPlaying(false);
+      const windowSec = ekg.getWindowSec();
+      const step = e.shiftKey ? windowSec * 0.25 : 0.2; // 1 large box, or ¼ strip
+      const delta = e.key === "ArrowRight" ? step : -step;
+      state.elapsed = Math.max(0, state.elapsed + delta);
+    } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      e.preventDefault();
+      const step = e.shiftKey ? 10 : 5;
+      const next = state.ventRateBpm + (e.key === "ArrowUp" ? step : -step);
+      onRateChange(next);
     } else if (e.key === "r" || e.key === "R") {
       state.elapsed = 0;
     } else if (e.key === "v" || e.key === "V") {
@@ -2156,6 +2655,7 @@ function main() {
   });
 
   let last = performance.now();
+  let lastFooterKey = "";
   function animate(now: number) {
     requestAnimationFrame(animate);
     const dt = Math.min(0.05, (now - last) / 1000);
@@ -2176,11 +2676,16 @@ function main() {
       ) {
         finishCardioversionRecovery();
       }
+      maybeReleaseCardioversionSampler();
     }
 
     const { phase, active, mark, tCycle, leads } = ekg.update(state.elapsed);
     els["phase-chip"].textContent = phase;
-    els["ekg-footer"].innerHTML = `<strong>${mark}</strong> · ${phase} — impulse travels the pathways${state.fieldOn ? " · field on" : ""}${state.leadsOn ? " · leads on" : ""}.`;
+    const footerKey = `${mark}|${phase}|${state.fieldOn}|${state.leadsOn}`;
+    if (footerKey !== lastFooterKey) {
+      lastFooterKey = footerKey;
+      els["ekg-footer"].innerHTML = `<strong>${mark}</strong> · ${phase} — impulse travels the pathways${state.fieldOn ? " · field on" : ""}${state.leadsOn ? " · leads on" : ""}.`;
+    }
 
     const lit = active.filter((id) => segmentVisibility[id] !== false);
     const stimBranches = state.stim.site && !state.upload ? branchesFromStim(state.stim.site) : undefined;

@@ -120,13 +120,24 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
   const MAX_WINDOW_SEC = COLUMN_WINDOW_SEC * GRID_COLS;
   /**
    * Samples across the longest (rhythm) window.
-   * Keep SAMPLES×SUBSAMPLE near the old 360×8 budget so complex rhythms don't stall the UI.
+   * With incremental fill we only sample new bins each frame; SUBSAMPLE stays
+   * for peak-hold so thin QRS don't alias.
    */
   const SAMPLES = 180 * GRID_COLS;
   const SUBSAMPLE = 4;
   const buffers: Record<LeadId, Float32Array> = Object.fromEntries(
     LEADS.map((l) => [l, new Float32Array(SAMPLES)]),
   ) as Record<LeadId, Float32Array>;
+  /** Absolute time at the right edge of the buffers (newest sample). */
+  let bufferEndSec = Number.NaN;
+  let bufferWindowSec = 0;
+  let buffersDirty = true;
+
+  function invalidateBuffers() {
+    buffersDirty = true;
+    bufferEndSec = Number.NaN;
+    for (const l of LEADS) buffers[l].fill(0);
+  }
 
   function sampleAt(tNorm: number, tAbs?: number): WaveSample {
     if (upload) return sampleUploaded(upload, tNorm);
@@ -158,9 +169,7 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
     const changed = findingId !== id;
     findingId = id;
     if (!upload) cycleSec = getFinding(id).cycleSec;
-    if (changed) {
-      for (const l of LEADS) buffers[l].fill(0);
-    }
+    if (changed) invalidateBuffers();
   }
 
   function setCycleSec(sec: number) {
@@ -169,16 +178,14 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
 
   function setUpload(next: UploadedEkg | null) {
     upload = next;
-    for (const l of LEADS) buffers[l].fill(0);
+    invalidateBuffers();
   }
 
   function setCustomSample(fn: ((t: number) => WaveSample) | null, opts?: CustomSampleOpts) {
     customSample = fn;
     customAbsolute = !!fn && !!opts?.absolute;
     customTCycleAt = fn && opts?.absolute ? (opts.tCycleAt ?? null) : null;
-    if (!opts?.preserveTrace) {
-      for (const l of LEADS) buffers[l].fill(0);
-    }
+    if (!opts?.preserveTrace) invalidateBuffers();
   }
 
   function onScrub(handler: (deltaSec: number) => void) {
@@ -634,6 +641,70 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
     return sampleAt(tc / cycle, tAbs);
   }
 
+  /** Peak-hold sample into buffer column `i` for absolute time near `endSec`. */
+  function fillBin(i: number, endSec: number, cycle: number, shown: Set<LeadId>, dtBin: number) {
+    const ageCenter = ((SAMPLES - 1 - i) / (SAMPLES - 1)) * viewWindowSec;
+    for (const lead of LEADS) buffers[lead][i] = 0;
+    for (let s = 0; s < SUBSAMPLE; s++) {
+      const frac = (s + 0.5) / SUBSAMPLE;
+      const age = ageCenter + (frac - 0.5) * dtBin;
+      const smp = sampleNormAt(endSec - age, cycle);
+      for (const lead of LEADS) {
+        if (!shown.has(lead)) continue;
+        const v = smp.leads[lead]!;
+        if (Math.abs(v) >= Math.abs(buffers[lead][i]!)) buffers[lead][i] = v;
+      }
+    }
+  }
+
+  function rebuildBuffers(endSec: number, cycle: number, shown: Set<LeadId>) {
+    const dtBin = viewWindowSec / Math.max(1, SAMPLES - 1);
+    for (let i = 0; i < SAMPLES; i++) fillBin(i, endSec, cycle, shown, dtBin);
+    bufferEndSec = endSec;
+    bufferWindowSec = viewWindowSec;
+    buffersDirty = false;
+  }
+
+  /**
+   * Advance the rolling strip by sampling only new columns.
+   * Full rebuild on scrub-back, big jumps, finding/upload changes, or window resize.
+   */
+  function syncBuffers(elapsedSec: number, cycle: number, shown: Set<LeadId>) {
+    const dtBin = viewWindowSec / Math.max(1, SAMPLES - 1);
+    if (
+      buffersDirty ||
+      !Number.isFinite(bufferEndSec) ||
+      bufferWindowSec !== viewWindowSec
+    ) {
+      rebuildBuffers(elapsedSec, cycle, shown);
+      return;
+    }
+
+    const delta = elapsedSec - bufferEndSec;
+    if (delta < -dtBin * 0.5 || delta > viewWindowSec * 0.75) {
+      rebuildBuffers(elapsedSec, cycle, shown);
+      return;
+    }
+
+    const shiftBins = Math.floor(delta / dtBin + 1e-9);
+    if (shiftBins <= 0) return;
+
+    // Large catch-up (tab throttle / speed-up): full rebuild is cheaper than filling hundreds of bins
+    if (shiftBins > SAMPLES / 5) {
+      rebuildBuffers(elapsedSec, cycle, shown);
+      return;
+    }
+
+    const n = shiftBins;
+    for (const lead of LEADS) {
+      const buf = buffers[lead];
+      buf.copyWithin(0, n);
+    }
+    const newEnd = bufferEndSec + n * dtBin;
+    for (let i = SAMPLES - n; i < SAMPLES; i++) fillBin(i, newEnd, cycle, shown, dtBin);
+    bufferEndSec = newEnd;
+  }
+
   function update(elapsedSec: number) {
     const cycle = effectiveCycle();
     const tCycle =
@@ -670,24 +741,7 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
     const largeBoxesAcross = viewWindowSec / LARGE_BOX_SEC;
     paperMmPx = traceW / (largeBoxesAcross * SMALL_PER_LARGE);
 
-    const dtBin = viewWindowSec / Math.max(1, SAMPLES - 1);
-
-    // Peak-hold each display column so needle-thin QRS don't alias to random heights
-    for (const lead of LEADS) buffers[lead].fill(0);
-    for (let i = 0; i < SAMPLES; i++) {
-      const ageCenter = ((SAMPLES - 1 - i) / (SAMPLES - 1)) * viewWindowSec;
-      for (let s = 0; s < SUBSAMPLE; s++) {
-        const frac = (s + 0.5) / SUBSAMPLE;
-        const age = ageCenter + (frac - 0.5) * dtBin;
-        const tAbs = elapsedSec - age;
-        const smp = sampleNormAt(tAbs, cycle);
-        for (const lead of LEADS) {
-          if (!shown.has(lead)) continue;
-          const v = smp.leads[lead]!;
-          if (Math.abs(v) >= Math.abs(buffers[lead][i]!)) buffers[lead][i] = v;
-        }
-      }
-    }
+    syncBuffers(elapsedSec, cycle, shown);
 
     const c = ctx!;
     c.clearRect(0, 0, cssW, cssH);

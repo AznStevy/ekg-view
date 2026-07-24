@@ -269,13 +269,15 @@ function isDiscordantRepol(finding: FindingId): boolean {
     case "rbbb":
     case "rbbbLafb":
     case "rbbbLpfb":
+    case "pac":
     case "pvc":
     case "vt":
     case "vtMonoLbbb":
     case "vtMonoRbbb":
     case "vtPoly":
     case "torsades":
-    case "vf":
+    case "vfCoarse":
+    case "vfFine":
     case "pacedVentricular":
     case "pacedDual":
     case "pacedBiv":

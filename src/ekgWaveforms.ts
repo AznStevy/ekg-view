@@ -1,4 +1,5 @@
 import type { FindingId, SegmentId } from "./findings";
+import { leadsFromHintWeights, projectCardiacVector, vectorFromAxis } from "./leadAxes";
 
 export type LeadId =
   | "I"
@@ -96,12 +97,33 @@ function emptyLeads(): Record<LeadId, number> {
   };
 }
 
-function scaleLeads(base: number, weights: Partial<Record<LeadId, number>>): Record<LeadId, number> {
-  const out = emptyLeads();
-  for (const lead of LEADS) {
-    out[lead] = base * (weights[lead] ?? 0);
+function scaleLeads(
+  base: number,
+  weights: Partial<Record<LeadId, number>>,
+  opts?: { precordial?: "dipole" | "local" },
+): Record<LeadId, number> {
+  // Local precordials (STEMI etc.) still need limb dipole fit
+  if (opts?.precordial === "local") {
+    return leadsFromHintWeights(base, weights, opts);
   }
-  return out;
+  // Fast path: complete maps that already obey Einthoven (dipole projections)
+  // — skip least-squares refit + extra allocations on the hot strip path.
+  let complete = true;
+  for (const lead of LEADS) {
+    if (weights[lead] == null) {
+      complete = false;
+      break;
+    }
+  }
+  if (complete) {
+    const ein = weights.I! + weights.III! - weights.II!;
+    if (Math.abs(ein) < 1e-4) {
+      const out = emptyLeads();
+      for (const lead of LEADS) out[lead] = base * weights[lead]!;
+      return out;
+    }
+  }
+  return leadsFromHintWeights(base, weights, opts);
 }
 
 function addLeads(a: Record<LeadId, number>, b: Record<LeadId, number>): Record<LeadId, number> {
@@ -110,54 +132,73 @@ function addLeads(a: Record<LeadId, number>, b: Record<LeadId, number>): Record<
   return out;
 }
 
-/** Normal QRS axis ~ +60° — tall II/aVF, modest I, progressive precordials */
-const NSR_P: Partial<Record<LeadId, number>> = {
-  I: 0.55,
-  II: 1.0,
-  III: 0.55,
-  aVR: -0.7,
-  aVL: 0.15,
-  aVF: 0.85,
-  V1: -0.25,
-  V2: -0.1,
-  V3: 0.25,
-  V4: 0.55,
-  V5: 0.7,
-  V6: 0.75,
-};
+function addInto(target: Record<LeadId, number>, add: Record<LeadId, number>): void {
+  for (const lead of LEADS) target[lead] += add[lead];
+}
 
-const NSR_QRS: Partial<Record<LeadId, number>> = {
-  I: 0.75,
-  II: 1.05,
-  III: 0.45,
-  aVR: -0.85,
-  aVL: 0.35,
-  aVF: 0.8,
-  V1: -0.55,
-  V2: -0.35,
-  V3: 0.35,
-  V4: 1.05,
-  V5: 1.15,
-  V6: 1.0,
-};
+/**
+ * Normal sinus lead geometry (teaching dipole).
+ *
+ * Important: a *single* fixed-axis QRS at +60° is nearly orthogonal to aVL
+ * (gain ≈ 0), so T would dwarf QRS there, and P/T vanish in V1. Real QRS is
+ * multiphasic — septal → main → terminal vectors — which restores qR/rS
+ * reciprocity and keeps aVL QRS larger than T.
+ */
 
-const NSR_T: Partial<Record<LeadId, number>> = {
-  I: 0.7,
-  II: 1.0,
-  III: 0.4,
-  aVR: -0.75,
-  aVL: 0.3,
-  aVF: 0.75,
-  V1: -0.15,
-  V2: 0.25,
-  V3: 0.55,
-  V4: 0.85,
-  V5: 0.9,
-  V6: 0.8,
-};
+/** Late left-atrial / mean P ~ +55° (used where a single P map is needed) */
+const NSR_P: Partial<Record<LeadId, number>> = projectCardiacVector(1, {
+  x: 0.7,
+  y: 0.75,
+  z: -0.15,
+});
+
+/** Concordant T ~ +55° inferior · slight +Z so V2–V6 stay upright; V1 still mildly inverted */
+const NSR_T: Partial<Record<LeadId, number>> = projectCardiacVector(1, {
+  x: 0.55,
+  y: 0.82,
+  z: 0.06,
+});
+
+/** Septal: rightward / anterior → q in I/aVL/V6, small r in V1 */
+const NSR_SEPTAL = projectCardiacVector(1, { x: -0.55, y: 0.05, z: 0.9 });
+/** Main free wall: ~+40° (left of +60°) so aVL keeps a real R · mild anterior */
+const NSR_MAIN = projectCardiacVector(1, vectorFromAxis(40, 0.3));
+/** Terminal: rightward / posterior → S in V1–V2 */
+const NSR_TERM = projectCardiacVector(1, { x: -0.2, y: -0.2, z: -0.95 });
+/** Early right-atrial P (anterior) for biphasic V1 */
+const NSR_P_EARLY = projectCardiacVector(1, { x: 0.05, y: 0.45, z: 1.05 });
+
+/**
+ * Fine atrial f-wave dipole: rightward + inferior + mild anterior.
+ * Classic AF — small undulations, clearest in V1 / inferior, quiet laterally.
+ */
+const AFIB_F = projectCardiacVector(1, { x: -0.4, y: 0.72, z: 0.28 });
+
+/** Low-amplitude irregular f-wave baseline (shared by AF / tachy–brady). */
+function addAfibFwaves(leads: Record<LeadId, number>, tt: number, strength = 1): void {
+  // Fewer, quieter harmonics so V1 stays readable without looking like coarse flutter
+  for (let i = 0; i < 7; i++) {
+    const freq = 22 + i * 4.1;
+    const phase = i * 1.7;
+    const amp = (0.011 + 0.004 * (i % 3)) * strength;
+    const fib =
+      Math.sin((tt * freq + phase) * Math.PI * 2) * amp +
+      Math.sin((tt * (freq * 1.31) + phase * 0.6) * Math.PI * 2) * amp * 0.45;
+    addInto(leads, scaleLeads(fib, AFIB_F));
+  }
+}
 
 function pWaveLeads(t: number, mu = 0.1, amp = 0.18, sigma = 0.025): Record<LeadId, number> {
-  return scaleLeads(gauss(t, mu, sigma, amp), NSR_P);
+  // Biphasic V1 teaching P: early RA (anterior) then LA (posterior) — keep |V1| readable
+  const early = scaleLeads(
+    gauss(t, mu - sigma * 0.45, sigma * 0.7, amp * 0.85),
+    NSR_P_EARLY,
+  );
+  const late = scaleLeads(
+    gauss(t, mu + sigma * 0.35, sigma * 0.85, amp * 0.9),
+    NSR_P,
+  );
+  return addLeads(early, late);
 }
 
 function qrsLeads(
@@ -167,13 +208,27 @@ function qrsLeads(
   amp = 1.0,
   q = -0.08,
   s = -0.22,
-  weights: Partial<Record<LeadId, number>> = NSR_QRS,
+  weights?: Partial<Record<LeadId, number>>,
 ): Record<LeadId, number> {
-  const shape =
-    gauss(t, mu - width * 0.55, width * 0.35, q) +
-    gauss(t, mu, width * 0.42, amp) +
-    gauss(t, mu + width * 0.7, width * 0.4, s);
-  return scaleLeads(shape, weights);
+  // Custom map (BBB overlays, hemiblocks, etc.): single envelope × weights
+  if (weights) {
+    const shape =
+      gauss(t, mu - width * 0.55, width * 0.35, q) +
+      gauss(t, mu, width * 0.42, amp) +
+      gauss(t, mu + width * 0.7, width * 0.4, s);
+    return scaleLeads(shape, weights);
+  }
+  // Default NSR-like multiphasic vectors (septal → main → terminal)
+  // Keep septal q and terminal S clearly visible for teaching (still small vs R).
+  const septalAmp = Math.max(0.28, Math.abs(q) * 3.5);
+  const termAmp = Math.max(0.45, Math.abs(s) * 2.1);
+  return addLeads(
+    addLeads(
+      scaleLeads(gauss(t, mu - width * 0.6, width * 0.42, septalAmp), NSR_SEPTAL),
+      scaleLeads(gauss(t, mu, width * 0.45, amp), NSR_MAIN),
+    ),
+    scaleLeads(gauss(t, mu + width * 0.78, width * 0.48, termAmp), NSR_TERM),
+  );
 }
 
 function tWaveLeads(
@@ -186,28 +241,16 @@ function tWaveLeads(
   return scaleLeads(gauss(t, mu, sigma, amp), weights);
 }
 
-function wideQrsLeads(t: number, mu = 0.32, amp = 0.95): Record<LeadId, number> {
+function wideQrsLeads(t: number, mu = 0.32, amp = 0.95, cycleSec = 0.86): Record<LeadId, number> {
+  // Widths in absolute seconds so VT (short cycle) stays wide on paper
+  const abs = (sec: number) => sec / Math.max(0.25, cycleSec);
   const shape =
-    gauss(t, mu - 0.04, 0.03, -0.15) +
-    gauss(t, mu, 0.055, amp) +
-    gauss(t, mu + 0.06, 0.04, -0.35) +
-    gauss(t, mu + 0.1, 0.03, 0.25);
-  // Discordant / extreme axis-ish for VT/PVC
-  const w: Partial<Record<LeadId, number>> = {
-    I: -0.55,
-    II: -0.85,
-    III: -0.7,
-    aVR: 0.7,
-    aVL: -0.2,
-    aVF: -0.8,
-    V1: 1.1,
-    V2: 0.9,
-    V3: 0.2,
-    V4: -0.55,
-    V5: -0.85,
-    V6: -0.9,
-  };
-  return scaleLeads(shape, w);
+    gauss(t, mu - abs(0.035), abs(0.028), -0.2) +
+    gauss(t, mu, abs(0.05), amp) +
+    gauss(t, mu + abs(0.055), abs(0.04), -0.42) +
+    gauss(t, mu + abs(0.1), abs(0.03), 0.22);
+  // Extreme / northwest axis · right-precordial positive (typical PVC/VT teaching)
+  return scaleLeads(shape, projectCardiacVector(1, { x: -0.55, y: -0.85, z: 0.95 }));
 }
 
 /** Thin pacing artifact visible across leads (sharp, brief) */
@@ -236,68 +279,33 @@ function pacedQrsLeads(t: number, mu: number, amp = 1.0): Record<LeadId, number>
     gauss(t, mu - 0.02, 0.022, -0.08) +
     gauss(t, mu + 0.02, 0.05, amp) +
     gauss(t, mu + 0.08, 0.04, -0.28);
-  const w: Partial<Record<LeadId, number>> = {
-    I: 0.95,
-    II: 0.45,
-    III: -0.35,
-    aVR: -0.65,
-    aVL: 0.9,
-    aVF: 0.05,
-    V1: -1.05,
-    V2: -0.95,
-    V3: -0.25,
-    V4: 0.55,
-    V5: 0.95,
-    V6: 1.05,
-  };
-  return scaleLeads(shape, w);
+  // RV apical / LBBB-like: leftward · posterior (deep V1)
+  return scaleLeads(shape, projectCardiacVector(1, { x: 0.95, y: 0.1, z: -0.9 }));
 }
 
-function lbbbMorphQrs(t: number, mu: number, amp = 1.0): Record<LeadId, number> {
+function lbbbMorphQrs(t: number, mu: number, amp = 1.0, cycleSec = 0.86): Record<LeadId, number> {
+  const abs = (sec: number) => sec / Math.max(0.25, cycleSec);
   const shape =
-    gauss(t, mu - 0.015, 0.02, -0.05) +
-    gauss(t, mu + 0.02, 0.048, amp * 0.7) +
-    gauss(t, mu + 0.07, 0.045, amp) +
-    gauss(t, mu + 0.12, 0.03, -0.2);
-  const w: Partial<Record<LeadId, number>> = {
-    I: 0.95,
-    II: 0.55,
-    III: -0.3,
-    aVR: -0.7,
-    aVL: 0.85,
-    aVF: 0.1,
-    V1: -1.1,
-    V2: -1.0,
-    V3: -0.3,
-    V4: 0.4,
-    V5: 0.95,
-    V6: 1.05,
-  };
-  return scaleLeads(shape, w);
+    gauss(t, mu - abs(0.02), abs(0.022), -0.08) +
+    gauss(t, mu + abs(0.02), abs(0.045), amp * 0.65) +
+    gauss(t, mu + abs(0.065), abs(0.05), amp) +
+    gauss(t, mu + abs(0.11), abs(0.032), -0.22);
+  // LBBB: leftward / superior-ish · deep S in V1
+  return scaleLeads(shape, projectCardiacVector(1, { x: 0.9, y: 0.15, z: -0.85 }));
 }
 
-function rbbbMorphQrs(t: number, mu: number, amp = 1.0): Record<LeadId, number> {
+function rbbbMorphQrs(t: number, mu: number, amp = 1.0, cycleSec = 0.86): Record<LeadId, number> {
+  const abs = (sec: number) => sec / Math.max(0.25, cycleSec);
   const shape =
-    gauss(t, mu - 0.02, 0.02, -0.12) +
-    gauss(t, mu + 0.01, 0.03, amp * 0.55) +
-    gauss(t, mu + 0.06, 0.035, amp) +
-    gauss(t, mu + 0.11, 0.03, -0.25);
-  const w: Partial<Record<LeadId, number>> = {
-    I: -0.35,
-    II: -0.55,
-    III: -0.45,
-    aVR: 0.55,
-    aVL: -0.15,
-    aVF: -0.5,
-    V1: 1.15,
-    V2: 1.0,
-    V3: 0.35,
-    V4: -0.45,
-    V5: -0.75,
-    V6: -0.85,
-  };
-  return scaleLeads(shape, w);
+    gauss(t, mu - abs(0.02), abs(0.02), -0.12) +
+    gauss(t, mu + abs(0.01), abs(0.028), amp * 0.5) +
+    gauss(t, mu + abs(0.055), abs(0.038), amp) +
+    gauss(t, mu + abs(0.1), abs(0.032), -0.28);
+  // RBBB: late rightward / anterior · rsR′ V1
+  return scaleLeads(shape, projectCardiacVector(1, { x: -0.4, y: -0.45, z: 1.05 }));
 }
+
+const VT_DISCORDANT_T = projectCardiacVector(1, { x: 0.5, y: 0.65, z: -0.4 });
 
 type Window = { start: number; end: number; phase: string; active: SegmentId[]; mark: CycleMark };
 
@@ -369,30 +377,8 @@ function sampleAfib(t: number): WaveSample {
   let leads = emptyLeads();
   /** ~5 irregular QRS @ avg 90 bpm → pattern window 3.33 s */
   const CYCLE = 3.33;
-  const s = paperScale(CYCLE);
 
-  const fibW: Partial<Record<LeadId, number>> = {
-    I: 0.25,
-    II: 0.45,
-    III: 0.4,
-    aVR: -0.3,
-    aVL: 0.1,
-    aVF: 0.4,
-    V1: 1.0,
-    V2: 0.55,
-    V3: 0.25,
-    V4: 0.15,
-    V5: 0.12,
-    V6: 0.1,
-  };
-  for (let i = 0; i < 11; i++) {
-    const freq = 18 + i * 3.7;
-    const phase = i * 1.9;
-    const amp = 0.035 + 0.012 * (i % 4);
-    const fib = Math.sin((tt * freq + phase) * Math.PI * 2) * amp;
-    const fib2 = Math.sin((tt * (freq * 1.37) + phase * 0.7) * Math.PI * 2) * amp * 0.55;
-    leads = addLeads(leads, scaleLeads(fib + fib2, fibW));
-  }
+  addAfibFwaves(leads, tt, 1);
 
   // Irregularly irregular R–R (absolute seconds)
   const beatsAbs = [0.18, 0.72, 1.15, 1.95, 2.7];
@@ -404,11 +390,15 @@ function sampleAfib(t: number): WaveSample {
   };
 
   for (const b of beats) {
-    const inQrs = tt >= b - 0.02 * s && tt < b + 0.1 * s;
-    const inT = tt >= b + 0.1 * s && tt < b + 0.18 * s;
+    // Absolute timing: QRS ~80 ms, QT onset ~280–320 ms later (not glued to QRS)
+    const qrsW = 0.08 / CYCLE;
+    const tMu = b + 0.3 / CYCLE;
+    const tSig = 0.05 / CYCLE;
+    const inQrs = tt >= b - 0.02 / CYCLE && tt < b + qrsW;
+    const inT = tt >= tMu - 2.2 * tSig && tt < tMu + 2.5 * tSig;
     if (inQrs || inT) {
-      leads = addLeads(leads, qrsLeads(tt, b, 0.024 * s, 1.0, -0.06, -0.18));
-      leads = addLeads(leads, tWaveLeads(tt, b + 0.12 * s, 0.24, 0.038 * s));
+      leads = addLeads(leads, qrsLeads(tt, b, 0.028 / CYCLE, 1.0, -0.06, -0.18));
+      leads = addLeads(leads, tWaveLeads(tt, tMu, 0.28, tSig));
     }
     if (inQrs) {
       meta = {
@@ -447,84 +437,33 @@ function sampleAflutter(t: number, dir: "ccw" | "cw"): WaveSample {
   const fIndex = Math.min(3, Math.max(0, Math.floor((tt - f0 + 1e-6) / period)));
 
   if (dir === "ccw") {
+    // Modest inferior sawtooth (~¼–⅓ of prior amp) — classic continuous F, not giant
     const inf =
-      u < 0.18 ? -0.42 + (u / 0.18) * 0.62 : 0.2 - ((u - 0.18) / 0.82) * 0.62;
+      u < 0.18 ? -0.18 + (u / 0.18) * 0.26 : 0.08 - ((u - 0.18) / 0.82) * 0.26;
     leads = addLeads(
       leads,
-      scaleLeads(inf, {
-        I: 0.15,
-        II: 1.15,
-        III: 1.05,
-        aVR: 0.45,
-        aVL: -0.55,
-        aVF: 1.15,
-        V1: 0.05,
-        V2: 0.04,
-        V3: 0.03,
-        V4: 0.03,
-        V5: 0.04,
-        V6: 0.05,
-      }),
+      scaleLeads(inf, projectCardiacVector(1, { x: 0.05, y: 1.0, z: 0.05 })),
     );
     const mu = f0 + fIndex * period;
-    const v1 = gauss(tt, mu + 0.045 * s, 0.016 * s, 0.3) + gauss(tt, mu + 0.095 * s, 0.014 * s, -0.07);
+    const v1 = gauss(tt, mu + 0.045 * s, 0.016 * s, 0.12) + gauss(tt, mu + 0.095 * s, 0.014 * s, -0.03);
     leads = addLeads(
       leads,
-      scaleLeads(v1, {
-        I: 0.02,
-        II: 0.03,
-        III: 0.03,
-        aVR: -0.08,
-        aVL: 0.02,
-        aVF: 0.03,
-        V1: 1.0,
-        V2: 0.55,
-        V3: 0.18,
-        V4: 0.04,
-        V5: 0.02,
-        V6: 0.02,
-      }),
+      scaleLeads(v1, projectCardiacVector(1, { x: -0.15, y: 0.1, z: 0.85 })),
     );
   } else {
     const inf =
       u < 0.45
-        ? 0.4 * Math.sin((u / 0.45) * Math.PI)
-        : -0.14 * Math.sin(((u - 0.45) / 0.55) * Math.PI);
+        ? 0.16 * Math.sin((u / 0.45) * Math.PI)
+        : -0.06 * Math.sin(((u - 0.45) / 0.55) * Math.PI);
     leads = addLeads(
       leads,
-      scaleLeads(inf, {
-        I: -0.28,
-        II: 1.05,
-        III: 0.95,
-        aVR: -0.4,
-        aVL: 0.4,
-        aVF: 1.05,
-        V1: 0.04,
-        V2: 0.03,
-        V3: 0.03,
-        V4: 0.03,
-        V5: 0.04,
-        V6: 0.05,
-      }),
+      scaleLeads(inf, projectCardiacVector(1, { x: -0.15, y: 0.95, z: 0.05 })),
     );
     const mu = f0 + fIndex * period;
-    const v1 = gauss(tt, mu + 0.055 * s, 0.03 * s, -0.34) + gauss(tt, mu + 0.13 * s, 0.02 * s, 0.09);
+    const v1 = gauss(tt, mu + 0.055 * s, 0.03 * s, -0.14) + gauss(tt, mu + 0.13 * s, 0.02 * s, 0.04);
     leads = addLeads(
       leads,
-      scaleLeads(v1, {
-        I: 0.02,
-        II: 0.02,
-        III: 0.02,
-        aVR: 0.06,
-        aVL: -0.02,
-        aVF: 0.02,
-        V1: 1.0,
-        V2: 0.6,
-        V3: 0.2,
-        V4: 0.05,
-        V5: 0.02,
-        V6: 0.02,
-      }),
+      scaleLeads(v1, projectCardiacVector(1, { x: -0.1, y: 0.08, z: 0.9 })),
     );
   }
 
@@ -905,23 +844,10 @@ function sampleLbbb(t: number): WaveSample {
   );
 }
 
-/** Classic LAFB: left axis, qR I/aVL, rS inferior — QRS usually not very wide */
+/** Classic LAFB: left axis (~−45°), qR I/aVL, rS inferior — QRS usually not very wide */
 function sampleLafb(t: number): WaveSample {
   const tt = clamp01(t);
-  const axis: Partial<Record<LeadId, number>> = {
-    I: 0.75,
-    II: -0.55,
-    III: -0.85,
-    aVR: -0.15,
-    aVL: 0.95,
-    aVF: -0.7,
-    V1: -0.35,
-    V2: -0.15,
-    V3: 0.35,
-    V4: 0.75,
-    V5: 0.85,
-    V6: 0.7,
-  };
+  const axis = projectCardiacVector(1, vectorFromAxis(-45, 0.35));
   let leads = pWaveLeads(tt, 0.1);
   leads = addLeads(
     leads,
@@ -944,23 +870,10 @@ function sampleLafb(t: number): WaveSample {
   );
 }
 
-/** Classic LPFB: right axis, rS I/aVL, qR inferior */
+/** Classic LPFB: right axis (~+120°), rS I/aVL, qR inferior */
 function sampleLpfb(t: number): WaveSample {
   const tt = clamp01(t);
-  const axis: Partial<Record<LeadId, number>> = {
-    I: -0.55,
-    II: 0.85,
-    III: 0.95,
-    aVR: -0.25,
-    aVL: -0.7,
-    aVF: 0.9,
-    V1: -0.3,
-    V2: -0.1,
-    V3: 0.4,
-    V4: 0.8,
-    V5: 0.7,
-    V6: 0.45,
-  };
+  const axis = projectCardiacVector(1, vectorFromAxis(120, 0.35));
   let leads = pWaveLeads(tt, 0.1);
   leads = addLeads(
     leads,
@@ -1077,133 +990,209 @@ function sampleRbbbLpfb(t: number): WaveSample {
   );
 }
 
+/** Ectopic atrial P′ — often inverted inferior / different from sinus */
+const PAC_P_VEC = projectCardiacVector(1, { x: 0.25, y: -0.75, z: 0.15 });
+
+function addNarrowBeat(
+  leads: Record<LeadId, number>,
+  tt: number,
+  cycle: number,
+  pSec: number,
+  opts?: { pac?: boolean; amp?: number },
+): Record<LeadId, number> {
+  const abs = (sec: number) => sec / cycle;
+  const qSec = pSec + 0.16;
+  const tSec = pSec + 0.44;
+  const amp = opts?.amp ?? 1;
+  let out = leads;
+  if (opts?.pac) {
+    out = addLeads(out, scaleLeads(gauss(tt, abs(pSec), abs(0.022), 0.16), PAC_P_VEC));
+  } else {
+    out = addLeads(out, pWaveLeads(tt, abs(pSec), 0.17, abs(0.025)));
+  }
+  out = addLeads(out, qrsLeads(tt, abs(qSec), abs(0.027), amp, -0.05, -0.16));
+  out = addLeads(out, tWaveLeads(tt, abs(tSec), 0.28, abs(0.05)));
+  return out;
+}
+
+function addPvcBeat(leads: Record<LeadId, number>, tt: number, cycle: number, qSec: number): Record<LeadId, number> {
+  const abs = (sec: number) => sec / cycle;
+  let out = addLeads(leads, wideQrsLeads(tt, abs(qSec), 1.15, cycle));
+  out = addLeads(out, scaleLeads(gauss(tt, abs(qSec + 0.24), abs(0.055), -0.38), VT_DISCORDANT_T));
+  return out;
+}
+
+function samplePac(t: number): WaveSample {
+  const tt = clamp01(t);
+  /** Multi-beat strip: sinus beats + PACs only (no PVCs), every QRS has a T. */
+  const CYCLE = 7.0;
+  const abs = (sec: number) => sec / CYCLE;
+
+  // Slightly irregular sinus PP and two PACs at different couplings
+  // Times are absolute seconds within the pattern window.
+  const beats: { kind: "sinus" | "pac"; p: number }[] = [
+    { kind: "sinus", p: 0.14 },
+    { kind: "sinus", p: 0.98 }, // RR ~0.84
+    { kind: "pac", p: 1.52 }, // early after prior QRS (~0.54s coupling)
+    { kind: "sinus", p: 2.42 }, // incomplete pause / SA reset from PAC
+    { kind: "sinus", p: 3.30 }, // RR ~0.88
+    { kind: "pac", p: 3.78 }, // different coupling (~0.48s)
+    { kind: "sinus", p: 4.70 },
+    { kind: "sinus", p: 5.58 },
+  ];
+
+  let leads = emptyLeads();
+  for (const b of beats) {
+    leads = addNarrowBeat(leads, tt, CYCLE, b.p, { pac: b.kind === "pac" });
+  }
+
+  let meta: Pick<WaveSample, "phase" | "active" | "mark"> = { phase: "Diastole", active: [], mark: "TP" };
+  for (const b of beats) {
+    const p = abs(b.p);
+    const q = abs(b.p + 0.16);
+    const tw = abs(b.p + 0.44);
+    if (tt >= p - abs(0.02) && tt < q - abs(0.02)) {
+      meta =
+        b.kind === "pac"
+          ? { phase: "PAC · ectopic P′", active: ["internodal", "myocardiumA"], mark: "P" }
+          : { phase: "Sinus P", active: ["sa", "internodal", "myocardiumA"], mark: "P" };
+    } else if (tt >= q - abs(0.02) && tt < q + abs(0.1)) {
+      meta = {
+        phase: b.kind === "pac" ? "PAC conducts · narrow QRS" : "Sinus QRS",
+        active: ["av", "his", "rbb", "lbb", "purkinjeR", "purkinjeL", "myocardiumV"],
+        mark: "QRS",
+      };
+    } else if (tt >= tw - abs(0.08) && tt < tw + abs(0.1)) {
+      meta = { phase: "T wave", active: ["myocardiumV"], mark: "T" };
+    }
+  }
+  return pack(leads, meta);
+}
+
 function samplePvc(t: number): WaveSample {
   const tt = clamp01(t);
-  /** Sinus ~70 bpm · early PVC · full compensatory pause · next sinus */
-  const CYCLE = 2.0;
-  const s = paperScale(CYCLE);
-  const p0 = nrm(0.1, CYCLE);
-  const q0 = nrm(0.1 + 0.16, CYCLE);
-  const pvc = nrm(0.62, CYCLE);
-  const p1 = nrm(0.1 + 2 * 0.86, CYCLE); // full compensatory from prior sinus
+  /** Multi-beat strip: sinus beats + PVCs only (no PACs), every QRS has a T. */
+  const CYCLE = 7.0;
+  const abs = (sec: number) => sec / CYCLE;
+  const RR = 0.86;
 
-  let leads = addLeads(
-    addLeads(pWaveLeads(tt, p0, 0.18, 0.025 * s), qrsLeads(tt, q0, 0.028 * s)),
-    tWaveLeads(tt, q0 + 0.18 * s, 0.26, 0.04 * s),
-  );
-  leads = addLeads(
-    leads,
-    addLeads(
-      // wide PVC — morph authored near 0.4 s VT scale
-      (() => {
-        const vtS = 0.4 / CYCLE;
-        const shape =
-          gauss(tt, pvc - 0.04 * vtS, 0.03 * vtS, -0.15) +
-          gauss(tt, pvc, 0.055 * vtS, 1.1) +
-          gauss(tt, pvc + 0.06 * vtS, 0.04 * vtS, -0.35) +
-          gauss(tt, pvc + 0.1 * vtS, 0.03 * vtS, 0.25);
-        return scaleLeads(shape, {
-          I: -0.55,
-          II: -0.85,
-          III: -0.7,
-          aVR: 0.7,
-          aVL: -0.2,
-          aVF: -0.8,
-          V1: 1.1,
-          V2: 0.9,
-          V3: 0.2,
-          V4: -0.55,
-          V5: -0.85,
-          V6: -0.9,
-        });
-      })(),
-      tWaveLeads(tt, pvc + 0.14 * s, -0.35, 0.05 * s),
-    ),
-  );
-  leads = addLeads(leads, addLeads(pWaveLeads(tt, p1, 0.14, 0.025 * s), qrsLeads(tt, Math.min(0.99, p1 + 0.16 * s), 0.028 * s, 0.35)));
+  // Sinus anchors and PVCs at slightly different couplings; compensatory pause after each PVC
+  type Beat =
+    | { kind: "sinus"; p: number }
+    | { kind: "pvc"; q: number; afterSinusQ: number };
+  const beats: Beat[] = [];
+  // Sinus 1
+  beats.push({ kind: "sinus", p: 0.14 });
+  // Sinus 2
+  beats.push({ kind: "sinus", p: 1.0 });
+  const q2 = 1.16;
+  // PVC A — coupling ~0.56 s
+  beats.push({ kind: "pvc", q: q2 + 0.56, afterSinusQ: q2 });
+  // Next sinus after full compensatory (from q2)
+  const pAfterA = q2 + 2 * RR - 0.16;
+  beats.push({ kind: "sinus", p: pAfterA });
+  const q3 = pAfterA + 0.16;
+  // Sinus 4 (slight RR jitter)
+  beats.push({ kind: "sinus", p: q3 + 0.9 - 0.16 });
+  const q4 = q3 + 0.9;
+  // PVC B — different coupling ~0.48 s
+  beats.push({ kind: "pvc", q: q4 + 0.48, afterSinusQ: q4 });
+  const pAfterB = q4 + 2 * RR - 0.16;
+  if (pAfterB + 0.5 < CYCLE - 0.05) {
+    beats.push({ kind: "sinus", p: pAfterB });
+  }
 
-  let meta: Pick<WaveSample, "phase" | "active" | "mark"> = { phase: "Sinus beat", active: [], mark: "TP" };
-  if (tt < p0 + 0.08 * s) meta = { phase: "Sinus · SA activation", active: ["sa", "internodal", "myocardiumA"], mark: "P" };
-  else if (tt < q0) meta = { phase: "PR", active: ["av"], mark: "PR" };
-  else if (tt < q0 + 0.12 * s) {
-    meta = {
-      phase: "Normal His–Purkinje",
-      active: ["av", "his", "rbb", "lbb", "purkinjeR", "purkinjeL", "myocardiumV"],
-      mark: "QRS",
-    };
-  } else if (tt < pvc - 0.04) meta = { phase: "T wave", active: ["myocardiumV"], mark: "T" };
-  else if (tt < pvc + 0.14 * s) meta = { phase: "PVC · ectopic ventricular focus", active: ["myocardiumV", "purkinjeL"], mark: "QRS" };
-  else if (tt < p1) meta = { phase: "Compensatory pause", active: [], mark: "TP" };
-  else meta = { phase: "Next sinus P", active: ["sa", "internodal", "myocardiumA"], mark: "P" };
+  let leads = emptyLeads();
+  for (const b of beats) {
+    if (b.kind === "sinus") leads = addNarrowBeat(leads, tt, CYCLE, b.p);
+    else leads = addPvcBeat(leads, tt, CYCLE, b.q);
+  }
+
+  let meta: Pick<WaveSample, "phase" | "active" | "mark"> = { phase: "Diastole", active: [], mark: "TP" };
+  for (const b of beats) {
+    if (b.kind === "sinus") {
+      const p = abs(b.p);
+      const q = abs(b.p + 0.16);
+      const tw = abs(b.p + 0.44);
+      if (tt >= p - abs(0.02) && tt < q - abs(0.02)) {
+        meta = { phase: "Sinus P", active: ["sa", "internodal", "myocardiumA"], mark: "P" };
+      } else if (tt >= q - abs(0.02) && tt < q + abs(0.1)) {
+        meta = {
+          phase: "Sinus QRS",
+          active: ["his", "rbb", "lbb", "purkinjeR", "purkinjeL", "myocardiumV"],
+          mark: "QRS",
+        };
+      } else if (tt >= tw - abs(0.08) && tt < tw + abs(0.1)) {
+        meta = { phase: "T wave", active: ["myocardiumV"], mark: "T" };
+      }
+    } else {
+      const q = abs(b.q);
+      const tw = abs(b.q + 0.24);
+      if (tt >= q - abs(0.04) && tt < q + abs(0.16)) {
+        meta = { phase: "PVC · wide QRS · no preceding P", active: ["myocardiumV", "purkinjeL"], mark: "QRS" };
+      } else if (tt >= tw - abs(0.06) && tt < tw + abs(0.1)) {
+        meta = { phase: "Discordant T after PVC", active: ["myocardiumV"], mark: "T" };
+      } else if (tt > tw + abs(0.1) && tt < abs(b.afterSinusQ + 2 * RR - 0.2)) {
+        meta = { phase: "Full compensatory pause", active: [], mark: "TP" };
+      }
+    }
+  }
   return pack(leads, meta);
 }
 
 function sampleVt(t: number): WaveSample {
   const tt = clamp01(t);
-  const leads = addLeads(wideQrsLeads(tt, 0.32, 1.05), tWaveLeads(tt, 0.7, -0.42, 0.048));
+  const CYCLE = 0.4;
+  const abs = (sec: number) => sec / CYCLE;
+  const qrsMu = 0.3;
+  const leads = addLeads(
+    wideQrsLeads(tt, qrsMu, 1.0, CYCLE),
+    scaleLeads(gauss(tt, qrsMu + abs(0.18), abs(0.05), -0.36), VT_DISCORDANT_T),
+  );
   return pack(
     leads,
     phaseFor(tt, [
-      { start: 0.12, end: 0.55, phase: "Ventricular reentry · monomorphic", active: ["myocardiumV", "purkinjeL", "purkinjeR"], mark: "QRS" },
-      { start: 0.55, end: 0.92, phase: "Wide-complex repolarization", active: ["myocardiumV"], mark: "T" },
+      { start: 0.08, end: 0.55, phase: "Ventricular reentry · monomorphic", active: ["myocardiumV", "purkinjeL", "purkinjeR"], mark: "QRS" },
+      { start: 0.55, end: 0.95, phase: "Wide-complex repolarization", active: ["myocardiumV"], mark: "T" },
     ]),
   );
 }
 
 function sampleVtMonoLbbb(t: number): WaveSample {
   const tt = clamp01(t);
-  let leads = lbbbMorphQrs(tt, 0.3, 1.05);
+  const CYCLE = 0.4;
+  const abs = (sec: number) => sec / CYCLE;
+  const qrsMu = 0.28;
+  let leads = lbbbMorphQrs(tt, qrsMu, 1.0, CYCLE);
+  // Discordant T (opposite LBBB vector)
   leads = addLeads(
     leads,
-    scaleLeads(gauss(tt, 0.68, 0.05, 0.38), {
-      I: -0.65,
-      II: -0.35,
-      III: 0.25,
-      aVR: 0.5,
-      aVL: -0.55,
-      aVF: -0.1,
-      V1: 0.8,
-      V2: 0.7,
-      V3: 0.2,
-      V4: -0.3,
-      V5: -0.65,
-      V6: -0.75,
-    }),
+    scaleLeads(gauss(tt, qrsMu + abs(0.18), abs(0.05), 0.34), projectCardiacVector(1, { x: -0.7, y: -0.2, z: 0.75 })),
   );
   return pack(
     leads,
     phaseFor(tt, [
-      { start: 0.1, end: 0.55, phase: "Monomorphic VT · LBBB morphology", active: ["myocardiumV", "purkinjeR", "rbb"], mark: "QRS" },
-      { start: 0.55, end: 0.9, phase: "Discordant T", active: ["myocardiumV"], mark: "T" },
+      { start: 0.08, end: 0.55, phase: "Monomorphic VT · LBBB morphology", active: ["myocardiumV", "purkinjeR", "rbb"], mark: "QRS" },
+      { start: 0.55, end: 0.95, phase: "Discordant T", active: ["myocardiumV"], mark: "T" },
     ]),
   );
 }
 
 function sampleVtMonoRbbb(t: number): WaveSample {
   const tt = clamp01(t);
-  let leads = rbbbMorphQrs(tt, 0.3, 1.05);
+  const CYCLE = 0.4;
+  const abs = (sec: number) => sec / CYCLE;
+  const qrsMu = 0.28;
+  let leads = rbbbMorphQrs(tt, qrsMu, 1.0, CYCLE);
   leads = addLeads(
     leads,
-    scaleLeads(gauss(tt, 0.68, 0.05, 0.35), {
-      I: 0.35,
-      II: 0.45,
-      III: 0.35,
-      aVR: -0.4,
-      aVL: 0.15,
-      aVF: 0.4,
-      V1: -0.7,
-      V2: -0.55,
-      V3: -0.15,
-      V4: 0.35,
-      V5: 0.55,
-      V6: 0.6,
-    }),
+    scaleLeads(gauss(tt, qrsMu + abs(0.18), abs(0.05), 0.32), projectCardiacVector(1, { x: 0.55, y: 0.4, z: -0.7 })),
   );
   return pack(
     leads,
     phaseFor(tt, [
-      { start: 0.1, end: 0.55, phase: "Monomorphic VT · RBBB morphology", active: ["myocardiumV", "purkinjeL", "lbb"], mark: "QRS" },
-      { start: 0.55, end: 0.9, phase: "Secondary T changes", active: ["myocardiumV"], mark: "T" },
+      { start: 0.08, end: 0.55, phase: "Monomorphic VT · RBBB morphology", active: ["myocardiumV", "purkinjeL", "lbb"], mark: "QRS" },
+      { start: 0.55, end: 0.95, phase: "Secondary T changes", active: ["myocardiumV"], mark: "T" },
     ]),
   );
 }
@@ -1211,8 +1200,10 @@ function sampleVtMonoRbbb(t: number): WaveSample {
 function sampleVtPoly(t: number): WaveSample {
   const tt = clamp01(t);
   let leads = emptyLeads();
+  const CYCLE = 2.0;
+  const abs = (sec: number) => sec / CYCLE;
 
-  // Multi-beat teaching strip: wide QRS, beat-to-beat axis / polarity shifts (not TdP spindle)
+  // Multi-beat teaching strip: wide QRS, beat-to-beat axis / polarity shifts
   const nBeats = 6;
   const beatRr = 1 / nBeats;
   let meta: Pick<WaveSample, "phase" | "active" | "mark"> = {
@@ -1222,56 +1213,29 @@ function sampleVtPoly(t: number): WaveSample {
   };
 
   for (let i = 0; i < nBeats; i++) {
-    const mu = (i + 0.42) * beatRr;
+    const mu = (i + 0.38) * beatRr;
     const twist = Math.sin((i / 2.8) * Math.PI + 0.4);
     const pol = twist >= 0 ? 1 : -1;
-    const amp = 0.9 + 0.25 * Math.abs(twist);
-    // Wide QRS in absolute time (~140–180 ms at cycleSec 2.0)
-    const w = beatRr;
+    const amp = 0.85 + 0.2 * Math.abs(twist);
     const shape =
-      gauss(tt, mu - 0.14 * w, 0.09 * w, -0.28 * pol * amp) +
-      gauss(tt, mu, 0.2 * w, pol * amp) +
-      gauss(tt, mu + 0.22 * w, 0.16 * w, -0.55 * pol * amp) +
-      gauss(tt, mu + 0.4 * w, 0.12 * w, 0.28 * pol * amp);
+      gauss(tt, mu - abs(0.04), abs(0.03), -0.22 * pol * amp) +
+      gauss(tt, mu, abs(0.05), pol * amp) +
+      gauss(tt, mu + abs(0.055), abs(0.04), -0.45 * pol * amp) +
+      gauss(tt, mu + abs(0.1), abs(0.03), 0.22 * pol * amp);
 
     const axis = twist;
-    const weights: Partial<Record<LeadId, number>> = {
-      I: 0.35 + 0.55 * axis,
-      II: 1.05,
-      III: 0.75 - 0.35 * axis,
-      aVR: -0.55,
-      aVL: 0.15 + 0.45 * axis,
-      aVF: 0.95,
-      V1: -0.85 * pol * (0.55 + 0.45 * Math.abs(axis)),
-      V2: -0.55 * pol,
-      V3: 0.15 * pol,
-      V4: 0.55 * pol,
-      V5: 0.85 * pol,
-      V6: 0.95 * pol,
-    };
+    const weights = projectCardiacVector(1, {
+      x: -0.35 + 0.55 * axis,
+      y: -0.55 * pol,
+      z: 0.75 * pol,
+    });
     leads = addLeads(leads, scaleLeads(shape, weights));
-
-    // Discordant / secondary T
-    const tShape = gauss(tt, mu + 0.55 * w, 0.22 * w, -0.35 * pol * amp);
     leads = addLeads(
       leads,
-      scaleLeads(tShape, {
-        I: 0.5,
-        II: 0.85,
-        III: 0.55,
-        aVR: -0.4,
-        aVL: 0.25,
-        aVF: 0.7,
-        V1: -0.5,
-        V2: -0.35,
-        V3: 0.2,
-        V4: 0.45,
-        V5: 0.55,
-        V6: 0.5,
-      }),
+      scaleLeads(gauss(tt, mu + abs(0.18), abs(0.05), -0.32 * pol * amp), VT_DISCORDANT_T),
     );
 
-    if (Math.abs(tt - mu) < 0.08 * w + 0.02) {
+    if (Math.abs(tt - mu) < abs(0.08)) {
       meta = {
         phase: "Polymorphic VT · wide QRS · shifting axis",
         active: ["myocardiumV", "purkinjeL", "purkinjeR"],
@@ -1373,73 +1337,116 @@ function sampleTorsades(t: number): WaveSample {
   return pack(leads, meta);
 }
 
-function sampleVf(t: number): WaveSample {
+function sampleVf(t: number, kind: "coarse" | "fine" = "coarse"): WaveSample {
   const tt = clamp01(t);
-  let leads = emptyLeads();
-  // Fine + coarse VF: irregular undulations, no discrete QRS/T
-  const fibW: Partial<Record<LeadId, number>> = {
-    I: 0.65,
-    II: 1.0,
-    III: 0.8,
-    aVR: 0.5,
-    aVL: 0.45,
-    aVF: 0.9,
-    V1: 0.85,
-    V2: 0.95,
-    V3: 0.8,
-    V4: 0.75,
-    V5: 0.7,
-    V6: 0.65,
-  };
-  for (let i = 0; i < 18; i++) {
-    const freq = 16 + (i * 3.1) % 19;
-    const amp = 0.045 + 0.04 * Math.abs(Math.sin(i * 2.3 + tt * 4));
+  const leads = emptyLeads();
+  // Chaotic VF — incommensurate harmonics + wandering dipole so the strip
+  // doesn't look like a looping sine stack (cycleSec ~4.5 s).
+  // Strength relative to ~1.0 QRS: coarse ≈ mid-QRS undulations; fine clearly > asystole.
+  const strength = kind === "coarse" ? 2.6 : 1.15;
+  // Slow axis wander (different rates → aperiodic lead polarity)
+  const ax =
+    -0.2 +
+    0.55 * Math.sin(tt * Math.PI * 2 * 1.37 + 0.4) +
+    0.35 * Math.sin(tt * Math.PI * 2 * 3.11 + 1.9);
+  const ay =
+    -0.45 +
+    0.5 * Math.cos(tt * Math.PI * 2 * 0.83 + 0.2) +
+    0.4 * Math.sin(tt * Math.PI * 2 * 2.67 + 0.7);
+  const az =
+    0.55 +
+    0.45 * Math.sin(tt * Math.PI * 2 * 1.91 + 2.1) +
+    0.3 * Math.cos(tt * Math.PI * 2 * 4.43);
+  const fibW = projectCardiacVector(1, { x: ax, y: ay, z: az });
+  const fibW2 = projectCardiacVector(1, { x: -ay * 0.85, y: az * 0.7, z: ax * 0.55 });
+
+  const nHarm = kind === "coarse" ? 15 : 20;
+  const baseFreq = kind === "coarse" ? 5.5 : 15;
+  const freqSpread = kind === "coarse" ? 9.5 : 22;
+  // Irrational-ish steps so phases never re-lock within one pattern window
+  const PHI = 1.6180339887;
+  for (let i = 0; i < nHarm; i++) {
+    const seed = i * 2.718281828 + (kind === "coarse" ? 0.17 : 1.31);
+    const freq = baseFreq + ((i * PHI * 3.7) % freqSpread);
+    // Continuous amp / freq jitter (product of slow sines → irregular envelope)
+    const env =
+      0.55 +
+      0.3 * Math.sin(tt * Math.PI * 2 * (1.1 + i * 0.37) + seed) *
+        Math.sin(tt * Math.PI * 2 * (2.7 + i * 0.19) + seed * 1.7) +
+      0.2 * Math.sin(tt * Math.PI * 2 * (0.41 + i * 0.11) + seed * 0.5);
+    const freqJ =
+      1 +
+      0.4 * Math.sin(tt * Math.PI * 2 * (0.7 + i * 0.23) + seed * 2.1) +
+      0.2 * Math.sin(tt * Math.PI * 2 * (3.3 + i * 0.09) + seed);
+    const amp = (0.05 + 0.035 * Math.abs(Math.sin(seed * 3.1))) * strength * Math.max(0.35, env);
+    const slowW = kind === "coarse" ? 0.6 : 0.28;
+    const midW = kind === "coarse" ? 0.48 : 0.7;
+    const hiW = kind === "coarse" ? 0.35 : 0.55;
+    const ph = seed * 1.3;
     const v =
-      Math.sin((tt * freq + i * 1.3) * Math.PI * 2) * amp +
-      Math.sin((tt * (freq * 1.73) + i * 0.6) * Math.PI * 2) * amp * 0.7 +
-      Math.sin((tt * (freq * 0.41) + i) * Math.PI * 2) * amp * 0.35;
-    leads = addLeads(leads, scaleLeads(v, fibW));
+      Math.sin((tt * freq * freqJ + ph) * Math.PI * 2) * amp +
+      Math.sin((tt * freq * 1.732 * freqJ + ph * 0.6) * Math.PI * 2) * amp * midW +
+      Math.sin((tt * freq * 0.27 * (1 + 0.35 * Math.sin(tt * 5.1 + i)) + ph) * Math.PI * 2) *
+        amp *
+        slowW +
+      Math.sin((tt * freq * (PHI + 0.3) + ph * 2.2) * Math.PI * 2) * amp * hiW;
+    // Mix primary + secondary dipole irregularly
+    const mix = 0.55 + 0.45 * Math.sin(tt * Math.PI * 2 * (0.55 + i * 0.13) + seed);
+    addInto(leads, scaleLeads(v * mix, fibW));
+    addInto(leads, scaleLeads(v * (1 - mix) * 0.85, fibW2));
   }
+
+  // Sparse irregular "bursts" so peaks don't look metronomic
+  const burstN = kind === "coarse" ? 7 : 5;
+  for (let b = 0; b < burstN; b++) {
+    const mu = (0.07 + ((b * PHI * 0.37) % 0.88) + 0.04 * Math.sin(b * 5.1)) % 1;
+    const wid = (kind === "coarse" ? 0.028 : 0.012) * (1 + 0.5 * Math.sin(b * 2.7));
+    const bang = gauss(tt, mu, wid, (kind === "coarse" ? 0.35 : 0.12) * strength * (0.6 + 0.4 * Math.sin(b)));
+    const flip = b % 2 === 0 ? 1 : -1;
+    addInto(leads, scaleLeads(bang * flip, b % 3 === 0 ? fibW2 : fibW));
+  }
+
   return pack(leads, {
-    phase: "Ventricular fibrillation · no organized QRS",
+    phase:
+      kind === "coarse"
+        ? "Coarse VF · large chaotic undulations · no QRS"
+        : "Fine VF · low-amplitude chaos · no QRS",
     active: ["myocardiumV"],
     mark: "TP",
   });
 }
 
+function sampleVfCoarse(t: number): WaveSample {
+  return sampleVf(t, "coarse");
+}
+
+function sampleVfFine(t: number): WaveSample {
+  return sampleVf(t, "fine");
+}
+
 function sampleAvnrt(t: number): WaveSample {
   const tt = clamp01(t);
-  // Typical slow–fast AVNRT: narrow QRS, no discrete antegrad P; retrograde P in/after QRS
-  let leads = qrsLeads(tt, 0.22, 0.022, 1.05);
-  leads = addLeads(leads, tWaveLeads(tt, 0.48, 0.2, 0.035));
-  // Pseudo-r′ in V1 / terminal QRS notch (retrograde atrial activation)
+  const CYCLE = 0.33;
+  const abs = (sec: number) => sec / CYCLE;
+  // Typical slow–fast: narrow QRS, very short RP · retrograde P rides on early T (P-on-T)
+  const qrsMu = 0.2;
+  let leads = qrsLeads(tt, qrsMu, abs(0.022), 1.0);
+  // Retrograde P in early ST / T upslope (pseudo-r′ V1, inverted inferior)
   const retro =
-    gauss(tt, 0.3, 0.016, 0.12) + gauss(tt, 0.32, 0.014, 0.08);
+    gauss(tt, qrsMu + abs(0.07), abs(0.016), 0.14) + gauss(tt, qrsMu + abs(0.09), abs(0.014), 0.08);
   leads = addLeads(
     leads,
-    scaleLeads(retro, {
-      I: -0.15,
-      II: -0.45,
-      III: -0.4,
-      aVR: 0.35,
-      aVL: 0.1,
-      aVF: -0.42,
-      V1: 0.55,
-      V2: 0.25,
-      V3: 0.1,
-      V4: -0.1,
-      V5: -0.2,
-      V6: -0.22,
-    }),
+    scaleLeads(retro, projectCardiacVector(1, { x: -0.15, y: -0.85, z: 0.35 })),
   );
+  // T later so ST is visible; P sits on the upslope → classic P-on-T look
+  leads = addLeads(leads, tWaveLeads(tt, qrsMu + abs(0.2), 0.26, abs(0.045)));
   return pack(
     leads,
     phaseFor(tt, [
       { start: 0.0, end: 0.12, phase: "AVNRT · slow pathway anterograde", active: ["avnrtSlow", "av"], mark: "PR" },
-      { start: 0.12, end: 0.2, phase: "His–Purkinje · narrow QRS", active: ["his", "rbb", "lbb", "lbba", "lbbp", "purkinjeR", "purkinjeL", "myocardiumV"], mark: "QRS" },
-      { start: 0.2, end: 0.34, phase: "QRS + fast-pathway retrograde atrial activation", active: ["avnrtFast", "av", "internodal", "myocardiumA", "his", "rbb", "lbb", "purkinjeR", "purkinjeL", "myocardiumV"], mark: "QRS" },
-      { start: 0.34, end: 0.42, phase: "ST segment", active: ["myocardiumV"], mark: "ST" },
-      { start: 0.42, end: 0.62, phase: "Repolarization", active: ["myocardiumV"], mark: "T" },
+      { start: 0.12, end: 0.28, phase: "His–Purkinje · narrow QRS", active: ["his", "rbb", "lbb", "lbba", "lbbp", "purkinjeR", "purkinjeL", "myocardiumV"], mark: "QRS" },
+      { start: 0.28, end: 0.45, phase: "Retrograde P on early T (P-on-T)", active: ["avnrtFast", "av", "internodal", "myocardiumA", "myocardiumV"], mark: "T" },
+      { start: 0.45, end: 0.85, phase: "T wave · next cycle imminent", active: ["myocardiumV"], mark: "T" },
     ]),
   );
 }
@@ -1550,20 +1557,24 @@ function sampleStemi(t: number): WaveSample {
   const qAnt = gauss(tt, qrsMu - 0.03, 0.018, -0.45);
   leads = addLeads(
     leads,
-    scaleLeads(qAnt, {
-      I: 0.05,
-      II: 0.02,
-      III: 0,
-      aVR: 0,
-      aVL: 0.08,
-      aVF: 0,
-      V1: 1.0,
-      V2: 1.0,
-      V3: 0.85,
-      V4: 0.35,
-      V5: 0.05,
-      V6: 0,
-    }),
+    scaleLeads(
+      qAnt,
+      {
+        I: 0.05,
+        II: 0.02,
+        III: 0,
+        aVR: 0,
+        aVL: 0.08,
+        aVF: 0,
+        V1: 1.0,
+        V2: 1.0,
+        V3: 0.85,
+        V4: 0.35,
+        V5: 0.05,
+        V6: 0,
+      },
+      { precordial: "local" },
+    ),
   );
   leads = addLeads(leads, qrsLeads(tt, qrsMu, 0.028, 0.95, -0.05, -0.18));
 
@@ -1574,38 +1585,46 @@ function sampleStemi(t: number): WaveSample {
   }
   leads = addLeads(
     leads,
-    scaleLeads(st, {
-      I: 0.2,
-      II: -0.35,
-      III: -0.4,
-      aVR: 0.15,
-      aVL: 0.35,
-      aVF: -0.4,
-      V1: 0.9,
-      V2: 1.15,
-      V3: 1.2,
-      V4: 1.0,
-      V5: 0.35,
-      V6: 0.1,
-    }),
+    scaleLeads(
+      st,
+      {
+        I: 0.2,
+        II: -0.35,
+        III: -0.4,
+        aVR: 0.15,
+        aVL: 0.35,
+        aVF: -0.4,
+        V1: 0.9,
+        V2: 1.15,
+        V3: 1.2,
+        V4: 1.0,
+        V5: 0.35,
+        V6: 0.1,
+      },
+      { precordial: "local" },
+    ),
   );
 
   leads = addLeads(
     leads,
-    scaleLeads(gauss(tt, tMu, 0.07, 0.55), {
-      I: 0.25,
-      II: -0.1,
-      III: -0.15,
-      aVR: 0.05,
-      aVL: 0.3,
-      aVF: -0.12,
-      V1: 0.7,
-      V2: 1.0,
-      V3: 1.05,
-      V4: 0.9,
-      V5: 0.35,
-      V6: 0.15,
-    }),
+    scaleLeads(
+      gauss(tt, tMu, 0.07, 0.55),
+      {
+        I: 0.25,
+        II: -0.1,
+        III: -0.15,
+        aVR: 0.05,
+        aVL: 0.3,
+        aVF: -0.12,
+        V1: 0.7,
+        V2: 1.0,
+        V3: 1.05,
+        V4: 0.9,
+        V5: 0.35,
+        V6: 0.15,
+      },
+      { precordial: "local" },
+    ),
   );
 
   return pack(
@@ -2030,25 +2049,8 @@ function sampleTachyBrady(t: number): WaveSample {
   const CYCLE = 3.2;
   const s = paperScale(CYCLE);
   let leads = emptyLeads();
-  const fibW: Partial<Record<LeadId, number>> = {
-    I: 0.2,
-    II: 0.4,
-    III: 0.35,
-    aVR: -0.25,
-    aVL: 0.1,
-    aVF: 0.35,
-    V1: 0.9,
-    V2: 0.45,
-    V3: 0.2,
-    V4: 0.1,
-    V5: 0.08,
-    V6: 0.08,
-  };
   if (tt < nrm(1.2, CYCLE)) {
-    for (let i = 0; i < 8; i++) {
-      const fib = Math.sin((tt * 28 + i * 1.4) * Math.PI * 2) * 0.04;
-      leads = addLeads(leads, scaleLeads(fib, fibW));
-    }
+    addAfibFwaves(leads, tt, 0.9);
     for (const bSec of [0.15, 0.4, 0.62, 0.95]) {
       leads = addLeads(leads, qrsLeads(tt, nrm(bSec, CYCLE), 0.02 * s, 0.85));
     }
@@ -2095,13 +2097,15 @@ const SAMPLERS: Record<FindingId, (t: number) => WaveSample> = {
   lpfb: sampleLpfb,
   rbbbLafb: sampleRbbbLafb,
   rbbbLpfb: sampleRbbbLpfb,
+  pac: samplePac,
   pvc: samplePvc,
   vt: sampleVt,
   vtMonoLbbb: sampleVtMonoLbbb,
   vtMonoRbbb: sampleVtMonoRbbb,
   vtPoly: sampleVtPoly,
   torsades: sampleTorsades,
-  vf: sampleVf,
+  vfCoarse: sampleVfCoarse,
+  vfFine: sampleVfFine,
   asystole: sampleAsystole,
   wpw: sampleWpw,
   stemiAnt: sampleStemi,
@@ -2136,7 +2140,7 @@ function lerpWaveSample(a: WaveSample, b: WaveSample, u: number): WaveSample {
 
 /** Suggested wall-clock length for post-shock recovery (5–8 s). */
 export function cardioversionDurationSec(from: FindingId): number {
-  if (from === "vf" || from === "torsades") return 7.8;
+  if (from === "vfCoarse" || from === "vfFine" || from === "torsades") return 7.8;
   if (from === "vt" || from === "vtMonoLbbb" || from === "vtMonoRbbb" || from === "vtPoly") return 7.2;
   if (from === "afib" || from === "aflutterCcw" || from === "aflutterCw") return 6.8;
   if (from === "avnrt" || from === "sinusTachy") return 6.4;
@@ -2163,7 +2167,7 @@ export function samplePostCardioversion(
   };
   const jitter = (i: number, amt: number) => (rnd(i) - 0.5) * 2 * amt;
 
-  const wasVFib = from === "vf" || from === "torsades" || from === "vtPoly";
+  const wasVFib = from === "vfCoarse" || from === "vfFine" || from === "torsades" || from === "vtPoly";
   const wasVt = from.startsWith("vt") || from === "torsades";
   const wasAf = from === "afib" || from === "aflutterCcw" || from === "aflutterCw";
   const toAsystole = to === "asystole";
