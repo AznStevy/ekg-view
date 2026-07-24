@@ -2150,7 +2150,8 @@ export function cardioversionDurationSec(from: FindingId): number {
 
 /**
  * Continuous post-shock recovery → target rhythm.
- * Late portion crossfades into the chosen finding so handoff is seamless.
+ * Early strip is decaying fine-VF residual (chaotic undulations only — no discrete
+ * QRS / VT-like escapes), then crossfades into the chosen finding.
  * `t` is normalized over the recovery window (0…1).
  */
 export function samplePostCardioversion(
@@ -2161,18 +2162,18 @@ export function samplePostCardioversion(
   const tt = Math.max(0, Math.min(1, t));
   let seed = 0;
   for (let i = 0; i < from.length; i++) seed = (seed * 33 + from.charCodeAt(i)) >>> 0;
-  const rnd = (i: number) => {
-    const x = Math.sin(seed * 0.001 + i * 12.9898) * 43758.5453;
-    return x - Math.floor(x);
-  };
-  const jitter = (i: number, amt: number) => (rnd(i) - 0.5) * 2 * amt;
 
-  const wasVFib = from === "vfCoarse" || from === "vfFine" || from === "torsades" || from === "vtPoly";
-  const wasVt = from.startsWith("vt") || from === "torsades";
+  const wasShockableVent =
+    from === "vfCoarse" ||
+    from === "vfFine" ||
+    from === "torsades" ||
+    from === "vt" ||
+    from === "vtMonoLbbb" ||
+    from === "vtMonoRbbb" ||
+    from === "vtPoly";
   const wasAf = from === "afib" || from === "aflutterCcw" || from === "aflutterCw";
   const toAsystole = to === "asystole";
 
-  // --- Build evolving recovery morphology (same timeline as blend target) ---
   let leads = emptyLeads();
   let meta: Pick<WaveSample, "phase" | "active" | "mark"> = {
     phase: "Post-shock · electrical silence",
@@ -2180,114 +2181,100 @@ export function samplePostCardioversion(
     mark: "TP",
   };
 
-  const stun = 0.012 * Math.sin(tt * 90 + seed) * Math.exp(-tt * 10);
+  // Tiny baseline stun
+  const stun = 0.006 * Math.sin(tt * 55 + seed) * Math.exp(-tt * 5);
   leads = addLeads(leads, scaleLeads(stun, { II: 1, V1: 0.55, V5: 0.45 }));
 
-  // Continuous beat schedule: times increase, morphology narrows, P waves appear
-  type RecBeat = {
-    t: number;
-    kind: "wide" | "junct" | "sinus";
-    pLead?: number;
-  };
-  const beats: RecBeat[] = [];
-  if (!toAsystole) {
-    // Asystole ~0–0.10, then escapes → junctional → sinus-like toward target
-    if (wasVFib || wasVt) {
-      beats.push({ t: 0.11 + jitter(1, 0.012), kind: "wide" });
-    }
-    beats.push({ t: 0.2 + jitter(2, 0.015), kind: wasVt ? "wide" : "junct" });
-    beats.push({ t: 0.3 + jitter(3, 0.012), kind: "junct" });
-    beats.push({ t: 0.4 + jitter(4, 0.01), kind: "junct", pLead: 0.04 });
-    beats.push({ t: 0.5 + jitter(5, 0.01), kind: "sinus", pLead: 0.055 });
-    beats.push({ t: 0.6 + jitter(6, 0.008), kind: "sinus", pLead: 0.06 });
-    beats.push({ t: 0.7 + jitter(7, 0.006), kind: "sinus", pLead: 0.065 });
-    beats.push({ t: 0.8 + jitter(8, 0.005), kind: "sinus", pLead: 0.07 });
-    beats.push({ t: 0.9 + jitter(9, 0.004), kind: "sinus", pLead: 0.072 });
-  }
+  // Decaying fine-VF hash — keep a brief early bump, then messy irregular undulations
+  // (no discrete QRS / organized VT morphology). Persist through more of the recovery window.
+  const vfPeak = wasShockableVent ? 1.05 : wasAf ? 0.28 : 0.45;
+  const earlyBump = Math.exp(-Math.pow((tt - 0.04) / 0.045, 2)) * 0.35;
+  const vfEnv =
+    vfPeak *
+    (0.55 * (1 - smoothstep((tt - 0.08) / 0.72)) + earlyBump) *
+    (tt < 0.01 ? smoothstep(tt / 0.01) : 1);
 
-  if (wasVFib && tt < 0.08) {
-    const rip =
-      0.1 * Math.sin(tt * 240 + seed) * Math.exp(-tt * 55) +
-      0.06 * Math.sin(tt * 330) * Math.exp(-tt * 65);
-    leads = addLeads(leads, scaleLeads(rip, { II: 1, V1: 0.95, V2: 0.7 }));
-    if (tt < 0.055) {
-      meta = { phase: "Post-shock · fibrillatory residual decaying", active: ["myocardiumV"], mark: "QRS" };
+  if (vfEnv > 0.012 && !toAsystole) {
+    // Drive chaos from continuous recovery time (not a looping phase) so it stays aperiodic
+    const u = tt + (seed % 53) * 0.0017;
+    const ax =
+      -0.15 +
+      0.55 * Math.sin(u * 17.3 + 0.4) +
+      0.4 * Math.sin(u * 41.7 + 1.9) +
+      0.25 * Math.sin(u * 73.1 + 0.7);
+    const ay =
+      -0.4 +
+      0.5 * Math.cos(u * 13.1 + 0.2) +
+      0.4 * Math.sin(u * 29.6 + 0.7) +
+      0.22 * Math.cos(u * 61.4);
+    const az =
+      0.5 +
+      0.45 * Math.sin(u * 19.7 + 2.1) +
+      0.35 * Math.cos(u * 37.2) +
+      0.2 * Math.sin(u * 88.5 + 1.1);
+    const fibW = projectCardiacVector(1, { x: ax, y: ay, z: az });
+    const fibW2 = projectCardiacVector(1, { x: -ay * 0.9, y: az * 0.75, z: ax * 0.55 });
+    const fibW3 = projectCardiacVector(1, { x: az * 0.6, y: -ax * 0.7, z: -ay * 0.5 });
+    const PHI = 1.6180339887;
+    const strength = 1.25 * vfEnv;
+    for (let i = 0; i < 22; i++) {
+      const hSeed = i * 2.718281828 + 1.31 + (seed % 17) * 0.013;
+      // Wide, incommensurate frequency set — looks hashy, not metronomic
+      const freq = 11 + ((i * PHI * 5.3) % 34) + 4 * Math.sin(hSeed * 2.1);
+      const freqJ =
+        1 +
+        0.55 * Math.sin(u * (9.1 + i * 0.71) + hSeed) +
+        0.35 * Math.sin(u * (23.7 + i * 0.33) + hSeed * 1.9) +
+        0.2 * Math.sin(u * (47.3 + i * 0.11) + hSeed * 0.4);
+      const env =
+        0.4 +
+        0.35 * Math.sin(u * (7.3 + i * 0.41) + hSeed) * Math.sin(u * (15.9 + i * 0.27) + hSeed * 1.7) +
+        0.3 * Math.sin(u * (31.2 + i * 0.17) + hSeed * 0.6) +
+        0.2 * Math.abs(Math.sin(u * (53 + i * 0.09) + hSeed * 2.3));
+      const amp = (0.04 + 0.032 * Math.abs(Math.sin(hSeed * 3.1))) * strength * Math.max(0.2, env);
+      const ph = hSeed * 1.3 + u * (0.7 + 0.15 * i);
+      const v =
+        Math.sin((u * freq * freqJ + ph) * Math.PI * 2) * amp +
+        Math.sin((u * freq * 1.732 * freqJ + ph * 0.6) * Math.PI * 2) * amp * 0.75 +
+        Math.sin((u * freq * 0.31 * (1 + 0.5 * Math.sin(u * 11 + i)) + ph) * Math.PI * 2) * amp * 0.4 +
+        Math.sin((u * freq * (PHI + 0.4) + ph * 2.1) * Math.PI * 2) * amp * 0.5 +
+        Math.sin((u * (freq * 2.63 + i * 1.7) + ph * 0.3) * Math.PI * 2) * amp * 0.28;
+      // Irregular dipole mix so lead polarity keeps flipping
+      const m1 = 0.4 + 0.35 * Math.sin(u * (6.1 + i * 0.19) + hSeed);
+      const m2 = 0.3 + 0.3 * Math.sin(u * (11.7 + i * 0.23) + hSeed * 1.4);
+      const m3 = Math.max(0.05, 1 - m1 - m2);
+      addInto(leads, scaleLeads(v * m1, fibW));
+      addInto(leads, scaleLeads(v * m2, fibW2));
+      addInto(leads, scaleLeads(v * m3 * 0.9, fibW3));
     }
-  } else if (tt < 0.1) {
+    meta = {
+      phase:
+        vfEnv > 0.45
+          ? "Post-shock · fine VF residual"
+          : "Post-shock · fibrillatory residual decaying",
+      active: ["myocardiumV"],
+      mark: "TP",
+    };
+  } else if (tt < 0.7) {
     meta = { phase: "Post-shock asystole · myocardial stun", active: [], mark: "TP" };
   }
 
-  for (let i = 0; i < beats.length; i++) {
-    const b = beats[i]!;
-    const progress = i / Math.max(1, beats.length - 1);
-    const widthScale = 1 - 0.55 * progress;
-    const amp = 0.65 + 0.35 * progress;
-
-    if (b.kind === "sinus" && b.pLead != null) {
-      const pT = b.t - b.pLead;
-      if (pT > 0.08) {
-        leads = addLeads(leads, pWaveLeads(tt, pT, 0.1 + 0.08 * progress));
-        if (Math.abs(tt - pT) < 0.028) {
-          meta = {
-            phase: progress < 0.7 ? "Emerging atrial activity" : "Atrial activity · stabilizing",
-            active: ["sa", "internodal", "myocardiumA"],
-            mark: "P",
-          };
-        }
-      }
-    }
-
-    if (b.kind === "wide") {
-      leads = addLeads(leads, wideQrsLeads(tt, b.t, amp * (0.75 + rnd(20 + i) * 0.2)));
-      leads = addLeads(leads, tWaveLeads(tt, b.t + 0.12, -0.18, 0.035));
-    } else {
-      leads = addLeads(leads, qrsLeads(tt, b.t, 0.022 + 0.012 * widthScale, amp));
-      leads = addLeads(leads, tWaveLeads(tt, b.t + 0.16 + 0.04 * progress, 0.18 + 0.1 * progress, 0.04));
-    }
-
-    if (Math.abs(tt - b.t) < 0.04) {
-      if (b.kind === "wide") {
-        meta = {
-          phase: "Ventricular escape · post-shock",
-          active: ["purkinjeL", "purkinjeR", "myocardiumV"],
-          mark: "QRS",
-        };
-      } else if (b.kind === "junct") {
-        meta = {
-          phase: "Junctional escape · accelerating",
-          active: ["av", "his", "rbb", "lbb", "purkinjeL", "purkinjeR", "myocardiumV"],
-          mark: "QRS",
-        };
-      } else {
-        meta = {
-          phase: "Conducted QRS · recovering",
-          active: ["av", "his", "rbb", "lbb", "purkinjeR", "purkinjeL", "myocardiumV"],
-          mark: "QRS",
-        };
-      }
-    } else if (tt > b.t + 0.05 && tt < b.t + 0.16 && Math.abs(tt - b.t) < 0.2) {
-      if (meta.mark === "TP" || meta.phase.includes("asystole") || meta.phase.includes("silence")) {
-        meta = { phase: "Repolarization · recovery", active: ["myocardiumV"], mark: "T" };
-      }
-    }
-  }
-
-  if (wasAf && tt > 0.15 && tt < 0.45) {
+  if (wasAf && tt > 0.2 && tt < 0.6) {
     const fib =
-      0.035 * (1 - smoothstep((tt - 0.15) / 0.3)) * Math.sin(tt * 130 + seed * 0.02);
+      0.028 * (1 - smoothstep((tt - 0.2) / 0.4)) * Math.sin(tt * 130 + seed * 0.02);
     leads = addLeads(leads, scaleLeads(fib, { II: 1, V1: 1.15, aVF: 0.55 }));
   }
 
-  if (toAsystole && tt > 0.2) {
+  if (toAsystole && tt > 0.12) {
     meta = { phase: "Persistent asystole · no escape", active: [], mark: "TP" };
   }
 
   const recovery: WaveSample = pack(leads, meta);
 
-  // --- Crossfade into target rhythm ---
-  const targetAnchor = 0.42;
+  // Crossfade into target after the VF residual has had time to run
+  const targetAnchor = 0.62;
   const targetSpan = 1 - targetAnchor;
-  const targetCycles = 2.15;
+  const targetCycles = 1.85;
   const targetT =
     tt <= targetAnchor ? 0 : clamp01((((tt - targetAnchor) / targetSpan) * targetCycles) % 1);
   const target = sampleWave(to, targetT);
@@ -2295,14 +2282,14 @@ export function samplePostCardioversion(
   const targetLabeled: WaveSample = {
     ...target,
     phase:
-      tt < 0.75
+      tt < 0.82
         ? `Merging into ${toLabel} · ${target.phase}`
-        : tt < 0.9
+        : tt < 0.93
           ? `${toLabel} restoring · ${target.phase}`
           : target.phase,
   };
 
-  const blend = smoothstep((tt - 0.5) / 0.38);
+  const blend = smoothstep((tt - 0.68) / 0.26);
   if (blend <= 0.001) return recovery;
   if (blend >= 0.999) return targetLabeled;
   return lerpWaveSample(recovery, targetLabeled, blend);
@@ -2329,9 +2316,9 @@ function getFindingShort(id: FindingId): string {
 
 /** Target-rhythm cycle phase at the end of a recovery window (seamless handoff). */
 export function cardioversionEndTargetPhase(): number {
-  const targetAnchor = 0.42;
+  const targetAnchor = 0.62;
   const targetSpan = 1 - targetAnchor;
-  const targetCycles = 2.15;
+  const targetCycles = 1.85;
   return clamp01(((((1 - targetAnchor) / targetSpan) * targetCycles) % 1));
 }
 
@@ -2348,9 +2335,9 @@ export function cardioversionTCycle(
   durationSec: number,
   targetCycleSec: number,
 ): number {
-  const targetAnchor = 0.42;
+  const targetAnchor = 0.62;
   const targetSpan = 1 - targetAnchor;
-  const targetCycles = 2.15;
+  const targetCycles = 1.85;
   const cycle = Math.max(0.25, targetCycleSec);
   if (elapsedSec < durationSec) {
     const tt = Math.max(0, elapsedSec) / Math.max(0.001, durationSec);
