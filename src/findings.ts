@@ -13,7 +13,9 @@ export type SegmentId =
   | "myocardiumA"
   | "myocardiumV"
   | "accessory"
-  | "flutter";
+  | "flutter"
+  | "avnrtSlow"
+  | "avnrtFast";
 
 export type FindingCategory =
   | "rhythm"
@@ -33,6 +35,7 @@ export type FindingId =
   | "afib"
   | "aflutterCcw"
   | "aflutterCw"
+  | "avnrt"
   | "av1"
   | "av2i"
   | "av2ii"
@@ -51,6 +54,7 @@ export type FindingId =
   | "vtPoly"
   | "torsades"
   | "vf"
+  | "asystole"
   | "wpw"
   | "stemiAnt"
   | "pacedAtrial"
@@ -126,7 +130,7 @@ export const FINDINGS: Finding[] = [
     category: "rhythm",
     tags: ["atrial", "irregular"],
     aliases: ["af", "atrial fib", "fibrillation"],
-    cycleSec: 2.4,
+    cycleSec: 3.33,
     ventRateBpm: 90,
     rateLabel: "Irregular",
   },
@@ -138,7 +142,7 @@ export const FINDINGS: Finding[] = [
     category: "rhythm",
     tags: ["atrial", "reentry", "flutter", "cti", "ccw"],
     aliases: ["aflutter", "flutter", "typical flutter", "counterclockwise", "cti", "negative sawtooth"],
-    cycleSec: 1.0,
+    cycleSec: 0.8,
     ventRateBpm: 150,
     rateLabel: "Inf − saw",
   },
@@ -150,9 +154,21 @@ export const FINDINGS: Finding[] = [
     category: "rhythm",
     tags: ["atrial", "reentry", "flutter", "cti", "cw"],
     aliases: ["clockwise flutter", "reverse typical", "atypical cti", "positive flutter"],
-    cycleSec: 1.0,
+    cycleSec: 0.8,
     ventRateBpm: 150,
     rateLabel: "Inf + F",
+  },
+  {
+    id: "avnrt",
+    name: "AVNRT (AV-nodal reentrant tachycardia)",
+    short: "AVNRT",
+    detail: "Dual AV-node pathways · typical slow–fast · narrow QRS · RP≪PR · pseudo-r′ V1",
+    category: "rhythm",
+    tags: ["svt", "reentry", "avnrt", "narrow", "nodal"],
+    aliases: ["avnrt", "svt", "psvt", "av nodal reentry", "slow fast"],
+    cycleSec: 0.33,
+    ventRateBpm: 180,
+    rateLabel: "180 bpm",
   },
   {
     id: "av1",
@@ -174,9 +190,10 @@ export const FINDINGS: Finding[] = [
     category: "block",
     tags: ["av", "block", "wenckebach", "supra-his"],
     aliases: ["mobitz 1", "mobitz i", "type 1"],
-    cycleSec: 3.6,
-    ventRateBpm: 50,
-    rateLabel: "AV node",
+    /** 4:3 group · atrial ~75 · 3 QRS / 3.2 s ≈ 56 bpm */
+    cycleSec: 3.2,
+    ventRateBpm: 56,
+    rateLabel: "56 bpm",
   },
   {
     id: "av2ii",
@@ -186,9 +203,10 @@ export const FINDINGS: Finding[] = [
     category: "block",
     tags: ["av", "block", "infra-his"],
     aliases: ["mobitz 2", "mobitz ii", "type 2"],
-    cycleSec: 2.4,
-    ventRateBpm: 45,
-    rateLabel: "Infra-His",
+    /** 3:2 · atrial ~71 · constant PR 180 ms · 2 QRS / 2.52 s ≈ 48 bpm */
+    cycleSec: 2.52,
+    ventRateBpm: 48,
+    rateLabel: "48 bpm",
   },
   {
     id: "av3Junctional",
@@ -198,9 +216,9 @@ export const FINDINGS: Finding[] = [
     category: "block",
     tags: ["av", "block", "dissociation", "junctional", "escape"],
     aliases: ["junctional escape", "nodal escape", "narrow escape"],
-    cycleSec: 1.7,
+    cycleSec: 2.67,
     ventRateBpm: 45,
-    rateLabel: "Narrow esc",
+    rateLabel: "45 bpm",
   },
   {
     id: "av3",
@@ -210,9 +228,9 @@ export const FINDINGS: Finding[] = [
     category: "block",
     tags: ["av", "block", "dissociation", "ventricular", "escape"],
     aliases: ["complete heart block", "third degree", "chb", "ventricular escape"],
-    cycleSec: 2.0,
-    ventRateBpm: 35,
-    rateLabel: "Wide esc",
+    cycleSec: 3.33,
+    ventRateBpm: 36,
+    rateLabel: "36 bpm",
   },
   {
     id: "rbbb",
@@ -296,7 +314,7 @@ export const FINDINGS: Finding[] = [
     aliases: ["vpc", "ventricular ectopic"],
     cycleSec: 2.0,
     ventRateBpm: 60,
-    rateLabel: "Couplet",
+    rateLabel: "PVC",
   },
   {
     id: "vt",
@@ -342,9 +360,10 @@ export const FINDINGS: Finding[] = [
     category: "vt",
     tags: ["vt", "polymorphic"],
     aliases: ["polymorphic ventricular tachycardia"],
-    cycleSec: 1.6,
+    /** Six wide QRS in one pattern window → 180 bpm when ventRateBpm matches */
+    cycleSec: 2.0,
     ventRateBpm: 180,
-    rateLabel: "Unstable",
+    rateLabel: "180 bpm",
   },
   {
     id: "torsades",
@@ -369,6 +388,18 @@ export const FINDINGS: Finding[] = [
     cycleSec: 1.2,
     ventRateBpm: 200,
     rateLabel: "Chaotic",
+  },
+  {
+    id: "asystole",
+    name: "Asystole",
+    short: "Asystole",
+    detail: "No atrial or ventricular depolarization · flatline · confirm in multiple leads",
+    category: "vt",
+    tags: ["arrest", "asystole", "flatline", "pea"],
+    aliases: ["flatline", "cardiac arrest", "standstill"],
+    cycleSec: 2.0,
+    ventRateBpm: 30,
+    rateLabel: "None",
   },
   {
     id: "wpw",
@@ -498,7 +529,7 @@ export const FINDINGS: Finding[] = [
     category: "snd",
     tags: ["sinus", "pause", "snd"],
     aliases: ["sinus arrest", "atrial pause"],
-    cycleSec: 2.8,
+    cycleSec: 3.0,
     ventRateBpm: 40,
     rateLabel: "Pause",
   },
@@ -510,7 +541,7 @@ export const FINDINGS: Finding[] = [
     category: "snd",
     tags: ["sinus", "exit block", "snd"],
     aliases: ["sinoatrial block", "sa block"],
-    cycleSec: 2.4,
+    cycleSec: 3.2,
     ventRateBpm: 45,
     rateLabel: "2× PP",
   },
@@ -522,7 +553,7 @@ export const FINDINGS: Finding[] = [
     category: "snd",
     tags: ["sinus", "snd", "brady", "sss", "sick sinus"],
     aliases: ["sick sinus syndrome", "sss", "sinus node dysfunction", "snd"],
-    cycleSec: 3.0,
+    cycleSec: 3.2,
     ventRateBpm: 38,
     rateLabel: "Brady+pause",
   },

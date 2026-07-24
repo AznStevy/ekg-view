@@ -18,6 +18,8 @@ export const SEGMENT_META: SegmentMeta[] = [
   { id: "internodal", label: "Internodal tracts", color: "#e8a838", defaultOn: true },
   { id: "flutter", label: "Flutter circuit (CTI)", color: "#8a9aa8", defaultOn: false },
   { id: "av", label: "AV node", color: "#ff7a4a", defaultOn: true },
+  { id: "avnrtSlow", label: "AVNRT slow pathway", color: "#5eb8d4", defaultOn: false },
+  { id: "avnrtFast", label: "AVNRT fast pathway", color: "#ff8a5c", defaultOn: false },
   { id: "his", label: "Bundle of His", color: "#ff5e6c", defaultOn: true },
   { id: "rbb", label: "Right bundle", color: "#5ec8ff", defaultOn: true },
   { id: "lbb", label: "Left bundle", color: "#6ae0a8", defaultOn: true },
@@ -35,6 +37,8 @@ const SEGMENT_COLORS: Record<SegmentId, number> = {
   internodal: 0xe8a838,
   flutter: 0x8a9aa8,
   av: 0xff7a4a,
+  avnrtSlow: 0x5eb8d4,
+  avnrtFast: 0xff8a5c,
   his: 0xff5e6c,
   rbb: 0x5ec8ff,
   lbb: 0x6ae0a8,
@@ -212,6 +216,13 @@ const CTI_MED: [number, number, number] = [-0.06, 0.0, -0.14];
 const SEPT_SUP: [number, number, number] = [0.06, 0.42, -0.16];
 const ROOF_LAT: [number, number, number] = [-0.42, 0.62, 0.2];
 
+/** Triangle of Koch · dual AV-nodal pathways (typical slow–fast AVNRT) */
+const KOCH_CS: [number, number, number] = [-0.1, -0.06, -0.2];
+const KOCH_SLOW_MID: [number, number, number] = [-0.05, -0.02, -0.16];
+const KOCH_TODARO: [number, number, number] = [0.08, 0.16, -0.14];
+const KOCH_FAST_MID: [number, number, number] = [0.04, 0.09, -0.13];
+const KOCH_ATRIAL_EXIT: [number, number, number] = [0.02, 0.22, -0.1];
+
 const PATHS: PathSpec[] = [
   // —— Internodal / atrial ——
   {
@@ -346,6 +357,51 @@ const PATHS: PathSpec[] = [
       [-0.55, 0.2, 0.22],
       [-0.52, 0.08, 0.2],
       CTI_LAT,
+    ],
+  },
+
+  // —— AVNRT dual pathways (triangle of Koch) ——
+  {
+    id: "avnrtSlow",
+    name: "Slow pathway (posterior)",
+    detail: "CS ostium / inferior Koch → compact AV node · typical AVNRT anterograde limb",
+    radiusStart: 0.011,
+    radiusEnd: 0.008,
+    tubularSegments: 40,
+    points: [
+      KOCH_CS,
+      [-0.08, -0.04, -0.18],
+      KOCH_SLOW_MID,
+      [-0.02, 0.0, -0.14],
+      AV,
+    ],
+  },
+  {
+    id: "avnrtFast",
+    name: "Fast pathway (anterior)",
+    detail: "Tendon of Todaro / superior Koch → compact AV node · typical AVNRT retrograde limb",
+    radiusStart: 0.01,
+    radiusEnd: 0.008,
+    tubularSegments: 40,
+    points: [
+      KOCH_TODARO,
+      KOCH_FAST_MID,
+      [0.02, 0.05, -0.125],
+      AV,
+    ],
+  },
+  {
+    id: "avnrtFast",
+    name: "Fast-pathway atrial exit",
+    detail: "Retrograde exit toward atrial septum / superior approaches",
+    radiusStart: 0.009,
+    radiusEnd: 0.007,
+    tubularSegments: 32,
+    points: [
+      AV,
+      [0.03, 0.1, -0.12],
+      KOCH_ATRIAL_EXIT,
+      [0.0, 0.28, -0.08],
     ],
   },
 
@@ -753,16 +809,17 @@ function createPathMesh(spec: PathSpec): THREE.Mesh {
   );
   const isFlutter = spec.id === "flutter";
   const isAccessory = spec.id === "accessory";
+  const isAvnrt = spec.id === "avnrtSlow" || spec.id === "avnrtFast";
   const color = isFlutter ? 0x7a8a96 : SEGMENT_COLORS[spec.id];
   const mat = new THREE.MeshStandardMaterial({
     color,
     roughness: isFlutter ? 0.55 : 0.35,
     metalness: isFlutter ? 0.05 : 0.08,
     emissive: isFlutter ? 0x3a4550 : color,
-    emissiveIntensity: isFlutter ? 0.08 : 0.12,
+    emissiveIntensity: isFlutter || isAvnrt ? 0.08 : 0.12,
     transparent: true,
-    opacity: isFlutter ? 0.45 : isAccessory ? 0.35 : 0.95,
-    depthWrite: isFlutter ? false : true,
+    opacity: isFlutter ? 0.45 : isAccessory || isAvnrt ? 0.35 : 0.95,
+    depthWrite: isFlutter || isAvnrt ? false : true,
   });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = spec.name;
@@ -770,7 +827,7 @@ function createPathMesh(spec: PathSpec): THREE.Mesh {
   mesh.userData.segmentName = spec.name;
   mesh.userData.segmentDetail = spec.detail;
   mesh.userData.isConduction = true;
-  mesh.userData.baseEmissive = isFlutter ? 0.08 : 0.12;
+  mesh.userData.baseEmissive = isFlutter || isAvnrt ? 0.08 : 0.12;
   mesh.userData.curve = curve;
   mesh.userData.pathPoints = spec.points;
   return mesh;
@@ -1197,8 +1254,8 @@ export function createConductionSystem(): ConductionSystem {
         mat.color.setHex(SEGMENT_COLORS[id] ?? 0xffffff);
         mat.emissive.setHex(SEGMENT_COLORS[id] ?? 0xffffff);
         mat.emissiveIntensity = Number(obj.userData.baseEmissive ?? 0.12);
-        mat.opacity = id === "accessory" ? 0.35 : id === "flutter" ? 0.45 : 1;
-        mat.transparent = id === "accessory" || id === "flutter";
+        mat.opacity = id === "accessory" || id === "avnrtSlow" || id === "avnrtFast" ? 0.35 : id === "flutter" ? 0.45 : 1;
+        mat.transparent = id === "accessory" || id === "flutter" || id === "avnrtSlow" || id === "avnrtFast";
       }
     });
     branchLesionGroup.visible = unique.length > 0;
@@ -1251,6 +1308,9 @@ export function createConductionSystem(): ConductionSystem {
       mat.emissiveIntensity = intensity;
       if (obj.userData.segmentId === "accessory") mat.opacity = 0.35;
       if (obj.userData.segmentId === "flutter") mat.opacity = 0.45;
+      if (obj.userData.segmentId === "avnrtSlow" || obj.userData.segmentId === "avnrtFast") {
+        mat.opacity = 0.35;
+      }
     });
   }
 
@@ -1316,6 +1376,9 @@ export function createConductionSystem(): ConductionSystem {
       }
       if (id === "flutter") {
         mat.opacity = glow > 0 || ekgActive.has(id) ? 0.7 : 0.45;
+      }
+      if (id === "avnrtSlow" || id === "avnrtFast") {
+        mat.opacity = glow > 0 || ekgActive.has(id) ? 0.9 : 0.35;
       }
     });
   }
@@ -1567,6 +1630,8 @@ export function createConductionSystem(): ConductionSystem {
   resetGlow();
   setAccessoryVisible(false);
   setSegmentVisibility("flutter", false);
+  setSegmentVisibility("avnrtSlow", false);
+  setSegmentVisibility("avnrtFast", false);
 
   root.updateMatrixWorld(true);
   const box = new THREE.Box3().setFromObject(root);

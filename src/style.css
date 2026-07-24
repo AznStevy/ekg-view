@@ -26,6 +26,8 @@ body,
 #app {
   width: 100%;
   height: 100%;
+  height: 100dvh;
+  max-height: 100dvh;
   overflow: hidden;
   background: var(--bg);
   color: var(--text);
@@ -130,8 +132,7 @@ body.is-resizing canvas {
 
 #viewport canvas {
   display: block;
-  width: 100% !important;
-  height: 100% !important;
+  /* Sized in JS to match the pane — avoid 100% !important which can stretch the buffer on iOS */
 }
 
 .pane-chrome {
@@ -220,7 +221,46 @@ body.is-resizing canvas {
   display: flex;
   gap: 0.45rem;
   flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
+}
+
+.ekg-calipers {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.caliper-btn {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  background: rgba(8, 14, 18, 0.45);
+  border: 1px solid rgba(94, 160, 180, 0.28);
+  border-radius: 6px;
+  padding: 0.22rem 0.55rem;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.caliper-btn:hover {
+  color: var(--text);
+  border-color: rgba(94, 160, 180, 0.5);
+}
+
+.caliper-btn[aria-pressed="true"] {
+  color: #f0c040;
+  border-color: rgba(240, 192, 64, 0.55);
+  background: rgba(240, 192, 64, 0.12);
+}
+
+.caliper-readout {
+  color: #f0c040;
+  border-color: rgba(240, 192, 64, 0.4);
+  background: rgba(240, 192, 64, 0.1);
 }
 
 .meta-pill {
@@ -541,11 +581,218 @@ body.is-resizing canvas {
 
 .rate-row {
   grid-template-columns: 2.6rem 1fr auto;
+  margin-top: 0;
 }
 
 .speed-row {
   grid-template-columns: 2.6rem 1fr auto;
-  margin-top: 0.35rem;
+  margin-top: 0.5rem;
+}
+
+.cv-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.4rem;
+  align-items: center;
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+}
+
+.cv-label {
+  font-size: 0.72rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.cv-select {
+  position: relative;
+  min-width: 0;
+}
+
+.cv-select-trigger-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.cv-select-trigger {
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  border: 1px solid rgba(94, 160, 180, 0.35);
+  background: rgba(8, 16, 22, 0.92);
+  color: var(--text);
+  border-radius: 5px;
+  padding: 0.4rem 1.55rem 0.4rem 0.5rem;
+  text-align: left;
+  outline: none;
+}
+
+.cv-select-trigger::placeholder {
+  color: var(--muted);
+  opacity: 0.85;
+}
+
+.cv-select-trigger:hover:not(:disabled) {
+  border-color: rgba(61, 184, 200, 0.55);
+}
+
+.cv-select-trigger:focus {
+  border-color: rgba(61, 184, 200, 0.7);
+  box-shadow: 0 0 0 2px rgba(61, 184, 200, 0.18);
+}
+
+.cv-select-trigger:disabled {
+  cursor: not-allowed;
+}
+
+.cv-select-trigger::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 0;
+  width: 0;
+}
+
+.cv-select-chevron {
+  position: absolute;
+  right: 0.45rem;
+  color: var(--accent);
+  font-size: 0.65rem;
+  line-height: 1;
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+.cv-select.is-open .cv-select-chevron {
+  transform: rotate(180deg);
+}
+
+.cv-select-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 8;
+  max-height: 14rem;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 0.25rem;
+  border: 1px solid rgba(94, 160, 180, 0.35);
+  border-radius: 6px;
+  background: rgba(8, 16, 22, 0.98);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(61, 184, 200, 0.45) rgba(0, 0, 0, 0.25);
+}
+
+.cv-select-menu::-webkit-scrollbar {
+  width: 8px;
+}
+
+.cv-select-menu::-webkit-scrollbar-track {
+  margin: 4px 0;
+  background: rgba(0, 0, 0, 0.22);
+  border-radius: 999px;
+}
+
+.cv-select-menu::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(61, 184, 200, 0.55), rgba(61, 184, 200, 0.28));
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.cv-select-menu::-webkit-scrollbar-thumb:hover {
+  background: rgba(61, 184, 200, 0.7);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.cv-select-empty {
+  padding: 0.55rem 0.45rem;
+  font-size: 0.68rem;
+  color: var(--muted);
+  text-align: center;
+}
+
+.cv-select-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.05rem;
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  text-align: left;
+  padding: 0.35rem 0.4rem;
+  cursor: pointer;
+}
+
+.cv-select-option[hidden] {
+  display: none;
+}
+
+.cv-select-option small {
+  font-family: var(--font);
+  font-size: 0.58rem;
+  color: var(--muted);
+  line-height: 1.25;
+}
+
+.cv-select-option:hover {
+  background: rgba(61, 184, 200, 0.12);
+  border-color: rgba(61, 184, 200, 0.25);
+}
+
+.cv-select-option.active {
+  background: var(--accent-soft);
+  border-color: rgba(61, 184, 200, 0.4);
+  color: var(--accent);
+}
+
+.cv-row #btn-cv {
+  font-family: var(--font);
+  font-size: 0.78rem;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text);
+  border-radius: 5px;
+  padding: 0.4rem 0.55rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cv-row #btn-cv:hover {
+  border-color: var(--muted);
+}
+
+.cv-row #btn-cv.active {
+  background: rgba(255, 110, 130, 0.18);
+  border-color: rgba(255, 110, 130, 0.55);
+  color: #ffb4be;
+}
+
+/* During cardioversion recovery: lock teaching controls; Cancel stays live */
+body.cv-active .presets,
+body.cv-active .upload-block,
+body.cv-active .legend,
+body.cv-active .finding-readout,
+body.cv-active .rate-row,
+body.cv-active .speed-row,
+body.cv-active #btn-stim,
+body.cv-active #btn-stim-clear,
+body.cv-active .cv-select {
+  opacity: 0.38;
+  pointer-events: none;
+  filter: grayscale(0.35);
+}
+
+body.cv-active .cv-label {
+  opacity: 0.5;
 }
 
 .finding-expand {
@@ -633,14 +880,6 @@ body.is-resizing canvas {
   width: 100%;
 }
 
-.bbb-lesion-chip input {
-  position: absolute;
-  opacity: 0;
-  pointer-events: none;
-  width: 0;
-  height: 0;
-}
-
 .bbb-lesion-short,
 .chb-escape-short {
   font-family: var(--mono);
@@ -660,13 +899,13 @@ body.is-resizing canvas {
   border-color: rgba(74, 158, 176, 0.4);
 }
 
-.bbb-lesion-chip:has(input:checked),
+.bbb-lesion-chip.active,
 .chb-escape-chip.active {
   border-color: rgba(255, 110, 130, 0.55);
   background: rgba(255, 80, 100, 0.12);
 }
 
-.bbb-lesion-chip:has(input:checked) .bbb-lesion-short,
+.bbb-lesion-chip.active .bbb-lesion-short,
 .chb-escape-chip.active .chb-escape-short {
   color: #ffb4be;
 }
@@ -679,7 +918,8 @@ body.is-resizing canvas {
 }
 
 #btn-bbb.active,
-#btn-chb.active {
+#btn-chb.active,
+#btn-flutter.active {
   background: var(--accent-soft);
   border-color: rgba(74, 158, 176, 0.45);
   color: var(--accent);
@@ -985,6 +1225,18 @@ body.is-resizing canvas {
   color: var(--accent);
 }
 
+.preset-grid .bbb-lesion-chip.active,
+.preset-grid .chb-escape-chip.active {
+  border-color: rgba(255, 110, 130, 0.55);
+  background: rgba(255, 80, 100, 0.12);
+  color: inherit;
+}
+
+.preset-grid .bbb-lesion-chip.active .bbb-lesion-short,
+.preset-grid .chb-escape-chip.active .chb-escape-short {
+  color: #ffb4be;
+}
+
 .preset-grid button small {
   display: block;
   color: var(--muted);
@@ -1098,10 +1350,12 @@ body.is-resizing canvas {
   line-height: 1.3;
 }
 
-@media (max-width: 900px) and (orientation: portrait) {
+/* Portrait phones + iPads (incl. 12.9" at 1024px): stack 3D over EKG */
+@media (max-width: 1200px) and (orientation: portrait) {
   #stage {
     grid-template-columns: 1fr;
-    grid-template-rows: 1fr 6px 0.95fr;
+    /* EKG gets the larger share of the bottom half */
+    grid-template-rows: minmax(0, 0.72fr) 6px minmax(0, 1.28fr);
   }
 
   #splitter {
@@ -1133,6 +1387,23 @@ body.is-resizing canvas {
 
   #view-3d {
     border-bottom: none;
+  }
+
+  #view-ekg {
+    min-height: 0;
+  }
+
+  .ekg-header {
+    padding: 0.45rem 0.75rem 0.3rem;
+  }
+
+  .ekg-body {
+    padding: 0.2rem 0.35rem 0.1rem;
+  }
+
+  .ekg-footer {
+    padding: 0.3rem 0.75rem calc(0.45rem + env(safe-area-inset-bottom, 0px));
+    font-size: 0.7rem;
   }
 
   /* Side panel still fills the viewport height (same as desktop). */

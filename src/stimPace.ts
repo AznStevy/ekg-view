@@ -43,6 +43,8 @@ export function classifyStim(id: SegmentId): StimKind {
       return "atrial";
     case "av":
     case "his":
+    case "avnrtSlow":
+    case "avnrtFast":
       return "junctional";
     case "rbb":
     case "purkinjeR":

@@ -121,56 +121,63 @@ function afibBranches(): BranchWindow[] {
       group: "atrial",
     });
   }
-  for (const q of [0.06, 0.27, 0.41, 0.68, 0.91]) {
+  for (const q of [0.18, 0.72, 1.15, 1.95, 2.7].map((sec) => sec / 3.33)) {
     // AV→His→ventricles only — no SA/atrialAt
-    out.push({ id: "av", t0: q - 0.05, t1: q - 0.015, group: "av-delay" });
-    out.push({ id: "his", t0: q - 0.015, t1: q + 0.025, group: "his" });
-    out.push({ id: "rbb", t0: q, t1: q + 0.07, group: "bundles" });
-    out.push({ id: "lbb", t0: q, t1: q + 0.06, group: "bundles" });
-    out.push({ id: "lbba", t0: q + 0.02, t1: q + 0.09, group: "fascicles" });
-    out.push({ id: "lbbp", t0: q + 0.02, t1: q + 0.09, group: "fascicles" });
-    out.push({ id: "purkinjeR", t0: q + 0.03, t1: q + 0.11, group: "purkinje" });
-    out.push({ id: "purkinjeL", t0: q + 0.03, t1: q + 0.11, group: "purkinje" });
+    out.push({ id: "av", t0: q - 0.03, t1: q - 0.01, group: "av-delay" });
+    out.push({ id: "his", t0: q - 0.01, t1: q + 0.02, group: "his" });
+    out.push({ id: "rbb", t0: q, t1: q + 0.04, group: "bundles" });
+    out.push({ id: "lbb", t0: q, t1: q + 0.04, group: "bundles" });
+    out.push({ id: "lbba", t0: q + 0.01, t1: q + 0.05, group: "fascicles" });
+    out.push({ id: "lbbp", t0: q + 0.01, t1: q + 0.05, group: "fascicles" });
+    out.push({ id: "purkinjeR", t0: q + 0.015, t1: q + 0.06, group: "purkinje" });
+    out.push({ id: "purkinjeL", t0: q + 0.015, t1: q + 0.06, group: "purkinje" });
   }
   return out;
 }
 
 function av2iBranches(): BranchWindow[] {
-  const events: { p: number; qrs: number | null }[] = [
-    { p: 0.05, qrs: 0.18 },
-    { p: 0.28, qrs: 0.48 },
-    { p: 0.52, qrs: 0.78 },
-    { p: 0.78, qrs: null },
+  // Must match sampleAv2i absolute → normalized events (CYCLE = 3.2 s)
+  const CYCLE = 3.2;
+  const abs: { p: number; qrs: number | null }[] = [
+    { p: 0.08, qrs: 0.08 + 0.18 },
+    { p: 0.88, qrs: 0.88 + 0.26 },
+    { p: 1.68, qrs: 1.68 + 0.36 },
+    { p: 2.48, qrs: null },
   ];
   const out: BranchWindow[] = [];
-  for (const e of events) {
-    out.push(...atrialAt(e.p));
+  for (const e of abs) {
+    const p = e.p / CYCLE;
+    const qrs = e.qrs == null ? null : e.qrs / CYCLE;
+    out.push(...atrialAt(p));
     out.push({
       id: "av",
-      t0: e.p + 0.06,
-      t1: e.qrs ?? e.p + 0.16,
+      t0: p + 0.02,
+      t1: qrs ?? p + 0.05,
       group: "av-delay",
     });
-    if (e.qrs != null) out.push(...ventCascade(e.qrs));
+    if (qrs != null) out.push(...ventCascade(qrs));
   }
   return out;
 }
 
 function av2iiBranches(): BranchWindow[] {
-  const events: { p: number; qrs: number | null }[] = [
-    { p: 0.08, qrs: 0.26 },
-    { p: 0.4, qrs: null },
-    { p: 0.68, qrs: 0.86 },
+  const CYCLE = 2.52;
+  const abs: { p: number; qrs: number | null }[] = [
+    { p: 0.1, qrs: 0.1 + 0.18 },
+    { p: 0.94, qrs: null },
+    { p: 1.78, qrs: 1.78 + 0.18 },
   ];
   const out: BranchWindow[] = [];
-  for (const e of events) {
-    out.push(...atrialAt(e.p));
-    if (e.qrs != null) {
-      out.push({ id: "av", t0: e.p + 0.06, t1: e.qrs - 0.02, group: "av-delay" });
-      out.push(...ventCascade(e.qrs));
+  for (const e of abs) {
+    const p = e.p / CYCLE;
+    const qrs = e.qrs == null ? null : e.qrs / CYCLE;
+    out.push(...atrialAt(p));
+    if (qrs != null) {
+      out.push({ id: "av", t0: p + 0.015, t1: qrs - 0.01, group: "av-delay" });
+      out.push(...ventCascade(qrs));
     } else {
-      out.push({ id: "av", t0: e.p + 0.06, t1: e.p + 0.14, group: "av-delay" });
-      out.push({ id: "his", t0: e.p + 0.1, t1: e.p + 0.16, group: "his" });
+      out.push({ id: "av", t0: p + 0.015, t1: p + 0.05, group: "av-delay" });
+      out.push({ id: "his", t0: p + 0.04, t1: p + 0.07, group: "his" });
     }
   }
   return out;
@@ -311,6 +318,30 @@ export function branchesForFinding(finding: FindingId | string | undefined): Bra
     ];
   }
 
+  if (finding === "avnrt") {
+    // Typical slow–fast: anterograde slow → His–Purkinje; retrograde fast → atria
+    return [
+      { id: "avnrtSlow", t0: 0.0, t1: 0.16, group: "avnrt" },
+      { id: "av", t0: 0.1, t1: 0.18, group: "av-delay" },
+      { id: "his", t0: 0.14, t1: 0.22, group: "his" },
+      { id: "rbb", t0: 0.18, t1: 0.3, group: "bundles" },
+      { id: "lbb", t0: 0.18, t1: 0.28, group: "bundles" },
+      { id: "lbba", t0: 0.2, t1: 0.3, group: "fascicles" },
+      { id: "lbbp", t0: 0.2, t1: 0.3, group: "fascicles" },
+      { id: "purkinjeR", t0: 0.22, t1: 0.34, group: "purkinje" },
+      { id: "purkinjeL", t0: 0.22, t1: 0.34, group: "purkinje" },
+      // Fast pathway retrograde: compact node → Todaro (curve 0), then atrial exit (curve 1)
+      { id: "avnrtFast", curveIndex: 0, t0: 0.2, t1: 0.32, group: "avnrt", reverse: true },
+      { id: "avnrtFast", curveIndex: 1, t0: 0.26, t1: 0.38, group: "avnrt" },
+      { id: "internodal", t0: 0.28, t1: 0.4, group: "atrial", reverse: true },
+      { id: "sa", t0: 0.32, t1: 0.4, group: "pacemaker", reverse: true },
+    ];
+  }
+
+  if (finding === "asystole") {
+    return [];
+  }
+
   if (finding === "rbbb") return branchesFromBundleBlocks(["rbb"]);
   if (finding === "lbbb") return branchesFromBundleBlocks(["lbb"]);
   if (finding === "lafb") return branchesFromBundleBlocks(["lbba"]);
@@ -383,38 +414,30 @@ export function branchesForFinding(finding: FindingId | string | undefined): Bra
   if (finding === "av2i") return av2iBranches();
   if (finding === "av2ii") return av2iiBranches();
   if (finding === "av3Junctional") {
-    // Supra-His complete block · narrow junctional / His escape
-    return [
-      ...atrialAt(0.04),
-      ...atrialAt(0.28),
-      ...atrialAt(0.52),
-      ...atrialAt(0.76),
-      { id: "his", t0: 0.18, t1: 0.28, group: "ectopy" },
-      { id: "rbb", t0: 0.22, t1: 0.34, group: "bundles" },
-      { id: "lbb", t0: 0.22, t1: 0.34, group: "bundles" },
-      { id: "lbba", t0: 0.24, t1: 0.36, group: "fascicles" },
-      { id: "lbbp", t0: 0.24, t1: 0.36, group: "fascicles" },
-      { id: "purkinjeR", t0: 0.26, t1: 0.4, group: "purkinje" },
-      { id: "purkinjeL", t0: 0.26, t1: 0.4, group: "purkinje" },
-      { id: "his", t0: 0.68, t1: 0.78, group: "ectopy" },
-      { id: "rbb", t0: 0.72, t1: 0.84, group: "bundles" },
-      { id: "lbb", t0: 0.72, t1: 0.84, group: "bundles" },
-      { id: "purkinjeR", t0: 0.74, t1: 0.9, group: "purkinje" },
-      { id: "purkinjeL", t0: 0.74, t1: 0.9, group: "purkinje" },
-    ];
+    // Supra-His complete block · narrow junctional / His escape (CYCLE 2.67 s)
+    const CYCLE = 2.67;
+    const atr = [0.1, 0.77, 1.43, 2.1].map((s) => s / CYCLE);
+    const esc = [0.45, 1.78].map((s) => s / CYCLE);
+    const out: BranchWindow[] = [];
+    for (const p of atr) out.push(...atrialAt(p));
+    for (const q of esc) {
+      out.push({ id: "his", t0: q - 0.03, t1: q + 0.02, group: "ectopy" });
+      out.push(...ventCascade(q));
+    }
+    return out;
   }
   if (finding === "av3") {
-    // Infra-His complete block · wide ventricular escape
-    return [
-      ...atrialAt(0.04),
-      ...atrialAt(0.28),
-      ...atrialAt(0.52),
-      ...atrialAt(0.76),
-      { id: "purkinjeL", t0: 0.18, t1: 0.35, group: "ectopy" },
-      { id: "purkinjeR", t0: 0.22, t1: 0.38, group: "ectopy" },
-      { id: "purkinjeL", t0: 0.68, t1: 0.85, group: "ectopy" },
-      { id: "purkinjeR", t0: 0.72, t1: 0.88, group: "ectopy" },
-    ];
+    // Infra-His complete block · wide ventricular escape (CYCLE 3.33 s)
+    const CYCLE = 3.33;
+    const atr = [0.12, 0.78, 1.45, 2.11, 2.78].map((s) => s / CYCLE);
+    const esc = [0.5, 2.17].map((s) => s / CYCLE);
+    const out: BranchWindow[] = [];
+    for (const p of atr) out.push(...atrialAt(p));
+    for (const q of esc) {
+      out.push({ id: "purkinjeL", t0: q - 0.02, t1: q + 0.08, group: "ectopy" });
+      out.push({ id: "purkinjeR", t0: q - 0.01, t1: q + 0.09, group: "ectopy" });
+    }
+    return out;
   }
   if (finding === "pacedAtrial") {
     // Spike @ 0.08 — atrial capture afterward
@@ -453,21 +476,21 @@ export function branchesForFinding(finding: FindingId | string | undefined): Bra
     ];
   }
   if (finding === "vtPoly" || finding === "torsades") {
-    const beats = [0.06, 0.24, 0.42, 0.58, 0.74, 0.9];
+    const beats = [0.08, 0.24, 0.41, 0.57, 0.74, 0.9];
     const out: BranchWindow[] = [];
     for (let i = 0; i < beats.length; i++) {
       const q = beats[i]!;
       const left = i % 2 === 0;
       out.push({
         id: left ? "purkinjeL" : "purkinjeR",
-        t0: q,
-        t1: q + 0.12,
+        t0: Math.max(0, q - 0.03),
+        t1: Math.min(1, q + 0.1),
         group: "ectopy",
       });
       out.push({
         id: left ? "lbb" : "rbb",
-        t0: q,
-        t1: q + 0.1,
+        t0: Math.max(0, q - 0.02),
+        t1: Math.min(1, q + 0.08),
         group: "ectopy",
       });
     }
@@ -563,9 +586,9 @@ export function groupsForMark(mark: string): string[] {
     case "P":
       return ["pacemaker", "atrial"];
     case "PR":
-      return ["av-delay", "accessory"];
+      return ["av-delay", "accessory", "avnrt"];
     case "QRS":
-      return ["his", "bundles", "fascicles", "purkinje", "ectopy", "accessory", "transseptal"];
+      return ["his", "bundles", "fascicles", "purkinje", "ectopy", "accessory", "transseptal", "avnrt"];
     case "ST":
     case "T":
       // Myocardial recovery spans the same ventricular mass that was activated
@@ -589,6 +612,9 @@ export function refractoryFrac(id: SegmentId): number {
     case "flutter":
       // Short — circuit reenters each F wave (~0.2 cycle)
       return 0.09;
+    case "avnrtSlow":
+    case "avnrtFast":
+      return 0.12;
     case "av":
       return 0.36;
     case "his":

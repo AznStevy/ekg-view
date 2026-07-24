@@ -43,6 +43,20 @@ export type CustomSampleOpts = {
   preserveTrace?: boolean;
 };
 
+export type CalipersState = {
+  enabled: boolean;
+  /** Window fraction 0…1 (left = older) */
+  x0: number | null;
+  x1: number | null;
+  march: boolean;
+};
+
+export type CalipersReadout = {
+  intervalSec: number;
+  intervalMs: number;
+  bpm: number;
+};
+
 export type EkgTrace = {
   canvas: HTMLCanvasElement;
   setFinding: (id: FindingId) => void;
@@ -51,6 +65,12 @@ export type EkgTrace = {
   setCustomSample: (fn: ((t: number) => WaveSample) | null, opts?: CustomSampleOpts) => void;
   /** Wire scrubbing; return false to ignore */
   onScrub: (handler: (deltaSec: number) => void) => void;
+  setCalipersEnabled: (on: boolean) => void;
+  setCalipersMarch: (on: boolean) => void;
+  clearCalipers: () => void;
+  getCalipers: () => CalipersState;
+  getCalipersReadout: () => CalipersReadout | null;
+  onCalipersChange: (handler: (readout: CalipersReadout | null) => void) => void;
   update: (elapsedSec: number) => Pick<WaveSample, "phase" | "active" | "mark" | "leads"> & { tCycle: number };
   resize: () => void;
   getWindowSec: () => number;
@@ -72,12 +92,38 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
   let customAbsolute = false;
   let customTCycleAt: ((elapsedSec: number) => number) | null = null;
   let scrubHandler: ((deltaSec: number) => void) | null = null;
+  let calipersHandler: ((readout: CalipersReadout | null) => void) | null = null;
+  let calipers: CalipersState = { enabled: false, x0: null, x1: null, march: false };
+  let caliperDragging = false;
+  let caliperDragWhich: "x0" | "x1" | "new" | null = null;
   let dpr = 1;
   let cssW = 0;
   let cssH = 0;
+  /** Top of waveform area (below cycle bar) — calipers span from here down */
+  let caliperTop = 0;
+  /**
+   * Time span currently represented across the rhythm / full-width strip.
+   * Grid lead cells show only the most recent COLUMN_WINDOW_SEC of this buffer
+   * so paper speed matches the bottom Lead II strip.
+   */
+  let viewWindowSec = 2.5;
+  /** Pixels per 1 mm (small box). Large box = 5 mm = 0.2 s at standard speed. */
+  let paperMmPx = 4;
 
-  const WINDOW_SEC = 2.5;
-  const SAMPLES = 280;
+  /** Standard ECG: 25 mm/s → one large box (5 mm) = 0.2 s */
+  const LARGE_BOX_SEC = 0.2;
+  const SMALL_PER_LARGE = 5;
+  /** Seconds shown in one 12-lead grid column (12.5 large boxes) */
+  const COLUMN_WINDOW_SEC = 2.5;
+  /** Full12 rhythm strip = 4 columns wide → 4× the column window */
+  const GRID_COLS = 4;
+  const MAX_WINDOW_SEC = COLUMN_WINDOW_SEC * GRID_COLS;
+  /**
+   * Samples across the longest (rhythm) window.
+   * Keep SAMPLES×SUBSAMPLE near the old 360×8 budget so complex rhythms don't stall the UI.
+   */
+  const SAMPLES = 180 * GRID_COLS;
+  const SUBSAMPLE = 4;
   const buffers: Record<LeadId, Float32Array> = Object.fromEntries(
     LEADS.map((l) => [l, new Float32Array(SAMPLES)]),
   ) as Record<LeadId, Float32Array>;
@@ -139,7 +185,86 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
     scrubHandler = handler;
   }
 
-  // Scrub interactions (pointer + touch)
+  function onCalipersChange(handler: (readout: CalipersReadout | null) => void) {
+    calipersHandler = handler;
+  }
+
+  function getCalipers(): CalipersState {
+    return { ...calipers };
+  }
+
+  function getCalipersReadout(): CalipersReadout | null {
+    if (calipers.x0 == null || calipers.x1 == null) return null;
+    // Measure in paper mm so 1 large box (5 small) = LARGE_BOX_SEC
+    const dxPx = Math.abs(calipers.x1 - calipers.x0) * cssW;
+    const largeBoxes = dxPx / Math.max(1e-6, paperMmPx * SMALL_PER_LARGE);
+    const intervalSec = largeBoxes * LARGE_BOX_SEC;
+    if (intervalSec < 0.01) return null;
+    return {
+      intervalSec,
+      intervalMs: Math.round(intervalSec * 1000),
+      bpm: Math.round(60 / intervalSec),
+    };
+  }
+
+  function notifyCalipers() {
+    calipersHandler?.(getCalipersReadout());
+  }
+
+  function setCalipersEnabled(on: boolean) {
+    calipers.enabled = on;
+    if (!on) {
+      calipers.x0 = null;
+      calipers.x1 = null;
+      caliperDragging = false;
+      caliperDragWhich = null;
+    }
+    canvas.style.cursor = on ? "crosshair" : "ew-resize";
+    canvas.title = on
+      ? "Drag to set caliper interval · wheel still scrubs"
+      : "Drag or swipe to scrub the EKG";
+    notifyCalipers();
+  }
+
+  function setCalipersMarch(on: boolean) {
+    calipers.march = on;
+  }
+
+  function clearCalipers() {
+    calipers.x0 = null;
+    calipers.x1 = null;
+    caliperDragging = false;
+    caliperDragWhich = null;
+    notifyCalipers();
+  }
+
+  function clientXToFrac(clientX: number): number {
+    const rect = canvas.getBoundingClientRect();
+    return Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)));
+  }
+
+  function nearestCaliperHandle(frac: number): "x0" | "x1" | null {
+    const hit = 0.02;
+    let best: "x0" | "x1" | null = null;
+    let bestD = hit;
+    if (calipers.x0 != null) {
+      const d = Math.abs(frac - calipers.x0);
+      if (d < bestD) {
+        bestD = d;
+        best = "x0";
+      }
+    }
+    if (calipers.x1 != null) {
+      const d = Math.abs(frac - calipers.x1);
+      if (d < bestD) {
+        bestD = d;
+        best = "x1";
+      }
+    }
+    return best;
+  }
+
+  // Scrub / caliper interactions
   let dragging = false;
   let lastX = 0;
   let activePointerId: number | null = null;
@@ -151,7 +276,6 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
     (e) => {
       if (!e.isPrimary) return;
       e.preventDefault();
-      dragging = true;
       activePointerId = e.pointerId;
       lastX = e.clientX;
       try {
@@ -159,20 +283,48 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
       } catch {
         /* older WebViews */
       }
+
+      if (calipers.enabled) {
+        const frac = clientXToFrac(e.clientX);
+        const handle = nearestCaliperHandle(frac);
+        caliperDragging = true;
+        if (handle) {
+          caliperDragWhich = handle;
+        } else {
+          caliperDragWhich = "new";
+          calipers.x0 = frac;
+          calipers.x1 = frac;
+          notifyCalipers();
+        }
+        return;
+      }
+
+      dragging = true;
     },
     { passive: false },
   );
   canvas.addEventListener(
     "pointermove",
     (e) => {
-      if (!dragging || !scrubHandler) return;
       if (activePointerId !== null && e.pointerId !== activePointerId) return;
+
+      if (calipers.enabled && caliperDragging) {
+        e.preventDefault();
+        const frac = clientXToFrac(e.clientX);
+        if (caliperDragWhich === "x0") calipers.x0 = frac;
+        else if (caliperDragWhich === "x1") calipers.x1 = frac;
+        else if (caliperDragWhich === "new") calipers.x1 = frac;
+        notifyCalipers();
+        return;
+      }
+
+      if (!dragging || !scrubHandler) return;
       e.preventDefault();
       const dx = e.clientX - lastX;
       lastX = e.clientX;
-      // Touch needs more gain — finger travel is short vs strip width
       const gain = e.pointerType === "touch" ? 2.1 : 1;
-      const deltaSec = (-dx / Math.max(1, cssW)) * WINDOW_SEC * gain;
+      const pxPerSec = (paperMmPx * SMALL_PER_LARGE) / LARGE_BOX_SEC;
+      const deltaSec = (-dx / Math.max(1, pxPerSec)) * gain;
       if (dx !== 0) scrubHandler(deltaSec);
     },
     { passive: false },
@@ -180,12 +332,16 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
   const endDrag = (e: PointerEvent) => {
     if (activePointerId !== null && e.pointerId !== activePointerId) return;
     dragging = false;
+    caliperDragging = false;
+    caliperDragWhich = null;
     activePointerId = null;
   };
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);
   canvas.addEventListener("lostpointercapture", () => {
     dragging = false;
+    caliperDragging = false;
+    caliperDragWhich = null;
     activePointerId = null;
   });
   canvas.addEventListener(
@@ -193,11 +349,81 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
     (e) => {
       if (!scrubHandler) return;
       e.preventDefault();
-      const deltaSec = (e.deltaY / 400) * WINDOW_SEC;
+      const pxPerSec = (paperMmPx * SMALL_PER_LARGE) / LARGE_BOX_SEC;
+      const deltaSec = (e.deltaY / 400) * (cssW / Math.max(1, pxPerSec));
       scrubHandler(deltaSec);
     },
     { passive: false },
   );
+
+  function drawCalipers(top: number) {
+    if (!calipers.enabled) return;
+    const c = ctx!;
+    const bottom = cssH;
+    const xs: { x: number; primary: boolean }[] = [];
+
+    if (calipers.x0 != null) xs.push({ x: calipers.x0, primary: true });
+    if (calipers.x1 != null) xs.push({ x: calipers.x1, primary: true });
+
+    if (calipers.march && calipers.x0 != null && calipers.x1 != null) {
+      const step = Math.abs(calipers.x1 - calipers.x0);
+      if (step > 0.008) {
+        const a = Math.min(calipers.x0, calipers.x1);
+        for (let k = -24; k <= 48; k++) {
+          const xx = a + k * step;
+          if (xx < -0.02 || xx > 1.02) continue;
+          if (Math.abs(xx - calipers.x0) < 1e-4 || Math.abs(xx - calipers.x1) < 1e-4) continue;
+          xs.push({ x: xx, primary: false });
+        }
+      }
+    }
+
+    for (const { x: frac, primary } of xs) {
+      const px = frac * cssW;
+      c.strokeStyle = primary ? "rgba(240, 192, 64, 0.9)" : "rgba(240, 192, 64, 0.35)";
+      c.lineWidth = primary ? 1.5 : 1;
+      c.setLineDash(primary ? [] : [3, 4]);
+      c.beginPath();
+      c.moveTo(px + 0.5, top);
+      c.lineTo(px + 0.5, bottom);
+      c.stroke();
+      c.setLineDash([]);
+      if (primary) {
+        c.fillStyle = "rgba(240, 192, 64, 0.95)";
+        c.beginPath();
+        c.moveTo(px, top);
+        c.lineTo(px - 4, top + 7);
+        c.lineTo(px + 4, top + 7);
+        c.closePath();
+        c.fill();
+      }
+    }
+
+    const readout = getCalipersReadout();
+    if (readout && calipers.x0 != null && calipers.x1 != null) {
+      const mid = ((calipers.x0 + calipers.x1) / 2) * cssW;
+      const label = `${readout.intervalMs} ms · ${readout.bpm} /min`;
+      c.font = '600 11px "IBM Plex Mono", monospace';
+      const tw = c.measureText(label).width;
+      const lx = Math.max(6, Math.min(cssW - tw - 10, mid - tw / 2));
+      const ly = top + 10;
+      c.fillStyle = "rgba(8, 14, 18, 0.78)";
+      roundRect(c, lx - 4, ly - 2, tw + 8, 16, 4);
+      c.fill();
+      c.fillStyle = "#f0c040";
+      c.textAlign = "left";
+      c.textBaseline = "top";
+      c.fillText(label, lx, ly);
+    }
+  }
+
+  function finishFrame(
+    sample: WaveSample,
+    tCycle: number,
+  ): Pick<WaveSample, "phase" | "active" | "mark" | "leads"> & { tCycle: number } {
+    drawCalipers(caliperTop);
+    return { phase: sample.phase, active: sample.active, mark: sample.mark, tCycle, leads: sample.leads };
+  }
 
   function drawCycleBar(y: number, h: number, active: CycleMark) {
     const c = ctx!;
@@ -260,16 +486,20 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
     w: number,
     h: number,
     cursorXLocal: number,
-    opts?: { missing?: boolean; label?: string },
+    opts?: { missing?: boolean; label?: string; fromFrac?: number; toFrac?: number },
   ) {
     const c = ctx!;
     const buf = buffers[lead];
     const missing = !!opts?.missing;
     const label = opts?.label ?? lead;
+    const fromFrac = Math.max(0, Math.min(1, opts?.fromFrac ?? 0));
+    const toFrac = Math.max(fromFrac + 1e-6, Math.min(1, opts?.toFrac ?? 1));
+    const i0 = Math.round(fromFrac * (SAMPLES - 1));
+    const i1 = Math.round(toFrac * (SAMPLES - 1));
+    const span = Math.max(1, i1 - i0);
 
-    // Standard EKG paper: small 1 mm boxes; every 5th line is a brighter 5 mm box
-    // Size so both axes get several large boxes (horizontals were too sparse before)
-    const mm = Math.max(3, Math.min(7, Math.round(Math.min(w, h) / 22)));
+    // Square paper boxes: 1 mm small, 5 mm large (= 0.2 s horizontally)
+    const mm = paperMmPx;
     c.save();
     c.beginPath();
     c.rect(x, y, w, h);
@@ -321,28 +551,26 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
       c.fillRect(cx - 3, y, 6, h);
 
       c.beginPath();
-      for (let i = 0; i < SAMPLES; i++) {
-        const px = x + (i / (SAMPLES - 1)) * w;
+      for (let i = i0; i <= i1; i++) {
+        const px = x + ((i - i0) / span) * w;
         const py = mid - buf[i]! * amp;
-        if (i === 0) c.moveTo(px, py);
+        if (i === i0) c.moveTo(px, py);
         else c.lineTo(px, py);
       }
       c.strokeStyle = GRID.wave;
-      c.lineWidth = 1.35;
+      c.lineWidth = 1.5;
       c.lineJoin = "round";
+      c.lineCap = "round";
       c.stroke();
 
-      const idx = Math.min(
-        SAMPLES - 1,
-        Math.max(0, Math.round((cursorXLocal / w) * (SAMPLES - 1))),
-      );
+      const idx = Math.min(i1, Math.max(i0, i0 + Math.round((cursorXLocal / w) * span)));
       const cy = mid - buf[idx]! * amp;
 
-      const glowFrom = Math.max(0, idx - 14);
-      const glowTo = Math.min(SAMPLES - 1, idx + 2);
+      const glowFrom = Math.max(i0, idx - 14);
+      const glowTo = Math.min(i1, idx + 2);
       c.beginPath();
       for (let i = glowFrom; i <= glowTo; i++) {
-        const px = x + (i / (SAMPLES - 1)) * w;
+        const px = x + ((i - i0) / span) * w;
         const py = mid - buf[i]! * amp;
         if (i === glowFrom) c.moveTo(px, py);
         else c.lineTo(px, py);
@@ -400,22 +628,65 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
     return upload.availableLeads.length ? [...upload.availableLeads] : [...LEADS];
   }
 
+  function sampleNormAt(tAbs: number, cycle: number): WaveSample {
+    if (customAbsolute) return sampleAt(0, tAbs);
+    const tc = ((tAbs % cycle) + cycle) % cycle;
+    return sampleAt(tc / cycle, tAbs);
+  }
+
   function update(elapsedSec: number) {
     const cycle = effectiveCycle();
     const tCycle =
       customAbsolute && customTCycleAt
         ? ((customTCycleAt(elapsedSec) % 1) + 1) % 1
         : (((elapsedSec % cycle) + cycle) % cycle) / cycle;
-    const sample = customAbsolute ? sampleAt(tCycle, elapsedSec) : sampleAt(tCycle);
+    const sample = sampleAt(tCycle, elapsedSec);
     const shown = new Set(displayLeads());
+    const layout = upload?.layout ?? "full12";
+    const available = displayLeads();
+    const labelFor = (lead: LeadId) => upload?.leadLabels?.[lead] ?? lead;
+    const rhythmLead = available.includes("II")
+      ? "II"
+      : available[0] ?? "II";
 
+    // Match classic paper: grid cells = 1 column window; rhythm strip = full width at same speed
+    const isSingleOrPair =
+      layout === "telemetry" ||
+      available.length === 1 ||
+      layout === "rhythm" ||
+      available.length === 2;
+    const isSixPack = layout === "limb6" || layout === "precordial6";
+    const showRhythmStrip =
+      !isSingleOrPair &&
+      !isSixPack &&
+      (layout === "full12" || shown.has("II") || available.length >= 6);
+    viewWindowSec = showRhythmStrip ? MAX_WINDOW_SEC : COLUMN_WINDOW_SEC;
+    const gridFromFrac = showRhythmStrip ? 1 - COLUMN_WINDOW_SEC / viewWindowSec : 0;
+
+    const pad = 2;
+    const traceW = Math.max(1, cssW - pad * 2);
+    // Size small boxes so the full-width strip's time span is exact on paper
+    // (1 large box = 5 small = LARGE_BOX_SEC).
+    const largeBoxesAcross = viewWindowSec / LARGE_BOX_SEC;
+    paperMmPx = traceW / (largeBoxesAcross * SMALL_PER_LARGE);
+
+    const dtBin = viewWindowSec / Math.max(1, SAMPLES - 1);
+
+    // Peak-hold each display column so needle-thin QRS don't alias to random heights
+    for (const lead of LEADS) buffers[lead].fill(0);
     for (let i = 0; i < SAMPLES; i++) {
-      const age = ((SAMPLES - 1 - i) / (SAMPLES - 1)) * WINDOW_SEC;
-      const tAbs = elapsedSec - age;
-      const s = customAbsolute
-        ? sampleAt(tCycle, tAbs)
-        : sampleAt((((tAbs % cycle) + cycle) % cycle) / cycle, tAbs);
-      for (const lead of LEADS) buffers[lead][i] = shown.has(lead) ? s.leads[lead] : 0;
+      const ageCenter = ((SAMPLES - 1 - i) / (SAMPLES - 1)) * viewWindowSec;
+      for (let s = 0; s < SUBSAMPLE; s++) {
+        const frac = (s + 0.5) / SUBSAMPLE;
+        const age = ageCenter + (frac - 0.5) * dtBin;
+        const tAbs = elapsedSec - age;
+        const smp = sampleNormAt(tAbs, cycle);
+        for (const lead of LEADS) {
+          if (!shown.has(lead)) continue;
+          const v = smp.leads[lead]!;
+          if (Math.abs(v) >= Math.abs(buffers[lead][i]!)) buffers[lead][i] = v;
+        }
+      }
     }
 
     const c = ctx!;
@@ -424,14 +695,8 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
     const barH = Math.max(28, Math.min(36, cssH * 0.07));
     drawCycleBar(0, barH, sample.mark);
 
-    const pad = 2;
     const gridTop = barH + 4;
-    const layout = upload?.layout ?? "full12";
-    const available = displayLeads();
-    const labelFor = (lead: LeadId) => upload?.leadLabels?.[lead] ?? lead;
-    const rhythmLead = available.includes("II")
-      ? "II"
-      : available[0] ?? "II";
+    caliperTop = gridTop;
 
     // Telemetry / single-channel: one large strip
     if (layout === "telemetry" || available.length === 1) {
@@ -439,7 +704,7 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
       drawLeadCell(rhythmLead, pad, gridTop, cssW - pad * 2, rhythmH, cssW - pad * 2 - 6, {
         label: `${labelFor(rhythmLead)}${layout === "telemetry" ? "  telemetry" : ""}`,
       });
-      return { phase: sample.phase, active: sample.active, mark: sample.mark, tCycle, leads: sample.leads };
+      return finishFrame(sample, tCycle);
     }
 
     // Rhythm-only pair: stacked full-width strips
@@ -456,7 +721,7 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
           { label: labelFor(lead) },
         );
       });
-      return { phase: sample.phase, active: sample.active, mark: sample.mark, tCycle, leads: sample.leads };
+      return finishFrame(sample, tCycle);
     }
 
     // 6-lead packs
@@ -483,29 +748,34 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
           { missing: !shown.has(lead) },
         );
       });
-      return { phase: sample.phase, active: sample.active, mark: sample.mark, tCycle, leads: sample.leads };
+      return finishFrame(sample, tCycle);
     }
 
     // Partial / full12: classic 3×4 with missing leads dimmed; rhythm if II present
-    const showRhythm = layout === "full12" || shown.has("II") || available.length >= 6;
+    const showRhythm = showRhythmStrip;
     const rhythmH = showRhythm ? Math.max(52, cssH * 0.18) : 0;
     const gridH = cssH - gridTop - rhythmH - 4;
-    const colW = (cssW - pad * 2) / 4;
+    const colW = (cssW - pad * 2) / GRID_COLS;
     const rowH = gridH / 3;
     const cursorLocal = colW - 6;
 
-    for (let col = 0; col < 4; col++) {
+    for (let col = 0; col < GRID_COLS; col++) {
       for (let row = 0; row < 3; row++) {
         const lead = LEAD_GRID[col]![row]!;
         drawLeadCell(lead, pad + col * colW, gridTop + row * rowH, colW, rowH, cursorLocal, {
           missing: upload ? !shown.has(lead) : false,
+          fromFrac: gridFromFrac,
+          toFrac: 1,
         });
       }
     }
 
     if (showRhythm) {
       const ry = gridTop + gridH + 2;
-      drawLeadCell(rhythmLead, pad, ry, cssW - pad * 2, rhythmH - 2, cssW - pad * 2 - 6);
+      drawLeadCell(rhythmLead, pad, ry, cssW - pad * 2, rhythmH - 2, cssW - pad * 2 - 6, {
+        fromFrac: 0,
+        toFrac: 1,
+      });
       c.fillStyle = "#3db8c8";
       c.font = '600 10px "IBM Plex Mono", monospace';
       c.textAlign = "left";
@@ -518,7 +788,7 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
       c.fillText(tag, pad + 6, ry + 5);
     }
 
-    return { phase: sample.phase, active: sample.active, mark: sample.mark, tCycle, leads: sample.leads };
+    return finishFrame(sample, tCycle);
   }
 
   resize();
@@ -530,8 +800,14 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
     setUpload,
     setCustomSample,
     onScrub,
+    setCalipersEnabled,
+    setCalipersMarch,
+    clearCalipers,
+    getCalipers,
+    getCalipersReadout,
+    onCalipersChange,
     update,
     resize,
-    getWindowSec: () => WINDOW_SEC,
+    getWindowSec: () => viewWindowSec,
   };
 }

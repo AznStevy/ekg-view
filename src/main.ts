@@ -51,7 +51,7 @@ import {
 } from "./branchBlock";
 import {
   cardioversionDurationSec,
-  cardioversionTCycle,
+  cardioversionWallTCycle,
   sampleCardioversionAt,
 } from "./ekgWaveforms";
 
@@ -79,6 +79,21 @@ const CHB_OPTIONS: { id: FindingId; short: string; name: string }[] = [
   },
 ];
 
+const FLUTTER_FINDING_IDS = new Set<FindingId>(["aflutterCcw", "aflutterCw"]);
+
+const FLUTTER_OPTIONS: { id: FindingId; short: string; name: string }[] = [
+  {
+    id: "aflutterCcw",
+    short: "CCW",
+    name: "Typical · inferior − sawtooth",
+  },
+  {
+    id: "aflutterCw",
+    short: "CW",
+    name: "Reverse typical · inferior + F",
+  },
+];
+
 type AppState = {
   finding: FindingId;
   playing: boolean;
@@ -94,14 +109,21 @@ type AppState = {
   customBlocks: BundleBlockId[];
   /** True when user is driving EKG from customBlocks rather than a preset finding */
   customBlockMode: boolean;
-  /** Post-cardioversion timeline (keeps absolute strip sampler after settling into NSR) */
+  /** Post-cardioversion timeline (keeps absolute strip sampler after settling into target) */
   cvRecovery: {
     from: FindingId;
+    to: FindingId;
     durationSec: number;
-    nsrCycleSec: number;
-    /** True once recovery arc finished — UI shows NSR, sampler stays continuous */
+    targetCycleSec: number;
+    /** Wall-clock elapsed when the shock was delivered */
+    shockAtSec: number;
+    /** Prior-rhythm cycle length (for pre-shock strip history) */
+    fromCycleSec: number;
+    /** True once recovery arc finished — UI shows target, sampler stays continuous */
     settled: boolean;
   } | null;
+  /** Preferred post-shock rhythm (default NSR) */
+  cvTarget: FindingId;
   upload: UploadedEkg | null;
   stim: StimState;
 };
@@ -135,11 +157,10 @@ function buildUI(root: HTMLElement): {
                   </div>
                   <div class="bbb-lesion-grid" id="branch-block-grid">
                     ${BUNDLE_BLOCK_OPTIONS.map(
-                      (o) => `<label class="bbb-lesion-chip">
-                        <input type="checkbox" data-bundle-block="${o.id}" />
+                      (o) => `<button type="button" class="bbb-lesion-chip" data-bundle-block="${o.id}">
                         <span class="bbb-lesion-short">${o.short}</span>
                         <span class="bbb-lesion-name">${o.label}</span>
-                      </label>`,
+                      </button>`,
                     ).join("")}
                   </div>
                   <div class="finding-expand-result" id="bbb-result">Select one or more tracts</div>
@@ -172,9 +193,35 @@ function buildUI(root: HTMLElement): {
               </div>
             </div>`;
 
+  const flutterGroupButton = `<button type="button" id="btn-flutter" data-flutter-group title="Atrial flutter · circuit direction">
+      Flutter<small>CCW · CW</small>
+    </button>`;
+
+  const flutterOptionsHtml = `
+            <div class="finding-expand flutter-options" id="flutter-options" aria-hidden="true" style="display:none">
+              <div class="finding-expand-inner">
+                <div class="finding-expand-panel">
+                  <div class="finding-expand-head">
+                    <span>Circuit direction?</span>
+                    <button type="button" id="btn-flutter-clear" class="finding-expand-clear">Clear</button>
+                  </div>
+                  <div class="chb-escape-grid" id="flutter-dir-grid">
+                    ${FLUTTER_OPTIONS.map(
+                      (o) => `<button type="button" class="chb-escape-chip" data-flutter-finding="${o.id}">
+                        <span class="chb-escape-short">${o.short}</span>
+                        <span class="chb-escape-name">${o.name}</span>
+                      </button>`,
+                    ).join("")}
+                  </div>
+                  <div class="finding-expand-result" id="flutter-result">Select counterclockwise or clockwise</div>
+                </div>
+              </div>
+            </div>`;
+
   const findingButtonHtml: string[] = [];
   let bbbInserted = false;
   let chbInserted = false;
+  let flutterInserted = false;
   for (const f of FINDINGS) {
     if (f.category === "bbb") {
       if (!bbbInserted) {
@@ -192,10 +239,22 @@ function buildUI(root: HTMLElement): {
       }
       continue;
     }
+    if (FLUTTER_FINDING_IDS.has(f.id)) {
+      if (!flutterInserted) {
+        findingButtonHtml.push(flutterGroupButton);
+        findingButtonHtml.push(flutterOptionsHtml);
+        flutterInserted = true;
+      }
+      continue;
+    }
     findingButtonHtml.push(`
     <button type="button" data-finding="${f.id}" title="${f.name}" ${f.id === "nsr" ? 'class="active"' : ""}>
       ${f.short}<small>${f.rateLabel}</small>
     </button>`);
+  }
+  if (!flutterInserted) {
+    findingButtonHtml.push(flutterGroupButton);
+    findingButtonHtml.push(flutterOptionsHtml);
   }
   if (!chbInserted) {
     findingButtonHtml.push(chbGroupButton);
@@ -225,6 +284,15 @@ function buildUI(root: HTMLElement): {
           <div class="ekg-meta">
             <span class="meta-pill" id="meta-finding">NSR</span>
             <span class="meta-pill" id="meta-rate">70 bpm</span>
+            <div class="ekg-calipers" id="ekg-calipers">
+              <button type="button" class="caliper-btn" id="btn-calipers" aria-pressed="false" title="Measure intervals on the strip">
+                Calipers
+              </button>
+              <button type="button" class="caliper-btn" id="btn-calipers-march" aria-pressed="false" hidden title="Repeat the measured interval across the strip">
+                March out
+              </button>
+              <span class="meta-pill caliper-readout" id="caliper-readout" hidden>—</span>
+            </div>
           </div>
         </div>
         <div class="ekg-body" id="ekg-host"></div>
@@ -272,7 +340,38 @@ function buildUI(root: HTMLElement): {
             <div class="transport-row">
               <button type="button" id="btn-stim" title="Click a pathway to pace from that site">Stimulate</button>
               <button type="button" id="btn-stim-clear" title="Clear stimulated pace site">Clear stim</button>
-              <button type="button" id="btn-cv" title="Synchronized cardioversion → NSR">Cardiovert</button>
+            </div>
+            <div class="cv-row">
+              <span class="cv-label" id="cv-label">Post-shock</span>
+              <div class="cv-select" id="cv-select">
+                <div class="cv-select-trigger-wrap">
+                  <input
+                    type="search"
+                    class="cv-select-trigger"
+                    id="cv-target-input"
+                    role="combobox"
+                    aria-autocomplete="list"
+                    aria-haspopup="listbox"
+                    aria-expanded="false"
+                    aria-controls="cv-target-menu"
+                    aria-labelledby="cv-label"
+                    placeholder="Search rhythm…"
+                    value="NSR"
+                    autocomplete="off"
+                    spellcheck="false"
+                    title="Rhythm to recover into — type to search"
+                  />
+                  <span class="cv-select-chevron" aria-hidden="true">▾</span>
+                </div>
+                <div class="cv-select-menu" id="cv-target-menu" role="listbox" hidden>
+                  <div class="cv-select-empty" id="cv-target-empty" hidden>No matching rhythms</div>
+                  ${FINDINGS.map(
+                    (f) =>
+                      `<button type="button" class="cv-select-option${f.id === "nsr" ? " active" : ""}" role="option" data-cv-target="${f.id}" aria-selected="${f.id === "nsr"}">${f.short}<small>${f.name}</small></button>`,
+                  ).join("")}
+                </div>
+              </div>
+              <button type="button" id="btn-cv" title="Cardioversion / defibrillation → selected rhythm">Cardiovert / Defib</button>
             </div>
             <p class="stim-hint" id="stim-hint" hidden>Click a conduction pathway on the heart to pace from that site.</p>
             <div class="slider-row rate-row">
@@ -372,6 +471,9 @@ function buildUI(root: HTMLElement): {
     "phase-chip",
     "meta-finding",
     "meta-rate",
+    "btn-calipers",
+    "btn-calipers-march",
+    "caliper-readout",
     "ekg-footer",
     "panel-shell",
     "btn-collapse",
@@ -388,6 +490,10 @@ function buildUI(root: HTMLElement): {
     "btn-stim",
     "btn-stim-clear",
     "btn-cv",
+    "cv-select",
+    "cv-target-input",
+    "cv-target-menu",
+    "cv-target-empty",
     "stim-hint",
     "rate-slider",
     "rate-input",
@@ -403,6 +509,11 @@ function buildUI(root: HTMLElement): {
     "chb-result",
     "chb-escape-grid",
     "btn-chb-clear",
+    "btn-flutter",
+    "flutter-options",
+    "flutter-result",
+    "flutter-dir-grid",
+    "btn-flutter-clear",
     "finding-grid",
     "finding-search",
     "finding-empty",
@@ -449,6 +560,7 @@ function main() {
     customBlocks: [],
     customBlockMode: false,
     cvRecovery: null,
+    cvTarget: "nsr",
     upload: null,
     stim: { armed: false, site: null },
   };
@@ -649,9 +761,13 @@ function main() {
     if (state.finding !== "wpw" && !segmentVisibility.accessory) {
       conduction.setAccessoryVisible(false);
     }
-    const isFlutter = state.finding === "aflutterCcw" || state.finding === "aflutterCw";
+    const isFlutter = FLUTTER_FINDING_IDS.has(state.finding);
     if (!isFlutter && !segmentVisibility.flutter) {
       conduction.setSegmentVisibility("flutter", false);
+    }
+    if (state.finding !== "avnrt") {
+      if (!segmentVisibility.avnrtSlow) conduction.setSegmentVisibility("avnrtSlow", false);
+      if (!segmentVisibility.avnrtFast) conduction.setSegmentVisibility("avnrtFast", false);
     }
   }
   applySegmentVisibility();
@@ -659,8 +775,11 @@ function main() {
   function applyRateToEkg() {
     if (state.cvRecovery) {
       if (state.cvRecovery.settled) {
-        state.cvRecovery.nsrCycleSec = cycleSecForRate(getFinding("nsr"), state.ventRateBpm);
-        ekg.setCycleSec(state.cvRecovery.nsrCycleSec);
+        state.cvRecovery.targetCycleSec = cycleSecForRate(
+          getFinding(state.cvRecovery.to),
+          state.ventRateBpm,
+        );
+        ekg.setCycleSec(state.cvRecovery.targetCycleSec);
         bindCardioversionSample(true);
       } else {
         ekg.setCycleSec(state.cvRecovery.durationSec);
@@ -734,9 +853,9 @@ function main() {
 
   function syncBranchBlockCheckboxes() {
     const active = new Set(activeBundleBlocks());
-    els["branch-block-grid"].querySelectorAll<HTMLInputElement>("input[data-bundle-block]").forEach((input) => {
-      const id = input.dataset.bundleBlock as BundleBlockId;
-      input.checked = active.has(id);
+    els["branch-block-grid"].querySelectorAll<HTMLButtonElement>("button[data-bundle-block]").forEach((btn) => {
+      const id = btn.dataset.bundleBlock as BundleBlockId;
+      btn.classList.toggle("active", active.has(id));
     });
     const blocks = activeBundleBlocks();
     const desc = describeBundleBlocks(blocks);
@@ -750,17 +869,37 @@ function main() {
   }
 
   function syncChbOptions() {
-    const chbOpen = !(state.cvRecovery && !state.cvRecovery.settled) && CHB_FINDING_IDS.has(state.finding);
+    // Never open CHB from BBB custom lesions (trifascicular used to set finding=av3)
+    const chbOpen =
+      !(state.cvRecovery && !state.cvRecovery.settled) &&
+      !state.customBlockMode &&
+      CHB_FINDING_IDS.has(state.finding);
     setFindingExpand(els["chb-options"], chbOpen);
     els["btn-chb"].classList.toggle("active", chbOpen && !state.upload && !state.stim.site);
     els["chb-escape-grid"].querySelectorAll<HTMLButtonElement>("button[data-chb-finding]").forEach((btn) => {
-      btn.classList.toggle("active", btn.dataset.chbFinding === state.finding);
+      btn.classList.toggle("active", chbOpen && btn.dataset.chbFinding === state.finding);
     });
     if (chbOpen) {
       const f = getFinding(state.finding);
       els["chb-result"].textContent = `${f.short} · ${f.detail}`;
     } else {
       els["chb-result"].textContent = "Select junctional or ventricular escape";
+    }
+  }
+
+  function syncFlutterOptions() {
+    const flutterOpen =
+      !(state.cvRecovery && !state.cvRecovery.settled) && FLUTTER_FINDING_IDS.has(state.finding);
+    setFindingExpand(els["flutter-options"], flutterOpen);
+    els["btn-flutter"].classList.toggle("active", flutterOpen && !state.upload && !state.stim.site);
+    els["flutter-dir-grid"].querySelectorAll<HTMLButtonElement>("button[data-flutter-finding]").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.flutterFinding === state.finding);
+    });
+    if (flutterOpen) {
+      const f = getFinding(state.finding);
+      els["flutter-result"].textContent = `${f.short} · ${f.detail}`;
+    } else {
+      els["flutter-result"].textContent = "Select counterclockwise or clockwise";
     }
   }
 
@@ -776,9 +915,10 @@ function main() {
       els["finding-detail"].textContent = stimDetail(stimSite);
       els["meta-finding"].textContent = "STIM";
     } else if (state.cvRecovery && !state.cvRecovery.settled) {
+      const to = getFinding(state.cvRecovery.to);
       els["finding-name"].textContent = "Post-cardioversion recovery";
-      els["finding-detail"].textContent = `From ${getFinding(state.cvRecovery.from).short} · returning toward sinus`;
-      els["meta-finding"].textContent = "CV → NSR";
+      els["finding-detail"].textContent = `From ${getFinding(state.cvRecovery.from).short} · returning toward ${to.short}`;
+      els["meta-finding"].textContent = `CV → ${to.short}`;
     } else if (usingCustomBlocks) {
       els["finding-name"].textContent = `Custom · ${blockDesc.name}`;
       els["finding-detail"].textContent = blockDesc.detail;
@@ -807,7 +947,7 @@ function main() {
       ekg.setCycleSec(cycleSecForRate({ ...f, cycleSec: 0.9, ventRateBpm: 60 }, state.ventRateBpm));
     } else if (state.cvRecovery) {
       ekg.setCycleSec(
-        state.cvRecovery.settled ? state.cvRecovery.nsrCycleSec : state.cvRecovery.durationSec,
+        state.cvRecovery.settled ? state.cvRecovery.targetCycleSec : state.cvRecovery.durationSec,
       );
       bindCardioversionSample(state.cvRecovery.settled);
     } else if (usingCustomBlocks) {
@@ -829,15 +969,22 @@ function main() {
       );
       if (input) input.checked = true;
     }
-    if (
-      (state.finding === "aflutterCcw" || state.finding === "aflutterCw") &&
-      !state.upload
-    ) {
+    if (FLUTTER_FINDING_IDS.has(state.finding) && !state.upload) {
       segmentVisibility.flutter = true;
       const input = els["segment-toggles"].querySelector<HTMLInputElement>(
         'input[data-segment="flutter"]',
       );
       if (input) input.checked = true;
+    }
+    if (state.finding === "avnrt" && !state.upload) {
+      segmentVisibility.avnrtSlow = true;
+      segmentVisibility.avnrtFast = true;
+      for (const id of ["avnrtSlow", "avnrtFast"] as const) {
+        const input = els["segment-toggles"].querySelector<HTMLInputElement>(
+          `input[data-segment="${id}"]`,
+        );
+        if (input) input.checked = true;
+      }
     }
     applySegmentVisibility();
     if (!(stimSite && !state.upload) && !state.cvRecovery) applyRateToEkg();
@@ -858,6 +1005,75 @@ function main() {
     );
     syncBranchBlockCheckboxes();
     syncChbOptions();
+    syncFlutterOptions();
+    syncCardioversionUi();
+  }
+
+  function syncCardioversionUi() {
+    const cvLive = !!(state.cvRecovery && !state.cvRecovery.settled);
+    document.body.classList.toggle("cv-active", cvLive);
+    const btn = els["btn-cv"] as HTMLButtonElement;
+    const input = els["cv-target-input"] as HTMLInputElement;
+    const menu = els["cv-target-menu"];
+    const short = getFinding(state.cvTarget).short;
+    input.disabled = cvLive;
+    if (cvLive) setCvMenuOpen(false);
+    // When menu closed, show the committed selection label
+    if (menu.hidden) input.value = short;
+    input.setAttribute("aria-expanded", menu.hidden ? "false" : "true");
+    els["cv-select"].classList.toggle("is-open", !menu.hidden);
+    els["cv-select"].classList.toggle("is-disabled", cvLive);
+    menu.querySelectorAll<HTMLButtonElement>("[data-cv-target]").forEach((opt) => {
+      const on = opt.dataset.cvTarget === state.cvTarget;
+      opt.classList.toggle("active", on);
+      opt.setAttribute("aria-selected", on ? "true" : "false");
+    });
+    btn.textContent = cvLive ? "Cancel CV / Defib" : "Cardiovert / Defib";
+    btn.classList.toggle("active", cvLive);
+    btn.title = cvLive
+      ? "Cancel shock recovery and restore prior rhythm"
+      : `Cardioversion / defibrillation → ${short}`;
+  }
+
+  function filterCvTargetOptions(query: string) {
+    const q = query.trim();
+    let visible = 0;
+    els["cv-target-menu"].querySelectorAll<HTMLButtonElement>("[data-cv-target]").forEach((opt) => {
+      const id = opt.dataset.cvTarget as FindingId;
+      const show = findingMatchesQuery(getFinding(id), q);
+      opt.hidden = !show;
+      if (show) visible += 1;
+    });
+    els["cv-target-empty"].hidden = visible > 0;
+  }
+
+  function visibleCvOptions(): HTMLButtonElement[] {
+    return [
+      ...els["cv-target-menu"].querySelectorAll<HTMLButtonElement>("[data-cv-target]:not([hidden])"),
+    ];
+  }
+
+  function setCvMenuOpen(open: boolean) {
+    const menu = els["cv-target-menu"];
+    const input = els["cv-target-input"] as HTMLInputElement;
+    if (open && input.disabled) return;
+    menu.hidden = !open;
+    input.setAttribute("aria-expanded", open ? "true" : "false");
+    els["cv-select"].classList.toggle("is-open", open);
+    if (open) {
+      filterCvTargetOptions(input.value === getFinding(state.cvTarget).short ? "" : input.value);
+      const active = menu.querySelector<HTMLElement>(".cv-select-option.active:not([hidden])");
+      (active ?? visibleCvOptions()[0])?.scrollIntoView({ block: "nearest" });
+    } else {
+      input.value = getFinding(state.cvTarget).short;
+      filterCvTargetOptions("");
+    }
+  }
+
+  function pickCvTarget(id: FindingId) {
+    state.cvTarget = id;
+    setCvMenuOpen(false);
+    syncCardioversionUi();
   }
 
   function setStimArmed(armed: boolean) {
@@ -964,6 +1180,57 @@ function main() {
     state.elapsed = Math.max(0, state.elapsed + deltaSec);
   });
 
+  const FOOTER_SCRUB =
+    "Drag / swipe the EKG to scrub · playing auto-pauses while scrubbing.";
+  const FOOTER_CALIPERS =
+    "Drag on the strip to set calipers · drag handles to adjust · wheel still scrubs · March out repeats the interval.";
+
+  function syncCalipersUI() {
+    const on = ekg.getCalipers().enabled;
+    const march = ekg.getCalipers().march;
+    const btn = els["btn-calipers"] as HTMLButtonElement;
+    const marchBtn = els["btn-calipers-march"] as HTMLButtonElement;
+    const readout = els["caliper-readout"];
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    marchBtn.hidden = !on;
+    marchBtn.setAttribute("aria-pressed", march ? "true" : "false");
+    els["ekg-footer"].textContent = on ? FOOTER_CALIPERS : FOOTER_SCRUB;
+    if (!on) {
+      readout.hidden = true;
+      readout.textContent = "—";
+    }
+  }
+
+  ekg.onCalipersChange((r) => {
+    const readout = els["caliper-readout"];
+    if (!ekg.getCalipers().enabled) {
+      readout.hidden = true;
+      return;
+    }
+    if (!r) {
+      readout.hidden = true;
+      readout.textContent = "—";
+      return;
+    }
+    readout.hidden = false;
+    readout.textContent = `${r.intervalMs} ms · ${r.bpm}/min`;
+  });
+
+  els["btn-calipers"].addEventListener("click", () => {
+    const next = !ekg.getCalipers().enabled;
+    ekg.setCalipersEnabled(next);
+    if (!next) ekg.setCalipersMarch(false);
+    syncCalipersUI();
+  });
+
+  els["btn-calipers-march"].addEventListener("click", () => {
+    if (!ekg.getCalipers().enabled) return;
+    ekg.setCalipersMarch(!ekg.getCalipers().march);
+    syncCalipersUI();
+  });
+
+  syncCalipersUI();
+
   els["finding-grid"].addEventListener("click", (e) => {
     const bbbBtn = (e.target as HTMLElement).closest("#btn-bbb");
     if (bbbBtn) {
@@ -973,6 +1240,31 @@ function main() {
       } else {
         setFinding("rbbb");
       }
+      return;
+    }
+    const blockOpt = (e.target as HTMLElement).closest("button[data-bundle-block]");
+    if (blockOpt) {
+      const id = (blockOpt as HTMLElement).dataset.bundleBlock as BundleBlockId;
+      const next = new Set(activeBundleBlocks());
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      const blocks = [...next];
+      state.customBlocks = blocks;
+      state.customBlockMode = blocks.length > 0;
+      state.finding = findingIdForBlocks(blocks);
+      state.elapsed = 0;
+      state.upload = null;
+      ekg.setUpload(null);
+      els["upload-preview"].hidden = true;
+      state.stim.armed = false;
+      state.stim.site = null;
+      stimMarker.visible = false;
+      state.cvRecovery = null;
+      ekg.setCustomSample(null);
+      syncRateUI(getFinding(state.finding).ventRateBpm);
+      syncFindingUI();
+      syncViewLabel();
+      setPlaying(true);
       return;
     }
     const chbBtn = (e.target as HTMLElement).closest("#btn-chb");
@@ -988,6 +1280,22 @@ function main() {
     const chbOpt = (e.target as HTMLElement).closest("button[data-chb-finding]");
     if (chbOpt) {
       const id = (chbOpt as HTMLElement).dataset.chbFinding as FindingId;
+      setFinding(id);
+      return;
+    }
+    const flutterBtn = (e.target as HTMLElement).closest("#btn-flutter");
+    if (flutterBtn) {
+      const open = els["flutter-options"].classList.contains("is-open");
+      if (open && FLUTTER_FINDING_IDS.has(state.finding)) {
+        setFinding("nsr");
+      } else {
+        setFinding("aflutterCcw");
+      }
+      return;
+    }
+    const flutterOpt = (e.target as HTMLElement).closest("button[data-flutter-finding]");
+    if (flutterOpt) {
+      const id = (flutterOpt as HTMLElement).dataset.flutterFinding as FindingId;
       setFinding(id);
       return;
     }
@@ -1134,7 +1442,14 @@ function main() {
     chbBtn.hidden = !chbMatch;
     if (chbMatch) visible += 1;
 
-    // Deep-link search: jump into matching BBB / CHB pattern
+    const flutterMatch =
+      q.trim().length === 0 ||
+      FINDINGS.some((f) => FLUTTER_FINDING_IDS.has(f.id) && findingMatchesQuery(f, q));
+    const flutterBtn = els["btn-flutter"] as HTMLButtonElement;
+    flutterBtn.hidden = !flutterMatch;
+    if (flutterMatch) visible += 1;
+
+    // Deep-link search: jump into matching BBB / CHB / flutter pattern
     const qLower = q.trim().toLowerCase();
     if (qLower.length >= 3) {
       const bbbHit = FINDINGS.find(
@@ -1154,6 +1469,15 @@ function main() {
       );
       if (chbHit && state.finding !== chbHit.id) {
         setFindingExpand(els["chb-options"], true);
+      }
+      const flutterHit = FINDINGS.find(
+        (f) =>
+          FLUTTER_FINDING_IDS.has(f.id) &&
+          findingMatchesQuery(f, q) &&
+          (f.id === qLower || f.short.toLowerCase() === qLower || f.aliases?.some((a) => a === qLower)),
+      );
+      if (flutterHit && state.finding !== flutterHit.id) {
+        setFindingExpand(els["flutter-options"], true);
       }
     }
 
@@ -1182,6 +1506,12 @@ function main() {
   }
 
   function cardiovert() {
+    // Second press during recovery cancels and restores the prior rhythm
+    if (state.cvRecovery && !state.cvRecovery.settled) {
+      cancelCardioversion();
+      return;
+    }
+
     flashCardioversion();
     clearStim();
     state.upload = null;
@@ -1191,18 +1521,45 @@ function main() {
     state.customBlocks = [];
 
     const from = state.finding;
+    const to = state.cvTarget;
     const durationSec = cardioversionDurationSec(from);
-    const nsrCycleSec = cycleSecForRate(getFinding("nsr"), 62);
+    const fromCycleSec = cycleSecForRate(getFinding(from), state.ventRateBpm);
+    const targetCycleSec = cycleSecForRate(getFinding(to), getFinding(to).ventRateBpm);
+    const shockAtSec = state.elapsed;
 
-    state.elapsed = 0;
-    state.cvRecovery = { from, durationSec, nsrCycleSec, settled: false };
-    state.finding = "nsr";
-    ekg.setFinding("nsr");
+    // Keep elapsed continuous so the rolling window still shows the old rhythm
+    state.cvRecovery = {
+      from,
+      to,
+      durationSec,
+      targetCycleSec,
+      shockAtSec,
+      fromCycleSec,
+      settled: false,
+    };
+    state.finding = to;
+    ekg.setFinding(to);
     ekg.setCycleSec(durationSec);
-    syncRateUI(62);
-    // Re-bind after syncRateUI (which may refresh nsrCycleSec when settled — here unsettled)
-    if (state.cvRecovery) state.cvRecovery.nsrCycleSec = cycleSecForRate(getFinding("nsr"), state.ventRateBpm);
-    bindCardioversionSample(false);
+    syncRateUI(getFinding(to).ventRateBpm);
+    if (state.cvRecovery) {
+      state.cvRecovery.targetCycleSec = cycleSecForRate(getFinding(to), state.ventRateBpm);
+    }
+    bindCardioversionSample(true);
+    syncFindingUI();
+    setPlaying(true);
+  }
+
+  function cancelCardioversion() {
+    const from = state.cvRecovery?.from ?? "nsr";
+    state.cvRecovery = null;
+    ekg.setCustomSample(null);
+    document.body.classList.remove("cv-active");
+    // Restore prior finding without wiping strip time
+    state.finding = from;
+    state.customBlockMode = false;
+    state.customBlocks = blocksForFinding(from);
+    ekg.setFinding(from);
+    syncRateUI(getFinding(from).ventRateBpm);
     syncFindingUI();
     setPlaying(true);
   }
@@ -1211,28 +1568,116 @@ function main() {
     const cv = state.cvRecovery;
     if (!cv) return;
     ekg.setCustomSample(
-      (tAbs) => sampleCardioversionAt(tAbs, cv.from, cv.durationSec, cv.nsrCycleSec),
+      (tAbs) =>
+        sampleCardioversionAt(
+          tAbs,
+          cv.from,
+          cv.durationSec,
+          cv.targetCycleSec,
+          cv.to,
+          cv.shockAtSec,
+          cv.fromCycleSec,
+        ),
       {
         absolute: true,
         preserveTrace,
-        tCycleAt: (elapsedSec) => cardioversionTCycle(elapsedSec, cv.durationSec, cv.nsrCycleSec),
+        tCycleAt: (elapsedSec) =>
+          cardioversionWallTCycle(
+            elapsedSec,
+            cv.shockAtSec,
+            cv.durationSec,
+            cv.targetCycleSec,
+            cv.fromCycleSec,
+          ),
       },
     );
   }
 
   function finishCardioversionRecovery() {
     if (!state.cvRecovery || state.cvRecovery.settled) return;
-    // Keep absolute sampler + elapsed — only flip UI to NSR so the strip never rewrites
+    const to = state.cvRecovery.to;
     state.cvRecovery.settled = true;
-    state.cvRecovery.nsrCycleSec = cycleSecForRate(getFinding("nsr"), state.ventRateBpm);
-    state.finding = "nsr";
+    state.cvRecovery.targetCycleSec = cycleSecForRate(getFinding(to), state.ventRateBpm);
+    state.finding = to;
     state.customBlockMode = false;
     state.customBlocks = [];
-    ekg.setCycleSec(state.cvRecovery.nsrCycleSec);
+    ekg.setCycleSec(state.cvRecovery.targetCycleSec);
     bindCardioversionSample(true);
     syncFindingUI();
     setPlaying(true);
   }
+
+  const cvInput = els["cv-target-input"] as HTMLInputElement;
+
+  cvInput.addEventListener("focus", () => {
+    if (cvInput.disabled) return;
+    setCvMenuOpen(true);
+    cvInput.select();
+  });
+
+  cvInput.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (cvInput.disabled) return;
+    setCvMenuOpen(true);
+  });
+
+  cvInput.addEventListener("input", () => {
+    if (cvInput.disabled) return;
+    setCvMenuOpen(true);
+    filterCvTargetOptions(cvInput.value);
+  });
+
+  cvInput.addEventListener("keydown", (e) => {
+    if (cvInput.disabled) return;
+    const opts = visibleCvOptions();
+    const active = els["cv-target-menu"].querySelector<HTMLButtonElement>(
+      ".cv-select-option.active:not([hidden])",
+    );
+    const idx = active ? opts.indexOf(active) : -1;
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setCvMenuOpen(true);
+      const next = opts[Math.min(opts.length - 1, Math.max(0, idx + 1))] ?? opts[0];
+      if (next?.dataset.cvTarget) {
+        opts.forEach((o) => o.classList.toggle("active", o === next));
+        next.scrollIntoView({ block: "nearest" });
+      }
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setCvMenuOpen(true);
+      const prev = opts[Math.max(0, idx - 1)] ?? opts[0];
+      if (prev?.dataset.cvTarget) {
+        opts.forEach((o) => o.classList.toggle("active", o === prev));
+        prev.scrollIntoView({ block: "nearest" });
+      }
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const pick =
+        els["cv-target-menu"].querySelector<HTMLButtonElement>(".cv-select-option.active:not([hidden])") ??
+        opts[0];
+      if (pick?.dataset.cvTarget) pickCvTarget(pick.dataset.cvTarget as FindingId);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      setCvMenuOpen(false);
+      cvInput.blur();
+    }
+  });
+
+  els["cv-target-menu"].addEventListener("mousedown", (e) => {
+    // Keep input focus while clicking options
+    e.preventDefault();
+  });
+
+  els["cv-target-menu"].addEventListener("click", (e) => {
+    const opt = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-cv-target]");
+    if (!opt?.dataset.cvTarget || opt.hidden) return;
+    pickCvTarget(opt.dataset.cvTarget as FindingId);
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!els["cv-select"].contains(e.target as Node)) setCvMenuOpen(false);
+  });
 
   els["btn-cv"].addEventListener("click", () => cardiovert());
 
@@ -1284,31 +1729,6 @@ function main() {
   });
   syncSpeedUI(100);
 
-  function readBranchBlockToggles(): BundleBlockId[] {
-    const out: BundleBlockId[] = [];
-    els["branch-block-grid"].querySelectorAll<HTMLInputElement>("input[data-bundle-block]").forEach((input) => {
-      if (input.checked) out.push(input.dataset.bundleBlock as BundleBlockId);
-    });
-    return out;
-  }
-
-  els["branch-block-grid"].addEventListener("change", (e) => {
-    const input = e.target as HTMLInputElement;
-    if (!input.dataset.bundleBlock) return;
-    clearStim();
-    state.upload = null;
-    ekg.setUpload(null);
-    els["upload-preview"].hidden = true;
-    const next = readBranchBlockToggles();
-    state.customBlocks = next;
-    state.customBlockMode = next.length > 0;
-    state.finding = findingIdForBlocks(next);
-    state.elapsed = 0;
-    syncRateUI(getFinding(state.finding).ventRateBpm);
-    syncFindingUI();
-    setPlaying(true);
-  });
-
   els["btn-block-clear"].addEventListener("click", () => {
     state.customBlocks = [];
     state.customBlockMode = false;
@@ -1320,6 +1740,12 @@ function main() {
   els["btn-chb-clear"].addEventListener("click", () => {
     clearStim();
     if (CHB_FINDING_IDS.has(state.finding)) setFinding("nsr");
+    else syncFindingUI();
+  });
+
+  els["btn-flutter-clear"].addEventListener("click", () => {
+    clearStim();
+    if (FLUTTER_FINDING_IDS.has(state.finding)) setFinding("nsr");
     else syncFindingUI();
   });
 
@@ -1590,19 +2016,26 @@ function main() {
     const h = Math.max(1, host.clientHeight || window.innerHeight);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
-    // updateStyle=true so CSS size matches the pane (avoids DPR canvas overflow
-    // clipping the projection center into the lower-right)
-    renderer.setSize(w, h, true);
-    renderer.domElement.style.width = "100%";
-    renderer.domElement.style.height = "100%";
+    // Match drawing buffer to the laid-out pane; avoid CSS stretch on iOS
+    renderer.setSize(w, h, false);
+    renderer.domElement.style.width = `${w}px`;
+    renderer.domElement.style.height = `${h}px`;
     ekg.resize();
     if (framingLocked) frameDefaultView();
+  }
+
+  function resizeAfterLayout() {
+    resize();
+    requestAnimationFrame(() => {
+      resize();
+      requestAnimationFrame(resize);
+    });
   }
 
   // Draggable splitter: stacked only in portrait; landscape stays side-by-side
   const stage = document.querySelector("#stage") as HTMLElement;
   const splitter = document.querySelector("#splitter") as HTMLElement;
-  const STACK_MAX_WIDTH = 900;
+  const STACK_MAX_WIDTH = 1200;
   const MIN_PANE = 180;
 
   function useStackedSplit(): boolean {
@@ -1619,13 +2052,15 @@ function main() {
     if (stacked) {
       const max = rect.height - splitSize - MIN_PANE;
       const clamped = Math.max(MIN_PANE, Math.min(max, primaryPx));
-      stage.style.gridTemplateRows = `${clamped}px ${splitSize}px 1fr`;
+      stage.style.gridTemplateRows = `${clamped}px ${splitSize}px minmax(0, 1fr)`;
       stage.style.gridTemplateColumns = "1fr";
+      splitter.setAttribute("aria-orientation", "horizontal");
     } else {
       const max = rect.width - splitSize - MIN_PANE;
       const clamped = Math.max(MIN_PANE, Math.min(max, primaryPx));
-      stage.style.gridTemplateColumns = `${clamped}px ${splitSize}px 1fr`;
+      stage.style.gridTemplateColumns = `${clamped}px ${splitSize}px minmax(0, 1fr)`;
       stage.style.gridTemplateRows = "1fr";
+      splitter.setAttribute("aria-orientation", "vertical");
     }
     resize();
   }
@@ -1688,15 +2123,22 @@ function main() {
       stage.style.gridTemplateColumns = "";
       stage.style.gridTemplateRows = "";
     }
-    resize();
+    resizeAfterLayout();
   });
   // Phones fire this on rotate even when width stays similar
   window.matchMedia("(orientation: portrait)").addEventListener("change", () => {
     stage.style.gridTemplateColumns = "";
     stage.style.gridTemplateRows = "";
-    resize();
+    resizeAfterLayout();
   });
-  resize();
+  window.matchMedia(`(max-width: ${STACK_MAX_WIDTH}px)`).addEventListener("change", () => {
+    stage.style.gridTemplateColumns = "";
+    stage.style.gridTemplateRows = "";
+    resizeAfterLayout();
+  });
+  const viewportRo = new ResizeObserver(() => resize());
+  viewportRo.observe(canvasHost);
+  resizeAfterLayout();
 
   window.addEventListener("keydown", (e) => {
     if (e.code === "Space") {
@@ -1727,7 +2169,11 @@ function main() {
       // Recovery arc runs in real time; after settle, normal pacing applies
       const cvLive = !!(state.cvRecovery && !state.cvRecovery.settled);
       state.elapsed += dt * (cvLive ? 1 : pace) * (cvLive ? 1 : state.playbackSpeed);
-      if (state.cvRecovery && !state.cvRecovery.settled && state.elapsed >= state.cvRecovery.durationSec) {
+      if (
+        state.cvRecovery &&
+        !state.cvRecovery.settled &&
+        state.elapsed >= state.cvRecovery.shockAtSec + state.cvRecovery.durationSec
+      ) {
         finishCardioversionRecovery();
       }
     }

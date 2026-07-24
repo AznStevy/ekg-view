@@ -150,6 +150,8 @@ export function createActivationVectors(probes: PathwayProbePoint[]): VectorView
         id === "internodal" ||
         id === "flutter" ||
         id === "av" ||
+        id === "avnrtSlow" ||
+        id === "avnrtFast" ||
         id === "accessory";
       if (tissue === "atrial" && !atrialSeg && id !== "his") continue;
       if (tissue === "ventricular" && atrialSeg && id !== "accessory") continue;

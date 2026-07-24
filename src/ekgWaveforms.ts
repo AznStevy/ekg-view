@@ -66,6 +66,19 @@ function clamp01(t: number): number {
   return ((t % 1) + 1) % 1;
 }
 
+/** Morphology widths were authored for ~NSR cycle length */
+const MORPH_REF_SEC = 0.86;
+
+/** Scale gaussian widths so absolute P/QRS/T duration stays NSR-like on any cycle */
+function paperScale(cycleSec: number): number {
+  return MORPH_REF_SEC / Math.max(0.25, cycleSec);
+}
+
+/** Convert absolute seconds → normalized [0,1) phase for a pattern cycle */
+function nrm(sec: number, cycleSec: number): number {
+  return sec / cycleSec;
+}
+
 function emptyLeads(): Record<LeadId, number> {
   return {
     I: 0,
@@ -143,8 +156,8 @@ const NSR_T: Partial<Record<LeadId, number>> = {
   V6: 0.8,
 };
 
-function pWaveLeads(t: number, mu = 0.1, amp = 0.18): Record<LeadId, number> {
-  return scaleLeads(gauss(t, mu, 0.025, amp), NSR_P);
+function pWaveLeads(t: number, mu = 0.1, amp = 0.18, sigma = 0.025): Record<LeadId, number> {
+  return scaleLeads(gauss(t, mu, sigma, amp), NSR_P);
 }
 
 function qrsLeads(
@@ -354,8 +367,10 @@ function sampleTachy(t: number): WaveSample {
 function sampleAfib(t: number): WaveSample {
   const tt = clamp01(t);
   let leads = emptyLeads();
+  /** ~5 irregular QRS @ avg 90 bpm → pattern window 3.33 s */
+  const CYCLE = 3.33;
+  const s = paperScale(CYCLE);
 
-  // Coarse/fine f waves — chaotic, no discrete P; most obvious in V1
   const fibW: Partial<Record<LeadId, number>> = {
     I: 0.25,
     II: 0.45,
@@ -379,8 +394,9 @@ function sampleAfib(t: number): WaveSample {
     leads = addLeads(leads, scaleLeads(fib + fib2, fibW));
   }
 
-  // Irregularly irregular narrow QRS (uneven RR)
-  const beats = [0.06, 0.27, 0.41, 0.68, 0.91];
+  // Irregularly irregular R–R (absolute seconds)
+  const beatsAbs = [0.18, 0.72, 1.15, 1.95, 2.7];
+  const beats = beatsAbs.map((b) => nrm(b, CYCLE));
   let meta: Pick<WaveSample, "phase" | "active" | "mark"> = {
     phase: "Fibrillatory atria · SA quiescent · no P waves",
     active: ["myocardiumA", "internodal"],
@@ -388,16 +404,15 @@ function sampleAfib(t: number): WaveSample {
   };
 
   for (const b of beats) {
-    const inQrs = tt >= b - 0.02 && tt < b + 0.1;
-    const inT = tt >= b + 0.1 && tt < b + 0.18;
+    const inQrs = tt >= b - 0.02 * s && tt < b + 0.1 * s;
+    const inT = tt >= b + 0.1 * s && tt < b + 0.18 * s;
     if (inQrs || inT) {
-      leads = addLeads(leads, qrsLeads(tt, b, 0.024, 1.0, -0.06, -0.18));
-      leads = addLeads(leads, tWaveLeads(tt, b + 0.12, 0.24, 0.038));
+      leads = addLeads(leads, qrsLeads(tt, b, 0.024 * s, 1.0, -0.06, -0.18));
+      leads = addLeads(leads, tWaveLeads(tt, b + 0.12 * s, 0.24, 0.038 * s));
     }
     if (inQrs) {
       meta = {
         phase: "Irregular QRS · no preceding P · SA still silent",
-        // No "sa" — ventricles conduct without sinus origin
         active: ["av", "his", "rbb", "lbb", "lbba", "lbbp", "purkinjeR", "purkinjeL", "myocardiumV", "internodal", "myocardiumA"],
         mark: "QRS",
       };
@@ -418,20 +433,20 @@ function sampleAflutter(t: number, dir: "ccw" | "cw"): WaveSample {
   let leads = emptyLeads();
 
   /**
-   * Typical CTI flutter teaching morphologies (not mere polarity flips):
-   * CCW: continuous inferior NEGATIVE sawtooth (no isoelectric baseline);
-   *      V1 often shows discrete POSITIVE F waves.
-   * CW:  inferior POSITIVE rounded/notched F waves (broader, less “picket-fence”);
-   *      V1 often broad NEGATIVE or biphasic F waves.
+   * Typical CTI flutter on paper time:
+   * Atrial F–F 0.20 s (300/min). 2:1 conduction → vent 150 bpm (R–R 0.40 s).
+   * Pattern window = 2 R–R = 0.80 s (exactly 4 F waves + 2 QRS).
    */
-  const period = 0.2;
-  const f0 = 0.04;
+  const CYCLE = 0.8;
+  const s = paperScale(CYCLE);
+  const fPeriodSec = 0.2;
+  const period = nrm(fPeriodSec, CYCLE);
+  const f0 = nrm(0.04, CYCLE);
   const phase = ((tt - f0) % period + period) % period;
-  const u = phase / period; // 0→1 within current F wave
-  const fIndex = Math.min(4, Math.max(0, Math.floor((tt - f0 + 1e-6) / period)));
+  const u = phase / period;
+  const fIndex = Math.min(3, Math.max(0, Math.floor((tt - f0 + 1e-6) / period)));
 
   if (dir === "ccw") {
-    // Inferior: sharp upstroke from trough, then slow descent → classic sawtooth
     const inf =
       u < 0.18 ? -0.42 + (u / 0.18) * 0.62 : 0.2 - ((u - 0.18) / 0.82) * 0.62;
     leads = addLeads(
@@ -451,9 +466,8 @@ function sampleAflutter(t: number, dir: "ccw" | "cw"): WaveSample {
         V6: 0.05,
       }),
     );
-    // V1: discrete upright F peaks (one per period)
     const mu = f0 + fIndex * period;
-    const v1 = gauss(tt, mu + 0.045, 0.016, 0.3) + gauss(tt, mu + 0.095, 0.014, -0.07);
+    const v1 = gauss(tt, mu + 0.045 * s, 0.016 * s, 0.3) + gauss(tt, mu + 0.095 * s, 0.014 * s, -0.07);
     leads = addLeads(
       leads,
       scaleLeads(v1, {
@@ -472,7 +486,6 @@ function sampleAflutter(t: number, dir: "ccw" | "cw"): WaveSample {
       }),
     );
   } else {
-    // CW inferior: broad positive dome + shallow trough (≠ inverted CCW)
     const inf =
       u < 0.45
         ? 0.4 * Math.sin((u / 0.45) * Math.PI)
@@ -494,9 +507,8 @@ function sampleAflutter(t: number, dir: "ccw" | "cw"): WaveSample {
         V6: 0.05,
       }),
     );
-    // V1: broad negative F waves
     const mu = f0 + fIndex * period;
-    const v1 = gauss(tt, mu + 0.055, 0.03, -0.34) + gauss(tt, mu + 0.13, 0.02, 0.09);
+    const v1 = gauss(tt, mu + 0.055 * s, 0.03 * s, -0.34) + gauss(tt, mu + 0.13 * s, 0.02 * s, 0.09);
     leads = addLeads(
       leads,
       scaleLeads(v1, {
@@ -516,19 +528,18 @@ function sampleAflutter(t: number, dir: "ccw" | "cw"): WaveSample {
     );
   }
 
-  const qrsTimes = [0.18, 0.58];
+  const qrsTimes = [nrm(0.16, CYCLE), nrm(0.56, CYCLE)];
   const limbs = ["CTI", "septal ascending", "RA roof", "crista descending"] as const;
-  const lap = period;
   let meta: Pick<WaveSample, "phase" | "active" | "mark"> = {
     phase: dir === "ccw" ? "Flutter circuit · CCW" : "Flutter circuit · CW",
     active: ["flutter", "myocardiumA"],
     mark: "P",
   };
 
-  for (let lapI = 0; lapI < 5; lapI++) {
-    const base = f0 + lapI * lap;
-    if (tt >= base && tt < base + lap) {
-      const frac = (tt - base) / lap;
+  for (let lapI = 0; lapI < 4; lapI++) {
+    const base = f0 + lapI * period;
+    if (tt >= base && tt < base + period) {
+      const frac = (tt - base) / period;
       const limb = Math.min(3, Math.floor(frac * 4));
       const order = dir === "ccw" ? limb : 3 - limb;
       meta = {
@@ -543,14 +554,13 @@ function sampleAflutter(t: number, dir: "ccw" | "cw"): WaveSample {
   }
 
   for (const b of qrsTimes) {
-    const inQrs = tt >= b - 0.02 && tt < b + 0.11;
-    const inSt = tt >= b + 0.11 && tt < b + 0.16;
-    const inT = tt >= b + 0.16 && tt < b + 0.24;
+    const inQrs = tt >= b - 0.02 * s && tt < b + 0.11 * s;
+    const inSt = tt >= b + 0.11 * s && tt < b + 0.16 * s;
+    const inT = tt >= b + 0.16 * s && tt < b + 0.24 * s;
     if (inQrs || inSt || inT) {
-      leads = addLeads(leads, qrsLeads(tt, b, 0.024, 1.0, -0.05, -0.16));
-      leads = addLeads(leads, tWaveLeads(tt, b + 0.15, 0.04, 0.022));
+      leads = addLeads(leads, qrsLeads(tt, b, 0.024 * s, 1.0, -0.05, -0.16));
+      leads = addLeads(leads, tWaveLeads(tt, b + 0.15 * s, 0.04, 0.022 * s));
     }
-    // QRS/ST/T meta must win over continuous F-wave "P" so the model stays in sync
     if (inQrs) {
       meta = {
         phase: "Conducted QRS (2:1) · F waves continue",
@@ -590,13 +600,25 @@ function sampleAv1(t: number): WaveSample {
 
 function sampleAv2i(t: number): WaveSample {
   const tt = clamp01(t);
-  // Classic 4:3 Wenckebach: progressive PR → drop
-  const events: { p: number; qrs: number | null }[] = [
-    { p: 0.05, qrs: 0.18 },
-    { p: 0.28, qrs: 0.48 },
-    { p: 0.52, qrs: 0.78 },
-    { p: 0.78, qrs: null },
+  /**
+   * Classic 4:3 Wenckebach on real paper time (1 large box = 0.2 s).
+   * Atrial ~75 bpm (P–P 0.80 s). PR 180 → 260 → 360 ms, then blocked P.
+   * Pattern window = 4×P–P so the strip loops cleanly.
+   */
+  const CYCLE = 3.2;
+  const REF = 0.86; // NSR design cycle — keep P/QRS/T absolute widths similar
+  const s = REF / CYCLE;
+  const abs: { p: number; qrs: number | null }[] = [
+    { p: 0.08, qrs: 0.08 + 0.18 },
+    { p: 0.88, qrs: 0.88 + 0.26 },
+    { p: 1.68, qrs: 1.68 + 0.36 },
+    { p: 2.48, qrs: null },
   ];
+  const events = abs.map((e) => ({
+    p: e.p / CYCLE,
+    qrs: e.qrs == null ? null : e.qrs / CYCLE,
+  }));
+
   let leads = emptyLeads();
   let meta: Pick<WaveSample, "phase" | "active" | "mark"> = {
     phase: "Wenckebach sequence",
@@ -604,25 +626,36 @@ function sampleAv2i(t: number): WaveSample {
     mark: "TP",
   };
   for (const e of events) {
-    leads = addLeads(leads, pWaveLeads(tt, e.p));
-    if (Math.abs(tt - e.p) < 0.04) {
+    leads = addLeads(leads, pWaveLeads(tt, e.p, 0.18, 0.025 * s));
+    if (Math.abs(tt - e.p) < 0.035 * s + 0.01) {
       meta = { phase: "Atrial depolarization", active: ["sa", "internodal", "myocardiumA"], mark: "P" };
     }
     if (e.qrs != null) {
-      leads = addLeads(leads, addLeads(qrsLeads(tt, e.qrs), tWaveLeads(tt, e.qrs + 0.16, 0.22, 0.035)));
-      if (tt >= e.qrs - 0.02 && tt < e.qrs + 0.11) {
-        const pr = e.qrs - e.p;
+      const prSec = (e.qrs - e.p) * CYCLE;
+      leads = addLeads(
+        leads,
+        addLeads(
+          qrsLeads(tt, e.qrs, 0.028 * s),
+          tWaveLeads(tt, e.qrs + 0.16 * s, 0.22, 0.035 * s),
+        ),
+      );
+      if (tt >= e.qrs - 0.02 * s && tt < e.qrs + 0.11 * s) {
         meta = {
-          phase: pr < 0.18 ? "Conducted (shorter PR)" : pr < 0.24 ? "Conducted (longer PR)" : "Conducted (longest PR)",
+          phase:
+            prSec < 0.22
+              ? "Conducted (shorter PR)"
+              : prSec < 0.32
+                ? "Conducted (longer PR)"
+                : "Conducted (longest PR)",
           active: ["av", "his", "rbb", "lbb", "lbba", "lbbp", "purkinjeR", "purkinjeL", "myocardiumV"],
           mark: "QRS",
         };
-      } else if (tt >= e.qrs + 0.11 && tt < e.qrs + 0.22) {
+      } else if (tt >= e.qrs + 0.11 * s && tt < e.qrs + 0.22 * s) {
         meta = { phase: "T wave", active: ["myocardiumV"], mark: "T" };
       } else if (tt > e.p && tt < e.qrs) {
         meta = { phase: "Lengthening AV delay", active: ["av"], mark: "PR" };
       }
-    } else if (tt > e.p && tt < e.p + 0.18) {
+    } else if (tt > e.p && tt < e.p + 0.2 * s + 0.04) {
       meta = { phase: "Blocked P · no ventricular activation", active: ["av"], mark: "PR" };
     }
   }
@@ -631,12 +664,22 @@ function sampleAv2i(t: number): WaveSample {
 
 function sampleAv2ii(t: number): WaveSample {
   const tt = clamp01(t);
-  // Constant PR ~180 ms when conducted; sudden drop (infra-His)
-  const events: { p: number; qrs: number | null }[] = [
-    { p: 0.08, qrs: 0.26 },
-    { p: 0.4, qrs: null },
-    { p: 0.68, qrs: 0.86 },
+  /**
+   * 3:2 Mobitz II on paper time: constant PR 180 ms, atrial ~71 bpm (P–P 0.84 s),
+   * sudden infra-His drop. Pattern = 3×P–P.
+   */
+  const CYCLE = 2.52;
+  const s = paperScale(CYCLE);
+  const abs: { p: number; qrs: number | null }[] = [
+    { p: 0.1, qrs: 0.1 + 0.18 },
+    { p: 0.94, qrs: null },
+    { p: 1.78, qrs: 1.78 + 0.18 },
   ];
+  const events = abs.map((e) => ({
+    p: nrm(e.p, CYCLE),
+    qrs: e.qrs == null ? null : nrm(e.qrs, CYCLE),
+  }));
+
   let leads = emptyLeads();
   let meta: Pick<WaveSample, "phase" | "active" | "mark"> = {
     phase: "Mobitz II",
@@ -644,24 +687,30 @@ function sampleAv2ii(t: number): WaveSample {
     mark: "TP",
   };
   for (const e of events) {
-    leads = addLeads(leads, pWaveLeads(tt, e.p));
-    if (Math.abs(tt - e.p) < 0.04) {
+    leads = addLeads(leads, pWaveLeads(tt, e.p, 0.18, 0.025 * s));
+    if (Math.abs(tt - e.p) < 0.035 * s + 0.01) {
       meta = { phase: "P wave", active: ["sa", "internodal", "myocardiumA"], mark: "P" };
     }
     if (e.qrs != null) {
-      leads = addLeads(leads, addLeads(qrsLeads(tt, e.qrs), tWaveLeads(tt, e.qrs + 0.2, 0.28, 0.04)));
-      if (tt >= e.qrs - 0.02 && tt < e.qrs + 0.11) {
+      leads = addLeads(
+        leads,
+        addLeads(
+          qrsLeads(tt, e.qrs, 0.028 * s),
+          tWaveLeads(tt, e.qrs + 0.16 * s, 0.28, 0.04 * s),
+        ),
+      );
+      if (tt >= e.qrs - 0.02 * s && tt < e.qrs + 0.11 * s) {
         meta = {
           phase: "Conducted · infra-His intact",
           active: ["his", "rbb", "lbb", "lbba", "lbbp", "purkinjeR", "purkinjeL", "myocardiumV"],
           mark: "QRS",
         };
-      } else if (tt >= e.qrs + 0.11 && tt < e.qrs + 0.24) {
+      } else if (tt >= e.qrs + 0.11 * s && tt < e.qrs + 0.24 * s) {
         meta = { phase: "T wave", active: ["myocardiumV"], mark: "T" };
       } else if (tt > e.p && tt < e.qrs) {
         meta = { phase: "PR interval (stable)", active: ["av"], mark: "PR" };
       }
-    } else if (tt > e.p && tt < e.p + 0.16) {
+    } else if (tt > e.p && tt < e.p + 0.2 * s + 0.04) {
       meta = { phase: "Sudden block in His–Purkinje", active: ["his"], mark: "PR" };
     }
   }
@@ -670,30 +719,36 @@ function sampleAv2ii(t: number): WaveSample {
 
 function sampleAv3Junctional(t: number): WaveSample {
   const tt = clamp01(t);
+  /** Atrial ~90 bpm (P–P 0.67 s) · junctional escape ~45 bpm (R–R 1.33 s) */
+  const CYCLE = 2.67;
+  const s = paperScale(CYCLE);
+  const pTimes = [0.1, 0.77, 1.43, 2.1].map((p) => nrm(p, CYCLE));
+  const escapes = [0.45, 1.78].map((e) => nrm(e, CYCLE));
+
   let leads = emptyLeads();
-  // Atrial ~100 · narrow junctional escape ~45
-  const pTimes = [0.04, 0.28, 0.52, 0.76];
-  for (const p of pTimes) leads = addLeads(leads, pWaveLeads(tt, p, 0.16));
-  const escapes = [0.22, 0.72];
+  for (const p of pTimes) leads = addLeads(leads, pWaveLeads(tt, p, 0.16, 0.025 * s));
   for (const escape of escapes) {
-    leads = addLeads(leads, addLeads(qrsLeads(tt, escape, 0.022, 0.95), tWaveLeads(tt, escape + 0.18, 0.28, 0.045)));
+    leads = addLeads(
+      leads,
+      addLeads(qrsLeads(tt, escape, 0.022 * s, 0.95), tWaveLeads(tt, escape + 0.16 * s, 0.28, 0.045 * s)),
+    );
   }
   let meta: Pick<WaveSample, "phase" | "active" | "mark"> = {
     phase: "Complete block · junctional escape (supra-His)",
     active: [],
     mark: "TP",
   };
-  if (pTimes.some((p) => Math.abs(tt - p) < 0.035)) {
+  if (pTimes.some((p) => Math.abs(tt - p) < 0.035 * s + 0.01)) {
     meta = { phase: "Atrial depolarization · blocked at AV node", active: ["sa", "internodal", "myocardiumA"], mark: "P" };
   }
   for (const escape of escapes) {
-    if (tt >= escape - 0.02 && tt < escape + 0.1) {
+    if (tt >= escape - 0.02 * s && tt < escape + 0.1 * s) {
       meta = {
         phase: "Junctional / His escape · narrow QRS",
         active: ["his", "rbb", "lbb", "lbba", "lbbp", "purkinjeR", "purkinjeL", "myocardiumV"],
         mark: "QRS",
       };
-    } else if (tt >= escape + 0.1 && tt < escape + 0.24) {
+    } else if (tt >= escape + 0.1 * s && tt < escape + 0.24 * s) {
       meta = { phase: "Escape T · A–V dissociation", active: ["myocardiumV"], mark: "T" };
     }
   }
@@ -702,29 +757,51 @@ function sampleAv3Junctional(t: number): WaveSample {
 
 function sampleAv3(t: number): WaveSample {
   const tt = clamp01(t);
+  /** Atrial ~90 bpm · wide ventricular escape ~36 bpm (R–R 1.67 s) */
+  const CYCLE = 3.33;
+  const s = paperScale(CYCLE);
+  const pTimes = [0.12, 0.78, 1.45, 2.11, 2.78].map((p) => nrm(p, CYCLE));
+  const escapes = [0.5, 2.17].map((e) => nrm(e, CYCLE));
+
   let leads = emptyLeads();
-  // Atrial rate ~100 · ventricular escape ~40 (2 escapes / cycle)
-  const pTimes = [0.04, 0.28, 0.52, 0.76];
-  for (const p of pTimes) leads = addLeads(leads, pWaveLeads(tt, p, 0.16));
-  const escapes = [0.2, 0.7];
+  for (const p of pTimes) leads = addLeads(leads, pWaveLeads(tt, p, 0.16, 0.025 * s));
   for (const escape of escapes) {
-    leads = addLeads(
-      leads,
-      addLeads(wideQrsLeads(tt, escape, 0.85), tWaveLeads(tt, escape + 0.2, -0.22, 0.05)),
-    );
+    // Wide escape — morph authored for ~0.4 s VT cycles
+    const vtS = 0.4 / CYCLE;
+    const shape =
+      gauss(tt, escape - 0.04 * vtS, 0.03 * vtS, -0.15) +
+      gauss(tt, escape, 0.055 * vtS, 0.85) +
+      gauss(tt, escape + 0.06 * vtS, 0.04 * vtS, -0.35) +
+      gauss(tt, escape + 0.1 * vtS, 0.03 * vtS, 0.25);
+    const wideW: Partial<Record<LeadId, number>> = {
+      I: -0.55,
+      II: -0.85,
+      III: -0.7,
+      aVR: 0.7,
+      aVL: -0.2,
+      aVF: -0.8,
+      V1: 1.1,
+      V2: 0.9,
+      V3: 0.2,
+      V4: -0.55,
+      V5: -0.85,
+      V6: -0.9,
+    };
+    leads = addLeads(leads, scaleLeads(shape, wideW));
+    leads = addLeads(leads, tWaveLeads(tt, escape + 0.18 * s, -0.22, 0.05 * s));
   }
   let meta: Pick<WaveSample, "phase" | "active" | "mark"> = {
     phase: "Complete block · ventricular escape (infra-His)",
     active: [],
     mark: "TP",
   };
-  if (pTimes.some((p) => Math.abs(tt - p) < 0.035)) {
+  if (pTimes.some((p) => Math.abs(tt - p) < 0.035 * s + 0.01)) {
     meta = { phase: "Atrial depolarization · blocked below His", active: ["sa", "internodal", "myocardiumA"], mark: "P" };
   }
   for (const escape of escapes) {
-    if (Math.abs(tt - escape) < 0.07) {
+    if (Math.abs(tt - escape) < 0.07 * s + 0.02) {
       meta = { phase: "Ventricular escape focus · wide QRS", active: ["purkinjeL", "purkinjeR", "myocardiumV"], mark: "QRS" };
-    } else if (tt > escape + 0.07 && tt < escape + 0.22) {
+    } else if (tt > escape + 0.07 * s && tt < escape + 0.22 * s) {
       meta = { phase: "Escape repolarization · dissociated", active: ["myocardiumV"], mark: "T" };
     }
   }
@@ -1002,27 +1079,61 @@ function sampleRbbbLpfb(t: number): WaveSample {
 
 function samplePvc(t: number): WaveSample {
   const tt = clamp01(t);
-  // Sinus → PVC → full compensatory pause → next sinus P
+  /** Sinus ~70 bpm · early PVC · full compensatory pause · next sinus */
+  const CYCLE = 2.0;
+  const s = paperScale(CYCLE);
+  const p0 = nrm(0.1, CYCLE);
+  const q0 = nrm(0.1 + 0.16, CYCLE);
+  const pvc = nrm(0.62, CYCLE);
+  const p1 = nrm(0.1 + 2 * 0.86, CYCLE); // full compensatory from prior sinus
+
   let leads = addLeads(
-    addLeads(pWaveLeads(tt, 0.08), qrsLeads(tt, 0.26)),
-    tWaveLeads(tt, 0.48, 0.26, 0.04),
+    addLeads(pWaveLeads(tt, p0, 0.18, 0.025 * s), qrsLeads(tt, q0, 0.028 * s)),
+    tWaveLeads(tt, q0 + 0.18 * s, 0.26, 0.04 * s),
   );
-  leads = addLeads(leads, addLeads(wideQrsLeads(tt, 0.58, 1.1), tWaveLeads(tt, 0.74, -0.35, 0.05)));
-  // Next sinus arrives late (pause)
-  leads = addLeads(leads, addLeads(pWaveLeads(tt, 0.9, 0.14), qrsLeads(tt, 0.98, 0.02, 0.35)));
+  leads = addLeads(
+    leads,
+    addLeads(
+      // wide PVC — morph authored near 0.4 s VT scale
+      (() => {
+        const vtS = 0.4 / CYCLE;
+        const shape =
+          gauss(tt, pvc - 0.04 * vtS, 0.03 * vtS, -0.15) +
+          gauss(tt, pvc, 0.055 * vtS, 1.1) +
+          gauss(tt, pvc + 0.06 * vtS, 0.04 * vtS, -0.35) +
+          gauss(tt, pvc + 0.1 * vtS, 0.03 * vtS, 0.25);
+        return scaleLeads(shape, {
+          I: -0.55,
+          II: -0.85,
+          III: -0.7,
+          aVR: 0.7,
+          aVL: -0.2,
+          aVF: -0.8,
+          V1: 1.1,
+          V2: 0.9,
+          V3: 0.2,
+          V4: -0.55,
+          V5: -0.85,
+          V6: -0.9,
+        });
+      })(),
+      tWaveLeads(tt, pvc + 0.14 * s, -0.35, 0.05 * s),
+    ),
+  );
+  leads = addLeads(leads, addLeads(pWaveLeads(tt, p1, 0.14, 0.025 * s), qrsLeads(tt, Math.min(0.99, p1 + 0.16 * s), 0.028 * s, 0.35)));
 
   let meta: Pick<WaveSample, "phase" | "active" | "mark"> = { phase: "Sinus beat", active: [], mark: "TP" };
-  if (tt < 0.18) meta = { phase: "Sinus · SA activation", active: ["sa", "internodal", "myocardiumA"], mark: "P" };
-  else if (tt < 0.26) meta = { phase: "PR", active: ["av"], mark: "PR" };
-  else if (tt < 0.4) {
+  if (tt < p0 + 0.08 * s) meta = { phase: "Sinus · SA activation", active: ["sa", "internodal", "myocardiumA"], mark: "P" };
+  else if (tt < q0) meta = { phase: "PR", active: ["av"], mark: "PR" };
+  else if (tt < q0 + 0.12 * s) {
     meta = {
       phase: "Normal His–Purkinje",
       active: ["av", "his", "rbb", "lbb", "purkinjeR", "purkinjeL", "myocardiumV"],
       mark: "QRS",
     };
-  } else if (tt < 0.52) meta = { phase: "T wave", active: ["myocardiumV"], mark: "T" };
-  else if (tt < 0.72) meta = { phase: "PVC · ectopic ventricular focus", active: ["myocardiumV", "purkinjeL"], mark: "QRS" };
-  else if (tt < 0.88) meta = { phase: "Compensatory pause", active: [], mark: "TP" };
+  } else if (tt < pvc - 0.04) meta = { phase: "T wave", active: ["myocardiumV"], mark: "T" };
+  else if (tt < pvc + 0.14 * s) meta = { phase: "PVC · ectopic ventricular focus", active: ["myocardiumV", "purkinjeL"], mark: "QRS" };
+  else if (tt < p1) meta = { phase: "Compensatory pause", active: [], mark: "TP" };
   else meta = { phase: "Next sinus P", active: ["sa", "internodal", "myocardiumA"], mark: "P" };
   return pack(leads, meta);
 }
@@ -1100,71 +1211,135 @@ function sampleVtMonoRbbb(t: number): WaveSample {
 function sampleVtPoly(t: number): WaveSample {
   const tt = clamp01(t);
   let leads = emptyLeads();
-  // Changing morphology beat-to-beat (not a smooth TdP twist)
-  const beats: { mu: number; kind: "l" | "r" | "w" }[] = [
-    { mu: 0.06, kind: "l" },
-    { mu: 0.24, kind: "r" },
-    { mu: 0.42, kind: "w" },
-    { mu: 0.58, kind: "r" },
-    { mu: 0.76, kind: "l" },
-    { mu: 0.92, kind: "w" },
-  ];
-  for (const b of beats) {
-    if (b.kind === "l") leads = addLeads(leads, lbbbMorphQrs(tt, b.mu, 0.95));
-    else if (b.kind === "r") leads = addLeads(leads, rbbbMorphQrs(tt, b.mu, 0.95));
-    else leads = addLeads(leads, wideQrsLeads(tt, b.mu, 1.0));
-    leads = addLeads(leads, tWaveLeads(tt, b.mu + 0.1, -0.22, 0.028));
-  }
+
+  // Multi-beat teaching strip: wide QRS, beat-to-beat axis / polarity shifts (not TdP spindle)
+  const nBeats = 6;
+  const beatRr = 1 / nBeats;
   let meta: Pick<WaveSample, "phase" | "active" | "mark"> = {
     phase: "Polymorphic VT",
     active: ["myocardiumV"],
     mark: "QRS",
   };
-  for (const b of beats) {
-    if (Math.abs(tt - b.mu) < 0.07) {
+
+  for (let i = 0; i < nBeats; i++) {
+    const mu = (i + 0.42) * beatRr;
+    const twist = Math.sin((i / 2.8) * Math.PI + 0.4);
+    const pol = twist >= 0 ? 1 : -1;
+    const amp = 0.9 + 0.25 * Math.abs(twist);
+    // Wide QRS in absolute time (~140–180 ms at cycleSec 2.0)
+    const w = beatRr;
+    const shape =
+      gauss(tt, mu - 0.14 * w, 0.09 * w, -0.28 * pol * amp) +
+      gauss(tt, mu, 0.2 * w, pol * amp) +
+      gauss(tt, mu + 0.22 * w, 0.16 * w, -0.55 * pol * amp) +
+      gauss(tt, mu + 0.4 * w, 0.12 * w, 0.28 * pol * amp);
+
+    const axis = twist;
+    const weights: Partial<Record<LeadId, number>> = {
+      I: 0.35 + 0.55 * axis,
+      II: 1.05,
+      III: 0.75 - 0.35 * axis,
+      aVR: -0.55,
+      aVL: 0.15 + 0.45 * axis,
+      aVF: 0.95,
+      V1: -0.85 * pol * (0.55 + 0.45 * Math.abs(axis)),
+      V2: -0.55 * pol,
+      V3: 0.15 * pol,
+      V4: 0.55 * pol,
+      V5: 0.85 * pol,
+      V6: 0.95 * pol,
+    };
+    leads = addLeads(leads, scaleLeads(shape, weights));
+
+    // Discordant / secondary T
+    const tShape = gauss(tt, mu + 0.55 * w, 0.22 * w, -0.35 * pol * amp);
+    leads = addLeads(
+      leads,
+      scaleLeads(tShape, {
+        I: 0.5,
+        II: 0.85,
+        III: 0.55,
+        aVR: -0.4,
+        aVL: 0.25,
+        aVF: 0.7,
+        V1: -0.5,
+        V2: -0.35,
+        V3: 0.2,
+        V4: 0.45,
+        V5: 0.55,
+        V6: 0.5,
+      }),
+    );
+
+    if (Math.abs(tt - mu) < 0.08 * w + 0.02) {
       meta = {
-        phase: "Beat-to-beat changing QRS morphology",
+        phase: "Polymorphic VT · wide QRS · shifting axis",
         active: ["myocardiumV", "purkinjeL", "purkinjeR"],
         mark: "QRS",
       };
     }
   }
+
   return pack(leads, meta);
 }
 
 function sampleTorsades(t: number): WaveSample {
   const tt = clamp01(t);
   let leads = emptyLeads();
+  const CYCLE = 5.0;
+  const s = paperScale(CYCLE);
 
-  // Classic teaching strip (~5s cycle): long-QT sinus → R-on-T → TdP at ~200/min
-  leads = addLeads(leads, pWaveLeads(tt, 0.04, 0.14));
-  leads = addLeads(leads, qrsLeads(tt, 0.12, 0.02, 0.75, -0.05, -0.14));
-  // Markedly prolonged QT / broad T–U
-  leads = addLeads(leads, tWaveLeads(tt, 0.22, 0.4, 0.055));
-  leads = addLeads(leads, scaleLeads(gauss(tt, 0.28, 0.04, 0.16), NSR_T));
+  // Long-QT sinus → R-on-T → TdP (~220/min) on absolute paper time
+  leads = addLeads(leads, pWaveLeads(tt, nrm(0.12, CYCLE), 0.14, 0.025 * s));
+  leads = addLeads(leads, qrsLeads(tt, nrm(0.28, CYCLE), 0.028 * s, 0.75, -0.05, -0.14));
+  leads = addLeads(leads, tWaveLeads(tt, nrm(0.55, CYCLE), 0.4, 0.08 * s));
+  leads = addLeads(leads, scaleLeads(gauss(tt, nrm(0.85, CYCLE), 0.06 * s, 0.16), NSR_T));
 
-  // R-on-T initiating PVC
-  leads = addLeads(leads, wideQrsLeads(tt, 0.3, 0.75));
+  const pvcMu = nrm(1.15, CYCLE);
+  const vtS = 0.4 / CYCLE;
+  leads = addLeads(
+    leads,
+    scaleLeads(
+      gauss(tt, pvcMu - 0.04 * vtS, 0.03 * vtS, -0.15) +
+        gauss(tt, pvcMu, 0.055 * vtS, 0.75) +
+        gauss(tt, pvcMu + 0.06 * vtS, 0.04 * vtS, -0.35) +
+        gauss(tt, pvcMu + 0.1 * vtS, 0.03 * vtS, 0.25),
+      {
+        I: -0.55,
+        II: -0.85,
+        III: -0.7,
+        aVR: 0.7,
+        aVL: -0.2,
+        aVF: -0.8,
+        V1: 1.1,
+        V2: 0.9,
+        V3: 0.2,
+        V4: -0.55,
+        V5: -0.85,
+        V6: -0.9,
+      },
+    ),
+  );
 
-  // TdP run: discrete wide QRS, polarity rotates ("twisting of the points"), spindle envelope
-  // beatRr 0.054 of 5s ≈ 270 ms ≈ 220/min
+  // TdP run: R–R ~270 ms ≈ 220/min
   const nBeats = 12;
-  const t0 = 0.34;
-  const beatRr = 0.054;
+  const t0 = 1.35;
+  const beatRrSec = 0.27;
 
   for (let i = 0; i < nBeats; i++) {
-    const mu = t0 + i * beatRr;
+    const mu = nrm(t0 + i * beatRrSec, CYCLE);
     if (mu > 0.98) break;
     const twist = Math.sin((i / 5.5) * Math.PI);
     const pol = twist >= 0 ? 1 : -1;
     const envelope = 0.45 + 0.6 * Math.abs(Math.sin((i / (nBeats - 1)) * Math.PI * 1.6));
     const amp = envelope * (0.85 + 0.2 * Math.abs(twist));
+    const bw = beatRrSec / CYCLE;
 
     const shape =
-      gauss(tt, mu - 0.01, 0.01, -0.2 * pol * amp) +
-      gauss(tt, mu, 0.02, pol * amp) +
-      gauss(tt, mu + 0.018, 0.016, -0.5 * pol * amp) +
-      gauss(tt, mu + 0.034, 0.014, 0.25 * pol * amp);
+      gauss(tt, mu - 0.12 * bw, 0.08 * bw, -0.2 * pol * amp) +
+      gauss(tt, mu, 0.16 * bw, pol * amp) +
+      gauss(tt, mu + 0.18 * bw, 0.14 * bw, -0.5 * pol * amp) +
+      gauss(tt, mu + 0.32 * bw, 0.12 * bw, 0.25 * pol * amp);
 
     const axis = twist;
     const w: Partial<Record<LeadId, number>> = {
@@ -1189,10 +1364,10 @@ function sampleTorsades(t: number): WaveSample {
     active: ["myocardiumV"],
     mark: "QRS",
   };
-  if (tt < 0.08) meta = { phase: "Sinus P (long-QT context)", active: ["sa", "internodal", "myocardiumA"], mark: "P" };
-  else if (tt < 0.16) meta = { phase: "Sinus QRS", active: ["his", "rbb", "lbb", "myocardiumV"], mark: "QRS" };
-  else if (tt < 0.3) meta = { phase: "Prolonged QT / U wave", active: ["myocardiumV"], mark: "T" };
-  else if (tt < 0.34) meta = { phase: "R-on-T PVC · initiates TdP", active: ["myocardiumV", "purkinjeL"], mark: "QRS" };
+  if (tt < nrm(0.2, CYCLE)) meta = { phase: "Sinus P (long-QT context)", active: ["sa", "internodal", "myocardiumA"], mark: "P" };
+  else if (tt < nrm(0.4, CYCLE)) meta = { phase: "Sinus QRS", active: ["his", "rbb", "lbb", "myocardiumV"], mark: "QRS" };
+  else if (tt < nrm(1.1, CYCLE)) meta = { phase: "Prolonged QT / U wave", active: ["myocardiumV"], mark: "T" };
+  else if (tt < nrm(1.3, CYCLE)) meta = { phase: "R-on-T PVC · initiates TdP", active: ["myocardiumV", "purkinjeL"], mark: "QRS" };
   else meta = { phase: "Twisting polymorphic VT (TdP)", active: ["myocardiumV", "purkinjeL", "purkinjeR"], mark: "QRS" };
 
   return pack(leads, meta);
@@ -1228,6 +1403,68 @@ function sampleVf(t: number): WaveSample {
   return pack(leads, {
     phase: "Ventricular fibrillation · no organized QRS",
     active: ["myocardiumV"],
+    mark: "TP",
+  });
+}
+
+function sampleAvnrt(t: number): WaveSample {
+  const tt = clamp01(t);
+  // Typical slow–fast AVNRT: narrow QRS, no discrete antegrad P; retrograde P in/after QRS
+  let leads = qrsLeads(tt, 0.22, 0.022, 1.05);
+  leads = addLeads(leads, tWaveLeads(tt, 0.48, 0.2, 0.035));
+  // Pseudo-r′ in V1 / terminal QRS notch (retrograde atrial activation)
+  const retro =
+    gauss(tt, 0.3, 0.016, 0.12) + gauss(tt, 0.32, 0.014, 0.08);
+  leads = addLeads(
+    leads,
+    scaleLeads(retro, {
+      I: -0.15,
+      II: -0.45,
+      III: -0.4,
+      aVR: 0.35,
+      aVL: 0.1,
+      aVF: -0.42,
+      V1: 0.55,
+      V2: 0.25,
+      V3: 0.1,
+      V4: -0.1,
+      V5: -0.2,
+      V6: -0.22,
+    }),
+  );
+  return pack(
+    leads,
+    phaseFor(tt, [
+      { start: 0.0, end: 0.12, phase: "AVNRT · slow pathway anterograde", active: ["avnrtSlow", "av"], mark: "PR" },
+      { start: 0.12, end: 0.2, phase: "His–Purkinje · narrow QRS", active: ["his", "rbb", "lbb", "lbba", "lbbp", "purkinjeR", "purkinjeL", "myocardiumV"], mark: "QRS" },
+      { start: 0.2, end: 0.34, phase: "QRS + fast-pathway retrograde atrial activation", active: ["avnrtFast", "av", "internodal", "myocardiumA", "his", "rbb", "lbb", "purkinjeR", "purkinjeL", "myocardiumV"], mark: "QRS" },
+      { start: 0.34, end: 0.42, phase: "ST segment", active: ["myocardiumV"], mark: "ST" },
+      { start: 0.42, end: 0.62, phase: "Repolarization", active: ["myocardiumV"], mark: "T" },
+    ]),
+  );
+}
+
+function sampleAsystole(t: number): WaveSample {
+  const tt = clamp01(t);
+  // Near-flatline with tiny residual noise (lead check teaching cue)
+  const noise = 0.008 * Math.sin(tt * 40) + 0.005 * Math.sin(tt * 97 + 1.3);
+  const leads = scaleLeads(noise, {
+    I: 0.6,
+    II: 1,
+    III: 0.7,
+    aVR: 0.5,
+    aVL: 0.4,
+    aVF: 0.7,
+    V1: 0.85,
+    V2: 0.7,
+    V3: 0.55,
+    V4: 0.5,
+    V5: 0.45,
+    V6: 0.4,
+  });
+  return pack(leads, {
+    phase: "Asystole · no depolarization",
+    active: [],
     mark: "TP",
   });
 }
@@ -1526,49 +1763,118 @@ function samplePacedBiv(t: number): WaveSample {
 
 function sampleFailureToPace(t: number): WaveSample {
   const tt = clamp01(t);
-  // One successful V-paced beat, then missing spike/pause, then escape
+  const CYCLE = 2.4;
+  const s = paperScale(CYCLE);
+  const vtS = 0.4 / CYCLE;
   let leads = emptyLeads();
-  leads = addLeads(leads, paceSpike(tt, 0.1, 0.55));
-  leads = addLeads(leads, pacedQrsLeads(tt, 0.16, 0.9));
-  leads = addLeads(leads, tWaveLeads(tt, 0.4, -0.25, 0.045));
-  // Expected pace ~0.55 — absent — long pause
-  leads = addLeads(leads, wideQrsLeads(tt, 0.82, 0.75));
-  leads = addLeads(leads, tWaveLeads(tt, 0.95, -0.18, 0.04));
+  leads = addLeads(leads, paceSpike(tt, nrm(0.2, CYCLE), 0.55));
+  leads = addLeads(
+    leads,
+    scaleLeads(
+      gauss(tt, nrm(0.28, CYCLE) - 0.02 * vtS, 0.022 * vtS, -0.08) +
+        gauss(tt, nrm(0.28, CYCLE) + 0.02 * vtS, 0.05 * vtS, 0.9) +
+        gauss(tt, nrm(0.28, CYCLE) + 0.08 * vtS, 0.04 * vtS, -0.28),
+      {
+        I: 0.95,
+        II: 0.45,
+        III: -0.35,
+        aVR: -0.65,
+        aVL: 0.9,
+        aVF: 0.05,
+        V1: -1.05,
+        V2: -0.95,
+        V3: -0.25,
+        V4: 0.55,
+        V5: 0.95,
+        V6: 1.05,
+      },
+    ),
+  );
+  leads = addLeads(leads, tWaveLeads(tt, nrm(0.55, CYCLE), -0.25, 0.045 * s));
+  // Expected pace ~1.1 s — absent — escape ~2.0 s
+  leads = addLeads(
+    leads,
+    scaleLeads(
+      gauss(tt, nrm(2.0, CYCLE) - 0.04 * vtS, 0.03 * vtS, -0.15) +
+        gauss(tt, nrm(2.0, CYCLE), 0.055 * vtS, 0.75) +
+        gauss(tt, nrm(2.0, CYCLE) + 0.06 * vtS, 0.04 * vtS, -0.35) +
+        gauss(tt, nrm(2.0, CYCLE) + 0.1 * vtS, 0.03 * vtS, 0.25),
+      {
+        I: -0.55,
+        II: -0.85,
+        III: -0.7,
+        aVR: 0.7,
+        aVL: -0.2,
+        aVF: -0.8,
+        V1: 1.1,
+        V2: 0.9,
+        V3: 0.2,
+        V4: -0.55,
+        V5: -0.85,
+        V6: -0.9,
+      },
+    ),
+  );
+  leads = addLeads(leads, tWaveLeads(tt, nrm(2.25, CYCLE), -0.18, 0.04 * s));
 
   let meta: Pick<WaveSample, "phase" | "active" | "mark"> = {
     phase: "Output failure · no spike",
     active: [],
     mark: "TP",
   };
-  if (tt < 0.14) meta = { phase: "Ventricular pacing spike", active: ["myocardiumV"], mark: "QRS" };
-  else if (tt < 0.35) meta = { phase: "Captured paced QRS", active: ["purkinjeR", "myocardiumV"], mark: "QRS" };
-  else if (tt < 0.55) meta = { phase: "Expected pace — no output", active: [], mark: "TP" };
-  else if (tt < 0.78) meta = { phase: "Asystolic pause", active: [], mark: "TP" };
+  if (tt < nrm(0.35, CYCLE)) meta = { phase: "Ventricular pacing spike", active: ["myocardiumV"], mark: "QRS" };
+  else if (tt < nrm(0.7, CYCLE)) meta = { phase: "Captured paced QRS", active: ["purkinjeR", "myocardiumV"], mark: "QRS" };
+  else if (tt < nrm(1.2, CYCLE)) meta = { phase: "Expected pace — no output", active: [], mark: "TP" };
+  else if (tt < nrm(1.9, CYCLE)) meta = { phase: "Asystolic pause", active: [], mark: "TP" };
   else meta = { phase: "Escape beat", active: ["purkinjeL", "myocardiumV"], mark: "QRS" };
   return pack(leads, meta);
 }
 
 function sampleFailureToCapture(t: number): WaveSample {
   const tt = clamp01(t);
+  const CYCLE = 2.2;
+  const s = paperScale(CYCLE);
+  const vtS = 0.4 / CYCLE;
   let leads = emptyLeads();
-  // Spikes without capture, then one that captures
-  for (const s of [0.12, 0.38, 0.64]) {
-    leads = addLeads(leads, paceSpike(tt, s, 0.6));
+  for (const sec of [0.25, 0.85, 1.45]) {
+    leads = addLeads(leads, paceSpike(tt, nrm(sec, CYCLE), 0.6));
   }
-  leads = addLeads(leads, pacedQrsLeads(tt, 0.7, 0.95));
-  leads = addLeads(leads, tWaveLeads(tt, 0.92, -0.28, 0.04));
+  const cap = nrm(1.55, CYCLE);
+  leads = addLeads(
+    leads,
+    scaleLeads(
+      gauss(tt, cap - 0.02 * vtS, 0.022 * vtS, -0.08) +
+        gauss(tt, cap + 0.02 * vtS, 0.05 * vtS, 0.95) +
+        gauss(tt, cap + 0.08 * vtS, 0.04 * vtS, -0.28),
+      {
+        I: 0.95,
+        II: 0.45,
+        III: -0.35,
+        aVR: -0.65,
+        aVL: 0.9,
+        aVF: 0.05,
+        V1: -1.05,
+        V2: -0.95,
+        V3: -0.25,
+        V4: 0.55,
+        V5: 0.95,
+        V6: 1.05,
+      },
+    ),
+  );
+  leads = addLeads(leads, tWaveLeads(tt, nrm(1.9, CYCLE), -0.28, 0.04 * s));
 
   let meta: Pick<WaveSample, "phase" | "active" | "mark"> = {
     phase: "Failure to capture",
     active: [],
     mark: "TP",
   };
-  if ([0.12, 0.38, 0.64].some((s) => Math.abs(tt - s) < 0.04)) {
+  if ([0.25, 0.85, 1.45].some((sec) => Math.abs(tt - nrm(sec, CYCLE)) < 0.04 * s + 0.01)) {
     meta = { phase: "Pacing spike · no capture", active: [], mark: "TP" };
   }
-  if (tt >= 0.68 && tt < 0.88) {
+  if (tt >= nrm(1.5, CYCLE) && tt < nrm(1.85, CYCLE)) {
     meta = { phase: "Spike with capture", active: ["purkinjeR", "purkinjeL", "myocardiumV"], mark: "QRS" };
-  } else if (tt >= 0.88 && tt < 0.98) {
+  } else if (tt >= nrm(1.85, CYCLE) && tt < nrm(2.1, CYCLE)) {
     meta = { phase: "Captured T wave", active: ["myocardiumV"], mark: "T" };
   }
   return pack(leads, meta);
@@ -1576,70 +1882,100 @@ function sampleFailureToCapture(t: number): WaveSample {
 
 function sampleFailureToSense(t: number): WaveSample {
   const tt = clamp01(t);
-  // Intrinsic QRS ignored; spike lands on/after T (R-on-T risk teaching)
+  const CYCLE = 2.0;
+  const s = paperScale(CYCLE);
+  const vtS = 0.4 / CYCLE;
   let leads = addLeads(
-    addLeads(pWaveLeads(tt, 0.08), qrsLeads(tt, 0.26)),
-    tWaveLeads(tt, 0.48, 0.28, 0.04),
+    addLeads(pWaveLeads(tt, nrm(0.12, CYCLE), 0.18, 0.025 * s), qrsLeads(tt, nrm(0.28, CYCLE), 0.028 * s)),
+    tWaveLeads(tt, nrm(0.55, CYCLE), 0.28, 0.04 * s),
   );
-  leads = addLeads(leads, paceSpike(tt, 0.52, 0.65));
-  leads = addLeads(leads, pacedQrsLeads(tt, 0.58, 0.85));
-  leads = addLeads(leads, tWaveLeads(tt, 0.82, -0.3, 0.045));
+  leads = addLeads(leads, paceSpike(tt, nrm(0.7, CYCLE), 0.65));
+  const paced = nrm(0.78, CYCLE);
+  leads = addLeads(
+    leads,
+    scaleLeads(
+      gauss(tt, paced - 0.02 * vtS, 0.022 * vtS, -0.08) +
+        gauss(tt, paced + 0.02 * vtS, 0.05 * vtS, 0.85) +
+        gauss(tt, paced + 0.08 * vtS, 0.04 * vtS, -0.28),
+      {
+        I: 0.95,
+        II: 0.45,
+        III: -0.35,
+        aVR: -0.65,
+        aVL: 0.9,
+        aVF: 0.05,
+        V1: -1.05,
+        V2: -0.95,
+        V3: -0.25,
+        V4: 0.55,
+        V5: 0.95,
+        V6: 1.05,
+      },
+    ),
+  );
+  leads = addLeads(leads, tWaveLeads(tt, nrm(1.15, CYCLE), -0.3, 0.045 * s));
 
   let meta: Pick<WaveSample, "phase" | "active" | "mark"> = { phase: "Undersensing", active: [], mark: "TP" };
-  if (tt < 0.18) meta = { phase: "Intrinsic P", active: ["sa", "internodal", "myocardiumA"], mark: "P" };
-  else if (tt < 0.4) {
+  if (tt < nrm(0.2, CYCLE)) meta = { phase: "Intrinsic P", active: ["sa", "internodal", "myocardiumA"], mark: "P" };
+  else if (tt < nrm(0.45, CYCLE)) {
     meta = {
       phase: "Intrinsic QRS (not sensed)",
       active: ["his", "rbb", "lbb", "purkinjeR", "purkinjeL", "myocardiumV"],
       mark: "QRS",
     };
-  } else if (tt < 0.55) meta = { phase: "Inappropriate pacing spike", active: [], mark: "QRS" };
-  else if (tt < 0.75) meta = { phase: "Paced QRS after undersense", active: ["myocardiumV", "purkinjeR"], mark: "QRS" };
+  } else if (tt < nrm(0.75, CYCLE)) meta = { phase: "Inappropriate pacing spike", active: [], mark: "QRS" };
+  else if (tt < nrm(1.05, CYCLE)) meta = { phase: "Paced QRS after undersense", active: ["myocardiumV", "purkinjeR"], mark: "QRS" };
   else meta = { phase: "Repolarization", active: ["myocardiumV"], mark: "T" };
   return pack(leads, meta);
 }
 
 function sampleSinusPause(t: number): WaveSample {
   const tt = clamp01(t);
+  const CYCLE = 3.0;
+  const s = paperScale(CYCLE);
   let leads = emptyLeads();
-  // Two sinus beats, long pause (not exact multiple), junctional escape, recovery
-  for (const p of [0.06, 0.28]) {
-    leads = addLeads(leads, addLeads(pWaveLeads(tt, p), qrsLeads(tt, p + 0.18)));
-    leads = addLeads(leads, tWaveLeads(tt, p + 0.4, 0.24, 0.035));
+  // Two sinus beats (PP ~0.85 s), pause ~1.2 s (not 2×), junctional escape
+  for (const pSec of [0.1, 0.95]) {
+    const p = nrm(pSec, CYCLE);
+    leads = addLeads(leads, addLeads(pWaveLeads(tt, p, 0.18, 0.025 * s), qrsLeads(tt, nrm(pSec + 0.16, CYCLE), 0.028 * s)));
+    leads = addLeads(leads, tWaveLeads(tt, nrm(pSec + 0.4, CYCLE), 0.24, 0.035 * s));
   }
-  // Pause 0.48–0.78, then escape (no P) then sinus resumes
-  leads = addLeads(leads, qrsLeads(tt, 0.82, 0.026, 0.75));
-  leads = addLeads(leads, tWaveLeads(tt, 0.95, 0.2, 0.03));
+  leads = addLeads(leads, qrsLeads(tt, nrm(2.35, CYCLE), 0.026 * s, 0.75));
+  leads = addLeads(leads, tWaveLeads(tt, nrm(2.65, CYCLE), 0.2, 0.03 * s));
 
   let meta: Pick<WaveSample, "phase" | "active" | "mark"> = { phase: "Sinus pause", active: [], mark: "TP" };
-  if (tt < 0.45) {
-    if (tt % 0.22 < 0.08) meta = { phase: "Sinus P–QRS", active: ["sa", "internodal", "av", "his", "myocardiumV"], mark: "P" };
-    else meta = { phase: "Sinus rhythm", active: ["myocardiumV"], mark: "T" };
-  } else if (tt < 0.78) meta = { phase: "Sinus pause / arrest · no P", active: [], mark: "TP" };
+  if (tt < nrm(1.3, CYCLE)) {
+    if ([0.1, 0.95].some((p) => Math.abs(tt - nrm(p, CYCLE)) < 0.06 * s + 0.01)) {
+      meta = { phase: "Sinus P–QRS", active: ["sa", "internodal", "av", "his", "myocardiumV"], mark: "P" };
+    } else meta = { phase: "Sinus rhythm", active: ["myocardiumV"], mark: "T" };
+  } else if (tt < nrm(2.25, CYCLE)) meta = { phase: "Sinus pause / arrest · no P", active: [], mark: "TP" };
   else meta = { phase: "Escape beat", active: ["av", "his", "purkinjeL", "myocardiumV"], mark: "QRS" };
   return pack(leads, meta);
 }
 
 function sampleSaExitBlock(t: number): WaveSample {
   const tt = clamp01(t);
-  // PP ≈ 0.28; dropped beat makes pause ≈ 0.56 (2×)
-  const beats = [0.08, 0.36, /* drop at 0.64 */ 0.92];
+  /** PP 0.80 s · dropped beat → pause 1.60 s (= 2× PP) · 4 expected slots */
+  const CYCLE = 3.2;
+  const s = paperScale(CYCLE);
+  const beats = [0.1, 0.9, /* drop at 1.7 */ 2.5];
   let leads = emptyLeads();
-  for (const p of beats) {
-    leads = addLeads(leads, addLeads(pWaveLeads(tt, p), qrsLeads(tt, p + 0.16)));
-    leads = addLeads(leads, tWaveLeads(tt, p + 0.36, 0.22, 0.03));
+  for (const pSec of beats) {
+    const p = nrm(pSec, CYCLE);
+    leads = addLeads(leads, addLeads(pWaveLeads(tt, p, 0.18, 0.025 * s), qrsLeads(tt, nrm(pSec + 0.16, CYCLE), 0.028 * s)));
+    leads = addLeads(leads, tWaveLeads(tt, nrm(pSec + 0.4, CYCLE), 0.22, 0.03 * s));
   }
   let meta: Pick<WaveSample, "phase" | "active" | "mark"> = {
     phase: "SA exit block",
     active: [],
     mark: "TP",
   };
-  for (const p of beats) {
-    if (Math.abs(tt - p) < 0.05) {
+  for (const pSec of beats) {
+    if (Math.abs(tt - nrm(pSec, CYCLE)) < 0.05 * s + 0.01) {
       meta = { phase: "Sinus P–QRS", active: ["sa", "internodal", "av", "his", "myocardiumV"], mark: "P" };
     }
   }
-  if (tt > 0.55 && tt < 0.85) {
+  if (tt > nrm(1.5, CYCLE) && tt < nrm(2.4, CYCLE)) {
     meta = { phase: "Dropped beat · pause ≈ 2× PP", active: ["sa"], mark: "TP" };
   }
   return pack(leads, meta);
@@ -1647,33 +1983,30 @@ function sampleSaExitBlock(t: number): WaveSample {
 
 function sampleSickSinus(t: number): WaveSample {
   const tt = clamp01(t);
+  const CYCLE = 3.2;
+  const s = paperScale(CYCLE);
   let leads = emptyLeads();
 
-  // Classic SSS strip: inappropriate sinus brady → sinus arrest → junctional escape → slow recovery
-  // Beat 1–2: marked sinus bradycardia (long PP)
-  for (const p of [0.04, 0.28]) {
-    leads = addLeads(leads, pWaveLeads(tt, p, 0.15));
-    leads = addLeads(leads, qrsLeads(tt, p + 0.16, 0.024, 0.9));
-    leads = addLeads(leads, tWaveLeads(tt, p + 0.36, 0.24, 0.035));
+  // Inappropriate sinus brady (PP ~1.1 s) → arrest → junctional escape → slow P
+  for (const pSec of [0.12, 1.22]) {
+    const p = nrm(pSec, CYCLE);
+    leads = addLeads(leads, pWaveLeads(tt, p, 0.15, 0.025 * s));
+    leads = addLeads(leads, qrsLeads(tt, nrm(pSec + 0.16, CYCLE), 0.024 * s, 0.9));
+    leads = addLeads(leads, tWaveLeads(tt, nrm(pSec + 0.4, CYCLE), 0.24, 0.035 * s));
   }
-
-  // Sinus arrest: long flat pause (not an integer multiple of the basic PP)
-  // Junctional escape (narrow QRS, no preceding P)
-  leads = addLeads(leads, qrsLeads(tt, 0.72, 0.024, 0.7, -0.04, -0.12));
-  leads = addLeads(leads, tWaveLeads(tt, 0.88, 0.2, 0.035));
-
-  // Slow sinus resumes late
-  leads = addLeads(leads, pWaveLeads(tt, 0.94, 0.12));
+  leads = addLeads(leads, qrsLeads(tt, nrm(2.55, CYCLE), 0.024 * s, 0.7, -0.04, -0.12));
+  leads = addLeads(leads, tWaveLeads(tt, nrm(2.85, CYCLE), 0.2, 0.035 * s));
+  leads = addLeads(leads, pWaveLeads(tt, nrm(3.05, CYCLE), 0.12, 0.025 * s));
 
   let meta: Pick<WaveSample, "phase" | "active" | "mark"> = {
     phase: "Sick sinus syndrome",
     active: [],
     mark: "TP",
   };
-  if (tt < 0.42) {
-    if ([0.04, 0.28].some((p) => Math.abs(tt - p) < 0.05)) {
+  if (tt < nrm(1.7, CYCLE)) {
+    if ([0.12, 1.22].some((p) => Math.abs(tt - nrm(p, CYCLE)) < 0.05 * s + 0.01)) {
       meta = { phase: "Inappropriate sinus bradycardia", active: ["sa", "internodal", "myocardiumA"], mark: "P" };
-    } else if ([0.2, 0.44].some((q) => Math.abs(tt - q) < 0.05)) {
+    } else if ([0.28, 1.38].some((q) => Math.abs(tt - nrm(q, CYCLE)) < 0.05 * s + 0.01)) {
       meta = {
         phase: "Conducted QRS",
         active: ["av", "his", "rbb", "lbb", "purkinjeR", "purkinjeL", "myocardiumV"],
@@ -1682,9 +2015,9 @@ function sampleSickSinus(t: number): WaveSample {
     } else {
       meta = { phase: "Slow sinus rhythm (SSS)", active: ["sa"], mark: "TP" };
     }
-  } else if (tt < 0.68) {
+  } else if (tt < nrm(2.45, CYCLE)) {
     meta = { phase: "Sinus arrest · no P waves", active: [], mark: "TP" };
-  } else if (tt < 0.9) {
+  } else if (tt < nrm(2.95, CYCLE)) {
     meta = { phase: "Junctional escape", active: ["av", "his", "purkinjeL", "myocardiumV"], mark: "QRS" };
   } else {
     meta = { phase: "Slow sinus recovery", active: ["sa", "internodal", "myocardiumA"], mark: "P" };
@@ -1694,8 +2027,9 @@ function sampleSickSinus(t: number): WaveSample {
 
 function sampleTachyBrady(t: number): WaveSample {
   const tt = clamp01(t);
+  const CYCLE = 3.2;
+  const s = paperScale(CYCLE);
   let leads = emptyLeads();
-  // Burst of irregular atrial tach / fib-like, then long pause, then slow sinus
   const fibW: Partial<Record<LeadId, number>> = {
     I: 0.2,
     II: 0.4,
@@ -1710,18 +2044,20 @@ function sampleTachyBrady(t: number): WaveSample {
     V5: 0.08,
     V6: 0.08,
   };
-  if (tt < 0.42) {
+  if (tt < nrm(1.2, CYCLE)) {
     for (let i = 0; i < 8; i++) {
       const fib = Math.sin((tt * 28 + i * 1.4) * Math.PI * 2) * 0.04;
       leads = addLeads(leads, scaleLeads(fib, fibW));
     }
-    for (const b of [0.06, 0.16, 0.24, 0.34]) {
-      leads = addLeads(leads, qrsLeads(tt, b, 0.02, 0.85));
+    for (const bSec of [0.15, 0.4, 0.62, 0.95]) {
+      leads = addLeads(leads, qrsLeads(tt, nrm(bSec, CYCLE), 0.02 * s, 0.85));
     }
   }
-  // Long pause then slow sinus recovery
-  if (tt > 0.78) {
-    leads = addLeads(leads, addLeads(pWaveLeads(tt, 0.82, 0.14), qrsLeads(tt, 0.96, 0.022, 0.7)));
+  if (tt > nrm(2.4, CYCLE)) {
+    leads = addLeads(
+      leads,
+      addLeads(pWaveLeads(tt, nrm(2.5, CYCLE), 0.14, 0.025 * s), qrsLeads(tt, nrm(2.9, CYCLE), 0.022 * s, 0.7)),
+    );
   }
 
   let meta: Pick<WaveSample, "phase" | "active" | "mark"> = {
@@ -1729,13 +2065,13 @@ function sampleTachyBrady(t: number): WaveSample {
     active: [],
     mark: "TP",
   };
-  if (tt < 0.42) {
+  if (tt < nrm(1.2, CYCLE)) {
     meta = {
       phase: "Atrial tachyarrhythmia burst",
       active: ["myocardiumA", "av", "his", "myocardiumV"],
-      mark: tt < 0.38 && (tt * 20) % 1 < 0.4 ? "QRS" : "TP",
+      mark: tt < nrm(1.1, CYCLE) && (tt * 20) % 1 < 0.4 ? "QRS" : "TP",
     };
-  } else if (tt < 0.78) meta = { phase: "Post-conversion sinus pause", active: [], mark: "TP" };
+  } else if (tt < nrm(2.4, CYCLE)) meta = { phase: "Post-conversion sinus pause", active: [], mark: "TP" };
   else meta = { phase: "Slow sinus recovery", active: ["sa", "internodal", "myocardiumA"], mark: "P" };
   return pack(leads, meta);
 }
@@ -1747,6 +2083,7 @@ const SAMPLERS: Record<FindingId, (t: number) => WaveSample> = {
   afib: sampleAfib,
   aflutterCcw: sampleAflutterCcw,
   aflutterCw: sampleAflutterCw,
+  avnrt: sampleAvnrt,
   av1: sampleAv1,
   av2i: sampleAv2i,
   av2ii: sampleAv2ii,
@@ -1765,6 +2102,7 @@ const SAMPLERS: Record<FindingId, (t: number) => WaveSample> = {
   vtPoly: sampleVtPoly,
   torsades: sampleTorsades,
   vf: sampleVf,
+  asystole: sampleAsystole,
   wpw: sampleWpw,
   stemiAnt: sampleStemi,
   pacedAtrial: samplePacedAtrial,
@@ -1801,15 +2139,21 @@ export function cardioversionDurationSec(from: FindingId): number {
   if (from === "vf" || from === "torsades") return 7.8;
   if (from === "vt" || from === "vtMonoLbbb" || from === "vtMonoRbbb" || from === "vtPoly") return 7.2;
   if (from === "afib" || from === "aflutterCcw" || from === "aflutterCw") return 6.8;
+  if (from === "avnrt" || from === "sinusTachy") return 6.4;
+  if (from === "asystole") return 5.5;
   return 6.2;
 }
 
 /**
- * Continuous post-shock recovery → sinus.
- * Late portion crossfades into real NSR so handoff is seamless.
+ * Continuous post-shock recovery → target rhythm.
+ * Late portion crossfades into the chosen finding so handoff is seamless.
  * `t` is normalized over the recovery window (0…1).
  */
-export function samplePostCardioversion(t: number, from: FindingId): WaveSample {
+export function samplePostCardioversion(
+  t: number,
+  from: FindingId,
+  to: FindingId = "nsr",
+): WaveSample {
   const tt = Math.max(0, Math.min(1, t));
   let seed = 0;
   for (let i = 0; i < from.length; i++) seed = (seed * 33 + from.charCodeAt(i)) >>> 0;
@@ -1822,6 +2166,7 @@ export function samplePostCardioversion(t: number, from: FindingId): WaveSample 
   const wasVFib = from === "vf" || from === "torsades" || from === "vtPoly";
   const wasVt = from.startsWith("vt") || from === "torsades";
   const wasAf = from === "afib" || from === "aflutterCcw" || from === "aflutterCw";
+  const toAsystole = to === "asystole";
 
   // --- Build evolving recovery morphology (same timeline as blend target) ---
   let leads = emptyLeads();
@@ -1841,18 +2186,20 @@ export function samplePostCardioversion(t: number, from: FindingId): WaveSample 
     pLead?: number;
   };
   const beats: RecBeat[] = [];
-  // Asystole ~0–0.10, then escapes → junctional → sinus
-  if (wasVFib || wasVt) {
-    beats.push({ t: 0.11 + jitter(1, 0.012), kind: "wide" });
+  if (!toAsystole) {
+    // Asystole ~0–0.10, then escapes → junctional → sinus-like toward target
+    if (wasVFib || wasVt) {
+      beats.push({ t: 0.11 + jitter(1, 0.012), kind: "wide" });
+    }
+    beats.push({ t: 0.2 + jitter(2, 0.015), kind: wasVt ? "wide" : "junct" });
+    beats.push({ t: 0.3 + jitter(3, 0.012), kind: "junct" });
+    beats.push({ t: 0.4 + jitter(4, 0.01), kind: "junct", pLead: 0.04 });
+    beats.push({ t: 0.5 + jitter(5, 0.01), kind: "sinus", pLead: 0.055 });
+    beats.push({ t: 0.6 + jitter(6, 0.008), kind: "sinus", pLead: 0.06 });
+    beats.push({ t: 0.7 + jitter(7, 0.006), kind: "sinus", pLead: 0.065 });
+    beats.push({ t: 0.8 + jitter(8, 0.005), kind: "sinus", pLead: 0.07 });
+    beats.push({ t: 0.9 + jitter(9, 0.004), kind: "sinus", pLead: 0.072 });
   }
-  beats.push({ t: 0.2 + jitter(2, 0.015), kind: wasVt ? "wide" : "junct" });
-  beats.push({ t: 0.3 + jitter(3, 0.012), kind: "junct" });
-  beats.push({ t: 0.4 + jitter(4, 0.01), kind: "junct", pLead: 0.04 });
-  beats.push({ t: 0.5 + jitter(5, 0.01), kind: "sinus", pLead: 0.055 });
-  beats.push({ t: 0.6 + jitter(6, 0.008), kind: "sinus", pLead: 0.06 });
-  beats.push({ t: 0.7 + jitter(7, 0.006), kind: "sinus", pLead: 0.065 });
-  beats.push({ t: 0.8 + jitter(8, 0.005), kind: "sinus", pLead: 0.07 });
-  beats.push({ t: 0.9 + jitter(9, 0.004), kind: "sinus", pLead: 0.072 });
 
   if (wasVFib && tt < 0.08) {
     const rip =
@@ -1868,7 +2215,7 @@ export function samplePostCardioversion(t: number, from: FindingId): WaveSample 
 
   for (let i = 0; i < beats.length; i++) {
     const b = beats[i]!;
-    const progress = i / Math.max(1, beats.length - 1); // 0 → 1 over recovery beats
+    const progress = i / Math.max(1, beats.length - 1);
     const widthScale = 1 - 0.55 * progress;
     const amp = 0.65 + 0.35 * progress;
 
@@ -1878,7 +2225,7 @@ export function samplePostCardioversion(t: number, from: FindingId): WaveSample 
         leads = addLeads(leads, pWaveLeads(tt, pT, 0.1 + 0.08 * progress));
         if (Math.abs(tt - pT) < 0.028) {
           meta = {
-            phase: progress < 0.7 ? "Emerging sinus P" : "Sinus P · stabilizing",
+            phase: progress < 0.7 ? "Emerging atrial activity" : "Atrial activity · stabilizing",
             active: ["sa", "internodal", "myocardiumA"],
             mark: "P",
           };
@@ -1909,7 +2256,7 @@ export function samplePostCardioversion(t: number, from: FindingId): WaveSample 
         };
       } else {
         meta = {
-          phase: "Conducted sinus QRS · recovering",
+          phase: "Conducted QRS · recovering",
           active: ["av", "his", "rbb", "lbb", "purkinjeR", "purkinjeL", "myocardiumV"],
           mark: "QRS",
         };
@@ -1927,82 +2274,128 @@ export function samplePostCardioversion(t: number, from: FindingId): WaveSample 
     leads = addLeads(leads, scaleLeads(fib, { II: 1, V1: 1.15, aVF: 0.55 }));
   }
 
+  if (toAsystole && tt > 0.2) {
+    meta = { phase: "Persistent asystole · no escape", active: [], mark: "TP" };
+  }
+
   const recovery: WaveSample = pack(leads, meta);
 
-  // --- Crossfade into real NSR so the end state *is* sinus ---
-  // NSR phase advances through ~2 cycles during the second half of recovery
-  const nsrAnchor = 0.42;
-  const nsrSpan = 1 - nsrAnchor;
-  const nsrCycles = 2.15;
-  const nsrT =
-    tt <= nsrAnchor ? 0 : clamp01((((tt - nsrAnchor) / nsrSpan) * nsrCycles) % 1);
-  const nsr = sampleWave("nsr", nsrT);
-  // Soft labels while blending
-  const nsrLabeled: WaveSample = {
-    ...nsr,
+  // --- Crossfade into target rhythm ---
+  const targetAnchor = 0.42;
+  const targetSpan = 1 - targetAnchor;
+  const targetCycles = 2.15;
+  const targetT =
+    tt <= targetAnchor ? 0 : clamp01((((tt - targetAnchor) / targetSpan) * targetCycles) % 1);
+  const target = sampleWave(to, targetT);
+  const toLabel = to === "nsr" ? "sinus" : getFindingShort(to);
+  const targetLabeled: WaveSample = {
+    ...target,
     phase:
       tt < 0.75
-        ? `Merging into sinus · ${nsr.phase}`
+        ? `Merging into ${toLabel} · ${target.phase}`
         : tt < 0.9
-          ? `Sinus rhythm restoring · ${nsr.phase}`
-          : nsr.phase,
+          ? `${toLabel} restoring · ${target.phase}`
+          : target.phase,
   };
 
-  // Blend starts mid-recovery and reaches full NSR before the window ends
-  const blend = smoothstep((tt - 0.5) / 0.38); // 0 @0.50 → 1 @0.88
+  const blend = smoothstep((tt - 0.5) / 0.38);
   if (blend <= 0.001) return recovery;
-  if (blend >= 0.999) return nsrLabeled;
-  return lerpWaveSample(recovery, nsrLabeled, blend);
+  if (blend >= 0.999) return targetLabeled;
+  return lerpWaveSample(recovery, targetLabeled, blend);
 }
 
-/** NSR cycle phase at the end of a recovery window (for seamless handoff). */
+function getFindingShort(id: FindingId): string {
+  switch (id) {
+    case "nsr":
+      return "sinus";
+    case "asystole":
+      return "asystole";
+    case "avnrt":
+      return "AVNRT";
+    case "afib":
+      return "AFib";
+    case "sinusBrady":
+      return "brady";
+    case "sinusTachy":
+      return "tachy";
+    default:
+      return id;
+  }
+}
+
+/** Target-rhythm cycle phase at the end of a recovery window (seamless handoff). */
+export function cardioversionEndTargetPhase(): number {
+  const targetAnchor = 0.42;
+  const targetSpan = 1 - targetAnchor;
+  const targetCycles = 2.15;
+  return clamp01(((((1 - targetAnchor) / targetSpan) * targetCycles) % 1));
+}
+
+/** @deprecated use cardioversionEndTargetPhase */
 export function cardioversionEndNsrPhase(): number {
-  const nsrAnchor = 0.42;
-  const nsrSpan = 1 - nsrAnchor;
-  const nsrCycles = 2.15;
-  return clamp01(((((1 - nsrAnchor) / nsrSpan) * nsrCycles) % 1));
+  return cardioversionEndTargetPhase();
 }
 
-/** Absolute-time NSR / recovery phase for conduction + strip continuity. */
+  /** Absolute-time recovery / target phase for conduction + strip continuity.
+   * `elapsedSec` is time since the shock (not wall-clock).
+   */
 export function cardioversionTCycle(
   elapsedSec: number,
   durationSec: number,
-  nsrCycleSec: number,
+  targetCycleSec: number,
 ): number {
-  const nsrAnchor = 0.42;
-  const nsrSpan = 1 - nsrAnchor;
-  const nsrCycles = 2.15;
-  const cycle = Math.max(0.25, nsrCycleSec);
+  const targetAnchor = 0.42;
+  const targetSpan = 1 - targetAnchor;
+  const targetCycles = 2.15;
+  const cycle = Math.max(0.25, targetCycleSec);
   if (elapsedSec < durationSec) {
     const tt = Math.max(0, elapsedSec) / Math.max(0.001, durationSec);
-    if (tt <= nsrAnchor) return tt; // progress through early recovery
-    return clamp01((((tt - nsrAnchor) / nsrSpan) * nsrCycles) % 1);
+    if (tt <= targetAnchor) return tt;
+    return clamp01((((tt - targetAnchor) / targetSpan) * targetCycles) % 1);
   }
   const post = elapsedSec - durationSec;
-  return clamp01(cardioversionEndNsrPhase() + post / cycle);
+  return clamp01(cardioversionEndTargetPhase() + post / cycle);
+}
+
+/** Wall-clock phase helper spanning pre-shock → recovery → target. */
+export function cardioversionWallTCycle(
+  elapsedSec: number,
+  shockAtSec: number,
+  durationSec: number,
+  targetCycleSec: number,
+  fromCycleSec: number,
+): number {
+  if (elapsedSec < shockAtSec) {
+    const cycle = Math.max(0.25, fromCycleSec);
+    return (((elapsedSec % cycle) + cycle) % cycle) / cycle;
+  }
+  return cardioversionTCycle(elapsedSec - shockAtSec, durationSec, targetCycleSec);
 }
 
 /**
- * Absolute-time cardioversion sampler: recovery arc, then unbroken NSR.
- * Negative times (strip lookback before the shock) stay silent.
+ * Absolute-time cardioversion sampler.
+ * Times before `shockAtSec` keep the prior rhythm so the rolling strip shows
+ * the old morphology scrolling into the shock / recovery.
  */
 export function sampleCardioversionAt(
   tAbs: number,
   from: FindingId,
   durationSec: number,
-  nsrCycleSec: number,
+  targetCycleSec: number,
+  to: FindingId = "nsr",
+  shockAtSec = 0,
+  fromCycleSec = 0.86,
 ): WaveSample {
-  if (tAbs <= 0) {
-    return pack(emptyLeads(), {
-      phase: "Pre-shock",
-      active: [],
-      mark: "TP",
-    });
+  if (tAbs < shockAtSec) {
+    const cycle = Math.max(0.25, fromCycleSec);
+    const phase = (((tAbs % cycle) + cycle) % cycle) / cycle;
+    return sampleWave(from, phase);
   }
-  if (tAbs < durationSec) {
-    return samplePostCardioversion(tAbs / durationSec, from);
+  const post = tAbs - shockAtSec;
+  if (post < durationSec) {
+    return samplePostCardioversion(post / durationSec, from, to);
   }
-  return sampleWave("nsr", cardioversionTCycle(tAbs, durationSec, nsrCycleSec));
+  return sampleWave(to, cardioversionTCycle(post, durationSec, targetCycleSec));
 }
 
 export function sampleWave(id: FindingId, t: number): WaveSample {
@@ -2027,6 +2420,8 @@ function stimKind(id: SegmentId): "atrial" | "junctional" | "rightVent" | "leftV
       return "atrial";
     case "av":
     case "his":
+    case "avnrtSlow":
+    case "avnrtFast":
       return "junctional";
     case "rbb":
     case "purkinjeR":

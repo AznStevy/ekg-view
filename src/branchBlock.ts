@@ -156,7 +156,9 @@ export function findingIdForBlocks(blocks: Iterable<BundleBlockId>): import("./f
     case "rbbbLpfb":
       return "rbbbLpfb";
     case "trifascicular":
-      return "av3";
+      // Stay on a BBB finding id so the CHB expander does not steal the UI.
+      // The EKG/waveform still uses the trifascicular → ventricular-escape sampler.
+      return "rbbb";
   }
 }
 
