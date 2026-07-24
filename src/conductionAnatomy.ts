@@ -861,25 +861,26 @@ function createNode(
   return mesh;
 }
 
-/** Simple translucent heart sphere (slightly ovoid), matching cath-view restraint */
+/**
+ * Myocardial vector-field ellipsoid (must stay in sync with activationVectors.ts):
+ *   (x/rx)² + ((y - cy)/ry)² + (z/rz)² ≤ limit
+ */
+export const FIELD_ELLIPSOID = {
+  center: new THREE.Vector3(0, -0.15, 0),
+  radius: new THREE.Vector3(1.05, 1.15, 0.95),
+  limit: 0.95,
+} as const;
+
+/** Translucent cardiac ovoid — matches the vector-field ellipsoid bounds. */
 function createHeartShell(): THREE.Group {
   const group = new THREE.Group();
   group.name = "heartShell";
 
-  const geo = new THREE.SphereGeometry(1, 48, 36);
-  const pos = geo.attributes.position;
-  const v = new THREE.Vector3();
-  for (let i = 0; i < pos.count; i++) {
-    v.fromBufferAttribute(pos, i);
-    v.x *= 1.05;
-    v.y *= 1.22;
-    v.z *= 1.0;
-    pos.setXYZ(i, v.x, v.y, v.z);
-  }
-  geo.computeVertexNormals();
+  const { center, radius, limit } = FIELD_ELLIPSOID;
+  const s = Math.sqrt(limit);
 
   const ovoid = new THREE.Mesh(
-    geo,
+    new THREE.SphereGeometry(1, 48, 36),
     new THREE.MeshStandardMaterial({
       color: 0x5a3038,
       roughness: 0.65,
@@ -890,14 +891,35 @@ function createHeartShell(): THREE.Group {
       depthWrite: false,
     }),
   );
-  ovoid.position.set(0.05, -0.2, 0.02);
-  ovoid.rotation.z = THREE.MathUtils.degToRad(-12);
-  ovoid.rotation.x = THREE.MathUtils.degToRad(10);
-  ovoid.scale.setScalar(1.12);
   ovoid.name = "heartBody";
+  ovoid.position.copy(center);
+  // Same axes as the field sample ellipsoid (slightly outside via tiny pad)
+  ovoid.scale.set(radius.x * s * 1.02, radius.y * s * 1.02, radius.z * s * 1.02);
   group.add(ovoid);
 
   return group;
+}
+
+/** Keep shell locked to the field ellipsoid (pathways are authored inside that volume). */
+function fitHeartShellToPathways(heartShell: THREE.Group, _pathways: THREE.Object3D): void {
+  const ovoid = heartShell.getObjectByName("heartBody") as THREE.Mesh | undefined;
+  if (!ovoid) return;
+  const { center, radius, limit } = FIELD_ELLIPSOID;
+  const s = Math.sqrt(limit);
+  ovoid.position.copy(center);
+  ovoid.scale.set(radius.x * s * 1.02, radius.y * s * 1.02, radius.z * s * 1.02);
+}
+
+/**
+ * In-chest physiologic pose: long axis oblique with apex left, inferior, and anterior.
+ * Authored apex is the −Y pole; negative X rotation tips −Y toward +Z (anterior).
+ */
+export function applyAnatomicOrientation(target: THREE.Object3D): void {
+  target.rotation.order = "ZYX";
+  // Less roll than a full side-lie so the long axis still reads inferiorly
+  target.rotation.z = THREE.MathUtils.degToRad(22); // toward patient's left
+  target.rotation.x = THREE.MathUtils.degToRad(-38); // tip apex anteriorly
+  target.rotation.y = THREE.MathUtils.degToRad(8);
 }
 
 function createPulseSprite(radius = 0.05, color = 0xffffff): THREE.Mesh {
@@ -1633,6 +1655,8 @@ export function createConductionSystem(): ConductionSystem {
   setSegmentVisibility("avnrtSlow", false);
   setSegmentVisibility("avnrtFast", false);
 
+  // Wrap pathways snugly, then center the whole conduction root
+  fitHeartShellToPathways(heartShell, pathways);
   root.updateMatrixWorld(true);
   const box = new THREE.Box3().setFromObject(root);
   const center = box.getCenter(new THREE.Vector3());

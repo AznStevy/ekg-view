@@ -4,6 +4,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { createActivationVectors } from "./activationVectors";
 import {
   createConductionSystem,
+  applyAnatomicOrientation,
   SEGMENT_META,
   type ConductionSystem,
 } from "./conductionAnatomy";
@@ -1010,30 +1011,19 @@ function main() {
     camera.clearViewOffset();
     camera.updateProjectionMatrix();
 
-    conduction.root.updateMatrixWorld(true);
+    anatomy.updateMatrixWorld(true);
+    // Center on the heart/conduction mass — not peripheral lead electrodes
     const box = new THREE.Box3().setFromObject(conduction.root);
     const sphere = box.getBoundingSphere(new THREE.Sphere());
-
-    // Prefer the live AV mesh world position (true visual center target)
-    const focus = new THREE.Vector3();
-    let foundAv = false;
-    conduction.root.traverse((obj) => {
-      if (foundAv) return;
-      if (obj instanceof THREE.Mesh && obj.userData.segmentId === "av") {
-        obj.getWorldPosition(focus);
-        foundAv = true;
-      }
-    });
-    if (!foundAv) focus.copy(conduction.getLandmarkWorld("av"));
+    const focus = sphere.center.clone();
 
     const vFov = THREE.MathUtils.degToRad(camera.fov);
     const hFov = 2 * Math.atan(Math.tan(vFov / 2) * camera.aspect);
     const limFov = Math.min(vFov, hFov);
-    const fitRadius = sphere.radius + sphere.center.distanceTo(focus);
-    // ~2.25× tighter than a full-sphere fit so the heart fills the pane
-    const dist = (fitRadius * 1.06) / Math.tan(limFov / 2) / 2.25;
+    // Slightly tighter than full-sphere so the heart fills the pane without clipping
+    const dist = ((sphere.radius * 1.12) / Math.tan(limFov / 2) / 1.85) * 0.85;
 
-    // AP: camera on +Z looking at AV — AV projects to pane center
+    // AP: camera on +Z looking at heart center
     camera.position.set(focus.x, focus.y, focus.z + dist);
     camera.up.set(0, 1, 0);
     camera.lookAt(focus);
@@ -1090,7 +1080,19 @@ function main() {
   scene.add(ring);
 
   const conduction: ConductionSystem = createConductionSystem();
-  scene.add(conduction.root);
+  const anatomy = new THREE.Group();
+  anatomy.name = "anatomy";
+  // Match cath-view in-chest long-axis pose (apex left / inferior / slightly anterior)
+  applyAnatomicOrientation(anatomy);
+  anatomy.add(conduction.root);
+  // Re-center after rotation so the heart sits on the world origin / pane center
+  anatomy.updateMatrixWorld(true);
+  {
+    const box = new THREE.Box3().setFromObject(anatomy);
+    const c = box.getCenter(new THREE.Vector3());
+    anatomy.position.sub(c);
+  }
+  scene.add(anatomy);
 
   const stimMarker = new THREE.Mesh(
     new THREE.SphereGeometry(0.04, 16, 12),
@@ -1107,23 +1109,24 @@ function main() {
 
   const deviceLeads = createDeviceLeads();
   deviceLeads.root.position.copy(conduction.root.position);
-  scene.add(deviceLeads.root);
+  anatomy.add(deviceLeads.root);
 
-  // Place ground under centered model
+  const vectors = createActivationVectors(conduction.getPathwayProbes());
+  vectors.root.position.copy(conduction.root.position);
+  anatomy.add(vectors.root);
+
+  // Surface ECG leads stay in the patient/chest frame — not rotated with the heart
+  const leads = createLeadPositions();
+  scene.add(leads.root);
+
+  // Place ground under the heart (ignore far electrode markers)
   {
+    anatomy.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(conduction.root);
     const minY = box.min.y;
     ground.position.y = minY - 0.12;
     ring.position.y = minY - 0.11;
   }
-
-  const vectors = createActivationVectors(conduction.getPathwayProbes());
-  scene.add(vectors.root);
-  vectors.root.position.copy(conduction.root.position);
-
-  const leads = createLeadPositions();
-  scene.add(leads.root);
-  leads.root.position.copy(conduction.root.position);
 
   function applySegmentVisibility() {
     for (const g of SEGMENT_META) {
@@ -2351,12 +2354,16 @@ function main() {
     else syncFindingUI();
   });
 
-  els["btn-collapse"].addEventListener("click", () =>
-    els["panel-shell"].classList.add("collapsed"),
-  );
-  els["btn-expand"].addEventListener("click", () =>
-    els["panel-shell"].classList.remove("collapsed"),
-  );
+  function setPanelCollapsed(collapsed: boolean) {
+    els["panel-shell"].classList.toggle("collapsed", collapsed);
+  }
+
+  function togglePanel() {
+    setPanelCollapsed(!els["panel-shell"].classList.contains("collapsed"));
+  }
+
+  els["btn-collapse"].addEventListener("click", () => setPanelCollapsed(true));
+  els["btn-expand"].addEventListener("click", () => setPanelCollapsed(false));
 
   function syncSegCheckboxes() {
     els["segment-toggles"].querySelectorAll<HTMLInputElement>("input[data-segment]").forEach((input) => {
@@ -2772,13 +2779,17 @@ function main() {
       const next = state.ventRateBpm + (e.key === "ArrowUp" ? step : -step);
       onRateChange(next);
     } else if (e.key === "r" || e.key === "R") {
-      state.elapsed = 0;
+      e.preventDefault();
+      resetCameraView();
     } else if (e.key === "v" || e.key === "V") {
       setVectors(!state.vectorsOn);
     } else if (e.key === "f" || e.key === "F") {
       setField(!state.fieldOn);
     } else if (e.key === "l" || e.key === "L") {
       setLeads(!state.leadsOn);
+    } else if (e.key === "p" || e.key === "P") {
+      e.preventDefault();
+      togglePanel();
     }
   });
 

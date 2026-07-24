@@ -2,6 +2,7 @@ import * as THREE from "three";
 import type { CycleMark, LeadId } from "./ekgWaveforms";
 import type { FindingId, SegmentId } from "./findings";
 import { getFinding } from "./findings";
+import { FIELD_ELLIPSOID } from "./conductionAnatomy";
 import type { ActiveFront, BranchWindow, PathwayProbePoint } from "./pathwayTiming";
 import { branchesForFinding, groupsForMark } from "./pathwayTiming";
 
@@ -180,10 +181,10 @@ export function createActivationVectors(probes: PathwayProbePoint[]): VectorView
         const x = ix * 0.22;
         const y = iy * 0.2 - 0.15;
         const z = iz * 0.22;
-        const nx = x / 1.05;
-        const ny = (y + 0.15) / 1.15;
-        const nz = z / 0.95;
-        if (nx * nx + ny * ny + nz * nz > 0.95) continue;
+        const nx = x / FIELD_ELLIPSOID.radius.x;
+        const ny = (y - FIELD_ELLIPSOID.center.y) / FIELD_ELLIPSOID.radius.y;
+        const nz = z / FIELD_ELLIPSOID.radius.z;
+        if (nx * nx + ny * ny + nz * nz > FIELD_ELLIPSOID.limit) continue;
 
         const inInsulator =
           Math.abs(y - 0.04) < 0.07 && Math.hypot(x - 0.04, z + 0.08) > 0.1;
