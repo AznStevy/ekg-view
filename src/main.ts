@@ -188,9 +188,69 @@ const PACED_OPTIONS: { id: FindingId; short: string; name: string }[] = [
   },
 ];
 
+const STEMI_FINDING_IDS = new Set<FindingId>([
+  "stemiAnt",
+  "stemiInferior",
+  "stemiLateral",
+  "stemiAnterolateral",
+  "stemiPosterior",
+  "stemiAvr",
+  "dewinter",
+  "wellens",
+  "sgarbossa",
+]);
+
+const STEMI_OPTIONS: { id: FindingId; short: string; name: string }[] = [
+  {
+    id: "stemiAnt",
+    short: "Anterior",
+    name: "STE V1–V4 · LAD",
+  },
+  {
+    id: "stemiInferior",
+    short: "Inferior",
+    name: "STE II · III · aVF",
+  },
+  {
+    id: "stemiLateral",
+    short: "Lateral",
+    name: "STE I · aVL · V5–V6",
+  },
+  {
+    id: "stemiAnterolateral",
+    short: "Ant-lat",
+    name: "Extensive V2–V6 · I · aVL",
+  },
+  {
+    id: "stemiPosterior",
+    short: "Posterior",
+    name: "Tall R + horizontal STD V1–V3",
+  },
+  {
+    id: "stemiAvr",
+    short: "aVR STE",
+    name: "aVR STE · diffuse STD · LMCA cue",
+  },
+  {
+    id: "dewinter",
+    short: "De Winter",
+    name: "Upsloping STD + hyperacute T",
+  },
+  {
+    id: "wellens",
+    short: "Wellens",
+    name: "Biphasic / deep T V2–V3",
+  },
+  {
+    id: "sgarbossa",
+    short: "Sgarbossa",
+    name: "Concordant STE + excess discordant V1–V3",
+  },
+];
+
 /** Keep expand panels open briefly after last option cleared */
 const EXPAND_HOLD_MS = 2000;
-type ExpandHoldKey = "bbb" | "chb" | "flutter" | "vf" | "vt" | "paced";
+type ExpandHoldKey = "bbb" | "chb" | "flutter" | "vf" | "vt" | "paced" | "stemi";
 const expandHoldUntil: Record<ExpandHoldKey, number> = {
   bbb: 0,
   chb: 0,
@@ -198,6 +258,7 @@ const expandHoldUntil: Record<ExpandHoldKey, number> = {
   vf: 0,
   vt: 0,
   paced: 0,
+  stemi: 0,
 };
 const expandHoldTimers: Record<ExpandHoldKey, number | null> = {
   bbb: null,
@@ -206,6 +267,7 @@ const expandHoldTimers: Record<ExpandHoldKey, number | null> = {
   vf: null,
   vt: null,
   paced: null,
+  stemi: null,
 };
 let expandResync: (() => void) | null = null;
 
@@ -430,6 +492,31 @@ function buildUI(root: HTMLElement): {
               </div>
             </div>`;
 
+  const stemiGroupButton = `<button type="button" id="btn-stemi" data-stemi-group title="STEMI territories and equivalents">
+      STEMI<small>Territories · equivalents</small>
+    </button>`;
+
+  const stemiOptionsHtml = `
+            <div class="finding-expand stemi-options" id="stemi-options" aria-hidden="true" style="display:none">
+              <div class="finding-expand-inner">
+                <div class="finding-expand-panel">
+                  <div class="finding-expand-head">
+                    <span>Territory or equivalent?</span>
+                    <button type="button" id="btn-stemi-clear" class="finding-expand-clear">Clear</button>
+                  </div>
+                  <div class="chb-escape-grid" id="stemi-type-grid">
+                    ${STEMI_OPTIONS.map(
+                      (o) => `<button type="button" class="chb-escape-chip" data-stemi-finding="${o.id}">
+                        <span class="chb-escape-short">${o.short}</span>
+                        <span class="chb-escape-name">${o.name}</span>
+                      </button>`,
+                    ).join("")}
+                  </div>
+                  <div class="finding-expand-result" id="stemi-result">Select STEMI territory or equivalent</div>
+                </div>
+              </div>
+            </div>`;
+
   const findingButtonHtml: string[] = [];
   let bbbInserted = false;
   let chbInserted = false;
@@ -437,6 +524,7 @@ function buildUI(root: HTMLElement): {
   let vfInserted = false;
   let vtInserted = false;
   let pacedInserted = false;
+  let stemiInserted = false;
   for (const f of FINDINGS) {
     if (f.category === "bbb") {
       if (!bbbInserted) {
@@ -486,6 +574,14 @@ function buildUI(root: HTMLElement): {
       }
       continue;
     }
+    if (STEMI_FINDING_IDS.has(f.id)) {
+      if (!stemiInserted) {
+        findingButtonHtml.push(stemiGroupButton);
+        findingButtonHtml.push(stemiOptionsHtml);
+        stemiInserted = true;
+      }
+      continue;
+    }
     findingButtonHtml.push(`
     <button type="button" data-finding="${f.id}" title="${f.name}" ${f.id === "nsr" ? 'class="active"' : ""}>
       ${f.short}<small>${f.rateLabel}</small>
@@ -502,6 +598,10 @@ function buildUI(root: HTMLElement): {
   if (!pacedInserted) {
     findingButtonHtml.push(pacedGroupButton);
     findingButtonHtml.push(pacedOptionsHtml);
+  }
+  if (!stemiInserted) {
+    findingButtonHtml.push(stemiGroupButton);
+    findingButtonHtml.push(stemiOptionsHtml);
   }
   if (!flutterInserted) {
     findingButtonHtml.push(flutterGroupButton);
@@ -780,6 +880,11 @@ function buildUI(root: HTMLElement): {
     "paced-result",
     "paced-type-grid",
     "btn-paced-clear",
+    "btn-stemi",
+    "stemi-options",
+    "stemi-result",
+    "stemi-type-grid",
+    "btn-stemi-clear",
     "finding-grid",
     "finding-search",
     "finding-empty",
@@ -1229,6 +1334,24 @@ function main() {
     }
   }
 
+  function syncStemiOptions() {
+    const stemiActive =
+      !(state.cvRecovery && !state.cvRecovery.settled) && STEMI_FINDING_IDS.has(state.finding);
+    if (stemiActive) clearExpandHold("stemi");
+    const stemiOpen = stemiActive || expandHeld("stemi");
+    setFindingExpand(els["stemi-options"], stemiOpen);
+    els["btn-stemi"].classList.toggle("active", stemiOpen && !state.upload && !state.stim.site);
+    els["stemi-type-grid"].querySelectorAll<HTMLButtonElement>("button[data-stemi-finding]").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.stemiFinding === state.finding);
+    });
+    if (stemiActive) {
+      const f = getFinding(state.finding);
+      els["stemi-result"].textContent = `${f.short} · ${f.detail}`;
+    } else {
+      els["stemi-result"].textContent = "Select STEMI territory or equivalent";
+    }
+  }
+
   function syncFindingUI() {
     const f = getFinding(state.finding);
     const stimSite = state.stim.site;
@@ -1335,6 +1458,7 @@ function main() {
     syncVtOptions();
     syncVfOptions();
     syncPacedOptions();
+    syncStemiOptions();
     syncCardioversionUi();
   }
 
@@ -1506,6 +1630,7 @@ function main() {
     syncVtOptions();
     syncVfOptions();
     syncPacedOptions();
+    syncStemiOptions();
   };
   setPlaying(true);
   setVectors(false);
@@ -1691,6 +1816,23 @@ function main() {
       setFinding(id);
       return;
     }
+    const stemiBtn = (e.target as HTMLElement).closest("#btn-stemi");
+    if (stemiBtn) {
+      const open = els["stemi-options"].classList.contains("is-open");
+      if (open && STEMI_FINDING_IDS.has(state.finding)) {
+        holdExpandOpen("stemi");
+        setFinding("nsr");
+      } else {
+        setFinding("stemiAnt");
+      }
+      return;
+    }
+    const stemiOpt = (e.target as HTMLElement).closest("button[data-stemi-finding]");
+    if (stemiOpt) {
+      const id = (stemiOpt as HTMLElement).dataset.stemiFinding as FindingId;
+      setFinding(id);
+      return;
+    }
     const btn = (e.target as HTMLElement).closest("button[data-finding]");
     if (!btn) return;
     const id = (btn as HTMLElement).dataset.finding as FindingId;
@@ -1862,64 +2004,43 @@ function main() {
     pacedBtn.hidden = !pacedMatch;
     if (pacedMatch) visible += 1;
 
-    // Deep-link search: jump into matching BBB / CHB / flutter / VT / VF / paced pattern
-    const qLower = q.trim().toLowerCase();
-    if (qLower.length >= 3) {
-      const bbbHit = FINDINGS.find(
-        (f) =>
-          f.category === "bbb" &&
-          findingMatchesQuery(f, q) &&
-          (f.id === qLower || f.short.toLowerCase() === qLower || f.aliases?.some((a) => a === qLower)),
-      );
-      if (bbbHit && state.finding !== bbbHit.id) {
-        setFindingExpand(els["bbb-options"], true);
-      }
-      const chbHit = FINDINGS.find(
-        (f) =>
-          CHB_FINDING_IDS.has(f.id) &&
-          findingMatchesQuery(f, q) &&
-          (f.id === qLower || f.short.toLowerCase() === qLower || f.aliases?.some((a) => a === qLower)),
-      );
-      if (chbHit && state.finding !== chbHit.id) {
-        setFindingExpand(els["chb-options"], true);
-      }
-      const flutterHit = FINDINGS.find(
-        (f) =>
-          FLUTTER_FINDING_IDS.has(f.id) &&
-          findingMatchesQuery(f, q) &&
-          (f.id === qLower || f.short.toLowerCase() === qLower || f.aliases?.some((a) => a === qLower)),
-      );
-      if (flutterHit && state.finding !== flutterHit.id) {
-        setFindingExpand(els["flutter-options"], true);
-      }
-      const vtHit = FINDINGS.find(
-        (f) =>
-          VT_FINDING_IDS.has(f.id) &&
-          findingMatchesQuery(f, q) &&
-          (f.id === qLower || f.short.toLowerCase() === qLower || f.aliases?.some((a) => a === qLower)),
-      );
-      if (vtHit && state.finding !== vtHit.id) {
-        setFindingExpand(els["vt-options"], true);
-      }
-      const vfHit = FINDINGS.find(
-        (f) =>
-          VF_FINDING_IDS.has(f.id) &&
-          findingMatchesQuery(f, q) &&
-          (f.id === qLower || f.short.toLowerCase() === qLower || f.aliases?.some((a) => a === qLower)),
-      );
-      if (vfHit && state.finding !== vfHit.id) {
-        setFindingExpand(els["vf-options"], true);
-      }
-      const pacedHit = FINDINGS.find(
-        (f) =>
-          PACED_FINDING_IDS.has(f.id) &&
-          findingMatchesQuery(f, q) &&
-          (f.id === qLower || f.short.toLowerCase() === qLower || f.aliases?.some((a) => a === qLower)),
-      );
-      if (pacedHit && state.finding !== pacedHit.id) {
-        setFindingExpand(els["paced-options"], true);
-      }
+    const stemiMatch =
+      q.trim().length === 0 ||
+      FINDINGS.some((f) => STEMI_FINDING_IDS.has(f.id) && findingMatchesQuery(f, q));
+    const stemiBtn = els["btn-stemi"] as HTMLButtonElement;
+    stemiBtn.hidden = !stemiMatch;
+    if (stemiMatch) visible += 1;
+
+    // Auto-expand any group that has a matching option; collapse extras when search clears
+    const qActive = q.trim().length > 0;
+    if (qActive) {
+      if (bbbMatch) setFindingExpand(els["bbb-options"], true);
+      if (chbMatch) setFindingExpand(els["chb-options"], true);
+      if (flutterMatch) setFindingExpand(els["flutter-options"], true);
+      if (vtMatch) setFindingExpand(els["vt-options"], true);
+      if (vfMatch) setFindingExpand(els["vf-options"], true);
+      if (pacedMatch) setFindingExpand(els["paced-options"], true);
+      if (stemiMatch) setFindingExpand(els["stemi-options"], true);
+    } else {
+      expandResync?.();
     }
+
+    // Within open expandables, hide chips that don't match the query
+    const filterFindingChips = (gridId: string, dataAttr: string) => {
+      const grid = els[gridId];
+      if (!grid) return;
+      grid.querySelectorAll<HTMLButtonElement>(`button[${dataAttr}]`).forEach((btn) => {
+        const id = btn.getAttribute(dataAttr) as FindingId;
+        btn.hidden = qActive && !findingMatchesQuery(getFinding(id), q);
+      });
+    };
+    filterFindingChips("chb-escape-grid", "data-chb-finding");
+    filterFindingChips("flutter-dir-grid", "data-flutter-finding");
+    filterFindingChips("vf-amp-grid", "data-vf-finding");
+    filterFindingChips("vt-type-grid", "data-vt-finding");
+    filterFindingChips("paced-type-grid", "data-paced-finding");
+    filterFindingChips("stemi-type-grid", "data-stemi-finding");
+    // BBB chips are lesion toggles (not one finding each) — keep them all visible when BBB opens
 
     findingEmpty.hidden = visible > 0 || q.trim().length === 0;
     void runPhysioSearch(q);
@@ -2220,6 +2341,13 @@ function main() {
     clearStim();
     holdExpandOpen("paced");
     if (PACED_FINDING_IDS.has(state.finding)) setFinding("nsr");
+    else syncFindingUI();
+  });
+
+  els["btn-stemi-clear"].addEventListener("click", () => {
+    clearStim();
+    holdExpandOpen("stemi");
+    if (STEMI_FINDING_IDS.has(state.finding)) setFinding("nsr");
     else syncFindingUI();
   });
 

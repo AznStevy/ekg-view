@@ -1548,83 +1548,284 @@ function sampleWpw(t: number): WaveSample {
   );
 }
 
-function sampleStemi(t: number): WaveSample {
+/** Shared ST-elevation / injury morphology with lead-local weights. */
+function sampleStemiTerritory(
+  t: number,
+  opts: {
+    stW: Partial<Record<LeadId, number>>;
+    tW: Partial<Record<LeadId, number>>;
+    qW?: Partial<Record<LeadId, number>>;
+    stAmp?: number;
+    tAmp?: number;
+    qAmp?: number;
+    qrsDetail: string;
+    stDetail: string;
+    tDetail: string;
+  },
+): WaveSample {
   const tt = clamp01(t);
   const qrsMu = 0.32;
   const tMu = 0.62;
+  const stAmp = opts.stAmp ?? 0.55;
+  const tAmp = opts.tAmp ?? 0.5;
 
   let leads = pWaveLeads(tt, 0.1);
-  const qAnt = gauss(tt, qrsMu - 0.03, 0.018, -0.45);
-  leads = addLeads(
-    leads,
-    scaleLeads(
-      qAnt,
-      {
-        I: 0.05,
-        II: 0.02,
-        III: 0,
-        aVR: 0,
-        aVL: 0.08,
-        aVF: 0,
-        V1: 1.0,
-        V2: 1.0,
-        V3: 0.85,
-        V4: 0.35,
-        V5: 0.05,
-        V6: 0,
-      },
-      { precordial: "local" },
-    ),
-  );
+  if (opts.qW && (opts.qAmp ?? 0) !== 0) {
+    leads = addLeads(
+      leads,
+      scaleLeads(gauss(tt, qrsMu - 0.03, 0.018, opts.qAmp ?? -0.4), opts.qW, { precordial: "local" }),
+    );
+  }
   leads = addLeads(leads, qrsLeads(tt, qrsMu, 0.028, 0.95, -0.05, -0.18));
 
   let st = 0;
   if (tt > qrsMu + 0.03 && tt < 0.78) {
     const u = (tt - (qrsMu + 0.03)) / (0.78 - (qrsMu + 0.03));
-    st = u < 0.25 ? 0.55 * Math.sin((u / 0.25) * Math.PI * 0.5) : 0.55 + 0.12 * Math.sin((u - 0.25) * Math.PI);
+    st = u < 0.25 ? stAmp * Math.sin((u / 0.25) * Math.PI * 0.5) : stAmp + 0.1 * Math.sin((u - 0.25) * Math.PI);
+  }
+  leads = addLeads(leads, scaleLeads(st, opts.stW, { precordial: "local" }));
+  leads = addLeads(leads, scaleLeads(gauss(tt, tMu, 0.07, tAmp), opts.tW, { precordial: "local" }));
+
+  return pack(
+    leads,
+    phaseFor(tt, [
+      { start: 0.05, end: 0.16, phase: "SA · atria", active: ["sa", "internodal", "myocardiumA"], mark: "P" },
+      { start: 0.16, end: 0.28, phase: "AV · His", active: ["av", "his"], mark: "PR" },
+      { start: 0.28, end: 0.4, phase: opts.qrsDetail, active: ["his", "rbb", "lbb", "purkinjeR", "purkinjeL", "myocardiumV"], mark: "QRS" },
+      { start: 0.4, end: 0.55, phase: opts.stDetail, active: ["myocardiumV"], mark: "ST" },
+      { start: 0.55, end: 0.78, phase: opts.tDetail, active: ["myocardiumV"], mark: "T" },
+    ]),
+  );
+}
+
+function sampleStemi(t: number): WaveSample {
+  return sampleStemiTerritory(t, {
+    qW: { V1: 1, V2: 1, V3: 0.85, V4: 0.35, I: 0.05, aVL: 0.08 },
+    qAmp: -0.45,
+    stW: {
+      I: 0.2,
+      II: -0.35,
+      III: -0.4,
+      aVR: 0.15,
+      aVL: 0.35,
+      aVF: -0.4,
+      V1: 0.9,
+      V2: 1.15,
+      V3: 1.2,
+      V4: 1.0,
+      V5: 0.35,
+      V6: 0.1,
+    },
+    tW: {
+      I: 0.25,
+      II: -0.1,
+      III: -0.15,
+      aVL: 0.3,
+      aVF: -0.12,
+      V1: 0.7,
+      V2: 1.0,
+      V3: 1.05,
+      V4: 0.9,
+      V5: 0.35,
+      V6: 0.15,
+    },
+    qrsDetail: "QRS · anterior Q waves",
+    stDetail: "Injury current · ST elevation V1–V4",
+    tDetail: "Hyperacute T · ongoing injury",
+  });
+}
+
+function sampleStemiInferior(t: number): WaveSample {
+  return sampleStemiTerritory(t, {
+    qW: { II: 0.7, III: 1, aVF: 0.9, I: 0.1 },
+    qAmp: -0.35,
+    stW: {
+      I: -0.35,
+      II: 1.0,
+      III: 1.15,
+      aVR: -0.15,
+      aVL: -0.45,
+      aVF: 1.1,
+      V1: 0.1,
+      V2: -0.15,
+      V3: -0.1,
+      V4: 0.15,
+      V5: 0.25,
+      V6: 0.3,
+    },
+    tW: {
+      I: -0.2,
+      II: 0.85,
+      III: 0.95,
+      aVL: -0.3,
+      aVF: 0.9,
+      V5: 0.25,
+      V6: 0.3,
+    },
+    qrsDetail: "QRS · inferior Q waves",
+    stDetail: "Injury current · ST elevation II · III · aVF",
+    tDetail: "Hyperacute inferior T waves",
+  });
+}
+
+function sampleStemiLateral(t: number): WaveSample {
+  return sampleStemiTerritory(t, {
+    qW: { I: 0.8, aVL: 1, V5: 0.7, V6: 0.85 },
+    qAmp: -0.35,
+    stW: {
+      I: 1.0,
+      II: -0.2,
+      III: -0.45,
+      aVR: -0.25,
+      aVL: 1.1,
+      aVF: -0.35,
+      V1: -0.1,
+      V2: -0.05,
+      V3: 0.15,
+      V4: 0.45,
+      V5: 1.0,
+      V6: 1.05,
+    },
+    tW: {
+      I: 0.85,
+      aVL: 0.95,
+      III: -0.25,
+      V4: 0.4,
+      V5: 0.9,
+      V6: 0.95,
+    },
+    qrsDetail: "QRS · lateral Q waves",
+    stDetail: "Injury current · ST elevation I · aVL · V5–V6",
+    tDetail: "Hyperacute lateral T waves",
+  });
+}
+
+function sampleStemiAnterolateral(t: number): WaveSample {
+  return sampleStemiTerritory(t, {
+    qW: { V2: 0.7, V3: 0.9, V4: 0.85, V5: 0.5, I: 0.4, aVL: 0.55 },
+    qAmp: -0.4,
+    stAmp: 0.6,
+    stW: {
+      I: 0.75,
+      II: -0.25,
+      III: -0.4,
+      aVR: 0.1,
+      aVL: 0.85,
+      aVF: -0.35,
+      V1: 0.45,
+      V2: 1.05,
+      V3: 1.2,
+      V4: 1.15,
+      V5: 1.0,
+      V6: 0.75,
+    },
+    tW: {
+      I: 0.6,
+      aVL: 0.7,
+      V2: 0.95,
+      V3: 1.05,
+      V4: 1.0,
+      V5: 0.85,
+      V6: 0.65,
+    },
+    qrsDetail: "QRS · anterolateral injury",
+    stDetail: "Extensive STE · V2–V6 · I · aVL",
+    tDetail: "Hyperacute anterolateral T waves",
+  });
+}
+
+function sampleStemiPosterior(t: number): WaveSample {
+  const tt = clamp01(t);
+  const qrsMu = 0.32;
+  const tMu = 0.58;
+  let leads = pWaveLeads(tt, 0.1);
+
+  /**
+   * Acute posterior MI on a standard 12-lead (mirror image of posterior STE):
+   * - R-dominant V1–V2 (R/S ≥ 1) — mirror of posterior Q
+   * - Horizontal ST depression V1–V3 — mirror of posterior STE
+   * - Tall upright T V1–V2 — acute (mirror of inverted posterior T)
+   * Mild inferior STE often coexists (RCA/LCx) but should not dominate.
+   */
+  // R-dominant right precordials; avoid deep terminal S that would undo the tall-R cue
+  const qShape = gauss(tt, qrsMu - 0.028, 0.016, -0.12);
+  const rShape = gauss(tt, qrsMu, 0.032, 1.05);
+  const sShape = gauss(tt, qrsMu + 0.045, 0.022, -0.18);
+  leads = addLeads(
+    leads,
+    scaleLeads(qShape + rShape + sShape, {
+      I: 0.5,
+      II: 0.45,
+      III: 0.3,
+      aVR: -0.35,
+      aVL: 0.3,
+      aVF: 0.35,
+      V1: 1.2,
+      V2: 1.1,
+      V3: 0.55,
+      V4: 0.4,
+      V5: 0.45,
+      V6: 0.5,
+    }, { precordial: "local" }),
+  );
+  // Extra R boost V1–V2 so R clearly dominates S
+  leads = addLeads(
+    leads,
+    scaleLeads(gauss(tt, qrsMu + 0.005, 0.028, 0.55), {
+      V1: 1.0,
+      V2: 0.9,
+      V3: 0.25,
+    }, { precordial: "local" }),
+  );
+
+  // Horizontal ST depression maximal V1–V3 (the key STE-equivalent finding)
+  let stAnt = 0;
+  if (tt > qrsMu + 0.035 && tt < 0.72) {
+    const u = (tt - (qrsMu + 0.035)) / (0.72 - (qrsMu + 0.035));
+    // Flat/horizontal plateau rather than deep scooped ischemia
+    stAnt = u < 0.2 ? -0.48 * (u / 0.2) : u > 0.85 ? -0.48 * (1 - (u - 0.85) / 0.15) : -0.48;
   }
   leads = addLeads(
     leads,
-    scaleLeads(
-      st,
-      {
-        I: 0.2,
-        II: -0.35,
-        III: -0.4,
-        aVR: 0.15,
-        aVL: 0.35,
-        aVF: -0.4,
-        V1: 0.9,
-        V2: 1.15,
-        V3: 1.2,
-        V4: 1.0,
-        V5: 0.35,
-        V6: 0.1,
-      },
-      { precordial: "local" },
-    ),
+    scaleLeads(stAnt, {
+      V1: 1.05,
+      V2: 1.2,
+      V3: 0.95,
+      V4: 0.25,
+      I: 0.08,
+      aVL: 0.1,
+    }, { precordial: "local" }),
   );
-
+  // Subtle inferior STE (common partner territory) — opposite sign, small amp
+  let stInf = 0;
+  if (tt > qrsMu + 0.035 && tt < 0.72) {
+    const u = (tt - (qrsMu + 0.035)) / 0.55;
+    stInf = 0.18 * (u < 0.25 ? u / 0.25 : 1 - 0.2 * Math.max(0, u - 0.25));
+  }
   leads = addLeads(
     leads,
-    scaleLeads(
-      gauss(tt, tMu, 0.07, 0.55),
-      {
-        I: 0.25,
-        II: -0.1,
-        III: -0.15,
-        aVR: 0.05,
-        aVL: 0.3,
-        aVF: -0.12,
-        V1: 0.7,
-        V2: 1.0,
-        V3: 1.05,
-        V4: 0.9,
-        V5: 0.35,
-        V6: 0.15,
-      },
-      { precordial: "local" },
-    ),
+    scaleLeads(stInf, {
+      II: 0.85,
+      III: 1.0,
+      aVF: 0.9,
+      V5: 0.2,
+      V6: 0.25,
+    }),
+  );
+
+  // Tall upright T V1–V2 (acute posterior); milder upright inferior T
+  leads = addLeads(
+    leads,
+    scaleLeads(gauss(tt, tMu, 0.07, 0.7), {
+      V1: 1.05,
+      V2: 1.15,
+      V3: 0.45,
+      II: 0.35,
+      III: 0.4,
+      aVF: 0.35,
+      V5: 0.2,
+      V6: 0.2,
+    }, { precordial: "local" }),
   );
 
   return pack(
@@ -1632,9 +1833,194 @@ function sampleStemi(t: number): WaveSample {
     phaseFor(tt, [
       { start: 0.05, end: 0.16, phase: "SA · atria", active: ["sa", "internodal", "myocardiumA"], mark: "P" },
       { start: 0.16, end: 0.28, phase: "AV · His", active: ["av", "his"], mark: "PR" },
-      { start: 0.28, end: 0.4, phase: "QRS · anterior Q waves", active: ["his", "rbb", "lbb", "purkinjeR", "purkinjeL", "myocardiumV"], mark: "QRS" },
-      { start: 0.4, end: 0.55, phase: "Injury current · ST elevation V1–V4", active: ["myocardiumV"], mark: "ST" },
-      { start: 0.55, end: 0.78, phase: "Hyperacute T · ongoing injury", active: ["myocardiumV"], mark: "T" },
+      { start: 0.28, end: 0.4, phase: "Tall R V1–V2 · posterior Q mirror", active: ["his", "rbb", "lbb", "purkinjeR", "purkinjeL", "myocardiumV"], mark: "QRS" },
+      { start: 0.4, end: 0.55, phase: "Horizontal STD V1–V3 · posterior STE equivalent", active: ["myocardiumV"], mark: "ST" },
+      { start: 0.55, end: 0.78, phase: "Tall upright T V1–V2 · acute posterior", active: ["myocardiumV"], mark: "T" },
+    ]),
+  );
+}
+
+function sampleStemiAvr(t: number): WaveSample {
+  return sampleStemiTerritory(t, {
+    stAmp: 0.48,
+    tAmp: 0.25,
+    stW: {
+      I: -0.55,
+      II: -0.7,
+      III: -0.45,
+      aVR: 1.15,
+      aVL: -0.35,
+      aVF: -0.55,
+      V1: 0.35,
+      V2: -0.45,
+      V3: -0.65,
+      V4: -0.75,
+      V5: -0.7,
+      V6: -0.55,
+    },
+    tW: {
+      aVR: 0.7,
+      I: -0.35,
+      II: -0.4,
+      V3: -0.4,
+      V4: -0.45,
+      V5: -0.4,
+    },
+    qrsDetail: "QRS · severe ischemia context",
+    stDetail: "STE aVR · diffuse ST depression · LMCA / 3VD cue",
+    tDetail: "Ischemic T-wave changes",
+  });
+}
+
+function sampleDewinter(t: number): WaveSample {
+  const tt = clamp01(t);
+  const qrsMu = 0.32;
+  const tMu = 0.58;
+  let leads = pWaveLeads(tt, 0.1);
+  leads = addLeads(leads, qrsLeads(tt, qrsMu, 0.026, 0.95, -0.04, -0.15));
+
+  // Upsloping J-point / ST depression into tall peaked T (De Winter)
+  let jDep = 0;
+  if (tt > qrsMu + 0.02 && tt < tMu + 0.02) {
+    const u = (tt - (qrsMu + 0.02)) / (tMu - qrsMu);
+    jDep = -0.38 * (1 - u) - 0.08 * Math.sin(u * Math.PI);
+  }
+  leads = addLeads(
+    leads,
+    scaleLeads(
+      jDep,
+      { V1: 0.35, V2: 1.0, V3: 1.15, V4: 1.05, V5: 0.45, I: 0.15, aVL: 0.2 },
+      { precordial: "local" },
+    ),
+  );
+  // Hyperacute symmetric peaked T
+  leads = addLeads(
+    leads,
+    scaleLeads(
+      gauss(tt, tMu, 0.055, 0.95),
+      { V1: 0.45, V2: 1.15, V3: 1.25, V4: 1.1, V5: 0.5, I: 0.2, aVL: 0.25 },
+      { precordial: "local" },
+    ),
+  );
+  return pack(
+    leads,
+    phaseFor(tt, [
+      { start: 0.05, end: 0.16, phase: "SA · atria", active: ["sa", "internodal", "myocardiumA"], mark: "P" },
+      { start: 0.16, end: 0.28, phase: "AV · His", active: ["av", "his"], mark: "PR" },
+      { start: 0.28, end: 0.4, phase: "Narrow QRS · De Winter pattern", active: ["his", "rbb", "lbb", "purkinjeR", "purkinjeL", "myocardiumV"], mark: "QRS" },
+      { start: 0.4, end: 0.52, phase: "Upsloping ST depression V2–V4", active: ["myocardiumV"], mark: "ST" },
+      { start: 0.52, end: 0.75, phase: "Hyperacute peaked T · LAD equivalent", active: ["myocardiumV"], mark: "T" },
+    ]),
+  );
+}
+
+function sampleWellens(t: number): WaveSample {
+  const tt = clamp01(t);
+  const qrsMu = 0.32;
+  const tMu = 0.6;
+  let leads = pWaveLeads(tt, 0.1);
+  // Preserved R-wave progression (pain-free Wellens)
+  leads = addLeads(leads, qrsLeads(tt, qrsMu, 0.026, 0.95, -0.03, -0.12));
+  // Near-isoelectric ST
+  let st = 0;
+  if (tt > qrsMu + 0.03 && tt < 0.55) st = 0.04;
+  leads = addLeads(
+    leads,
+    scaleLeads(st, { V2: 0.6, V3: 0.7, V4: 0.3 }, { precordial: "local" }),
+  );
+  // Type A: biphasic T V2–V3 (up then deep down) + deep inverted V3–V4
+  const biphasic =
+    gauss(tt, tMu - 0.04, 0.03, 0.22) + gauss(tt, tMu + 0.05, 0.055, -0.85);
+  leads = addLeads(
+    leads,
+    scaleLeads(
+      biphasic,
+      { V1: 0.25, V2: 1.1, V3: 1.2, V4: 0.75, V5: 0.25, I: 0.1, aVL: 0.15 },
+      { precordial: "local" },
+    ),
+  );
+  return pack(
+    leads,
+    phaseFor(tt, [
+      { start: 0.05, end: 0.16, phase: "SA · atria", active: ["sa", "internodal", "myocardiumA"], mark: "P" },
+      { start: 0.16, end: 0.28, phase: "AV · His", active: ["av", "his"], mark: "PR" },
+      { start: 0.28, end: 0.4, phase: "Preserved R waves · Wellens", active: ["his", "rbb", "lbb", "purkinjeR", "purkinjeL", "myocardiumV"], mark: "QRS" },
+      { start: 0.4, end: 0.52, phase: "Isoelectric / minimally elevated ST", active: ["myocardiumV"], mark: "ST" },
+      { start: 0.52, end: 0.78, phase: "Biphasic / deep inverted T V2–V3 · critical LAD", active: ["myocardiumV"], mark: "T" },
+    ]),
+  );
+}
+
+function sampleSgarbossa(t: number): WaveSample {
+  const tt = clamp01(t);
+  const qrsMu = 0.34;
+  let leads = pWaveLeads(tt, 0.1, 0.14);
+
+  /**
+   * Sgarbossa (STEMI with LBBB) — teaching strip:
+   * 1) Concordant STE ≥1 mm in leads with positive QRS (I · aVL · V5–V6) — most specific
+   * 2) Excessive discordant STE in V1–V3 (beyond usual LBBB secondary change)
+   * Base QRS from the same LBBB morphology used elsewhere so it reads as true LBBB.
+   */
+  leads = addLeads(leads, lbbbMorphQrs(tt, qrsMu, 1.0));
+
+  // ST plateau window after wide QRS
+  let st = 0;
+  if (tt > qrsMu + 0.07 && tt < 0.72) {
+    const u = (tt - (qrsMu + 0.07)) / (0.72 - (qrsMu + 0.07));
+    st = u < 0.18 ? u / 0.18 : u > 0.88 ? (1 - u) / 0.12 : 1;
+  }
+
+  // Concordant STE in positive-QRS leads (overrides the usual discordant STD of LBBB)
+  leads = addLeads(
+    leads,
+    scaleLeads(0.58 * st, {
+      I: 1.0,
+      aVL: 1.05,
+      V4: 0.35,
+      V5: 1.1,
+      V6: 1.15,
+      II: 0.3,
+    }, { precordial: "local" }),
+  );
+
+  // Excessive discordant STE in negative-QRS leads (V1–V3) — larger than secondary LBBB STE
+  leads = addLeads(
+    leads,
+    scaleLeads(0.62 * st, {
+      V1: 1.05,
+      V2: 1.15,
+      V3: 0.75,
+    }, { precordial: "local" }),
+  );
+
+  // Secondary discordant T (appropriate for LBBB): upright right precordial, inverted lateral
+  leads = addLeads(
+    leads,
+    scaleLeads(gauss(tt, 0.66, 0.055, 0.4), {
+      I: -0.65,
+      II: -0.35,
+      III: 0.15,
+      aVR: 0.45,
+      aVL: -0.6,
+      aVF: -0.15,
+      V1: 0.8,
+      V2: 0.7,
+      V3: 0.3,
+      V4: -0.25,
+      V5: -0.65,
+      V6: -0.75,
+    }, { precordial: "local" }),
+  );
+
+  return pack(
+    leads,
+    phaseFor(tt, [
+      { start: 0.05, end: 0.16, phase: "SA · atria", active: ["sa", "internodal", "myocardiumA"], mark: "P" },
+      { start: 0.16, end: 0.28, phase: "AV · His", active: ["av", "his"], mark: "PR" },
+      { start: 0.28, end: 0.42, phase: "Wide LBBB morphology", active: ["rbb", "purkinjeR", "lbb", "lbba", "lbbp", "purkinjeL", "myocardiumV"], mark: "QRS" },
+      { start: 0.42, end: 0.56, phase: "Concordant STE I/aVL/V5–V6 · excessive discordant STE V1–V3", active: ["myocardiumV"], mark: "ST" },
+      { start: 0.56, end: 0.8, phase: "Discordant T waves · Sgarbossa-positive LBBB", active: ["myocardiumV"], mark: "T" },
     ]),
   );
 }
@@ -2109,6 +2495,14 @@ const SAMPLERS: Record<FindingId, (t: number) => WaveSample> = {
   asystole: sampleAsystole,
   wpw: sampleWpw,
   stemiAnt: sampleStemi,
+  stemiInferior: sampleStemiInferior,
+  stemiLateral: sampleStemiLateral,
+  stemiAnterolateral: sampleStemiAnterolateral,
+  stemiPosterior: sampleStemiPosterior,
+  stemiAvr: sampleStemiAvr,
+  dewinter: sampleDewinter,
+  wellens: sampleWellens,
+  sgarbossa: sampleSgarbossa,
   pacedAtrial: samplePacedAtrial,
   pacedVentricular: samplePacedVentricular,
   pacedDual: samplePacedDual,

@@ -59,6 +59,14 @@ export type FindingId =
   | "asystole"
   | "wpw"
   | "stemiAnt"
+  | "stemiInferior"
+  | "stemiLateral"
+  | "stemiAnterolateral"
+  | "stemiPosterior"
+  | "stemiAvr"
+  | "dewinter"
+  | "wellens"
+  | "sgarbossa"
   | "pacedAtrial"
   | "pacedVentricular"
   | "pacedDual"
@@ -442,11 +450,107 @@ export const FINDINGS: Finding[] = [
   {
     id: "stemiAnt",
     name: "Anterior STEMI",
-    short: "STEMI",
-    detail: "ST elevation V1–V4 · reciprocal inferior depression",
+    short: "Anterior",
+    detail: "ST elevation V1–V4 · reciprocal inferior depression · LAD",
     category: "ischemia",
-    tags: ["stemi", "mi", "injury"],
-    aliases: ["anterior mi", "lad", "st elevation"],
+    tags: ["stemi", "mi", "injury", "lad", "anterior"],
+    aliases: ["anterior mi", "lad", "st elevation", "stemi"],
+    cycleSec: 0.86,
+    ventRateBpm: 70,
+    rateLabel: "70 bpm",
+  },
+  {
+    id: "stemiInferior",
+    name: "Inferior STEMI",
+    short: "Inferior",
+    detail: "ST elevation II · III · aVF · reciprocal I/aVL · often RCA",
+    category: "ischemia",
+    tags: ["stemi", "mi", "injury", "inferior", "rca"],
+    aliases: ["inferior mi", "rca stemi"],
+    cycleSec: 0.86,
+    ventRateBpm: 70,
+    rateLabel: "70 bpm",
+  },
+  {
+    id: "stemiLateral",
+    name: "Lateral STEMI",
+    short: "Lateral",
+    detail: "ST elevation I · aVL · V5–V6 · reciprocal inferior",
+    category: "ischemia",
+    tags: ["stemi", "mi", "injury", "lateral", "lcx"],
+    aliases: ["lateral mi", "lcx stemi"],
+    cycleSec: 0.86,
+    ventRateBpm: 70,
+    rateLabel: "70 bpm",
+  },
+  {
+    id: "stemiAnterolateral",
+    name: "Anterolateral STEMI",
+    short: "Ant-lat",
+    detail: "ST elevation V2–V6 · I · aVL · extensive LAD / diagonal",
+    category: "ischemia",
+    tags: ["stemi", "mi", "injury", "anterolateral", "lad"],
+    aliases: ["anterolateral mi", "extensive anterior"],
+    cycleSec: 0.86,
+    ventRateBpm: 70,
+    rateLabel: "70 bpm",
+  },
+  {
+    id: "stemiPosterior",
+    name: "Posterior MI",
+    short: "Posterior",
+    detail: "Tall R V1–V2 · horizontal STD V1–V3 · upright T · posterior STE equivalent",
+    category: "ischemia",
+    tags: ["stemi", "mi", "posterior", "equivalent"],
+    aliases: ["posterior mi", "posterior stemi", "inferoposterior"],
+    cycleSec: 0.86,
+    ventRateBpm: 70,
+    rateLabel: "70 bpm",
+  },
+  {
+    id: "stemiAvr",
+    name: "aVR STE · LMCA / proximal equivalent",
+    short: "aVR STE",
+    detail: "ST elevation aVR · diffuse STD · left main / severe 3VD cue",
+    category: "ischemia",
+    tags: ["stemi", "equivalent", "avr", "lmca"],
+    aliases: ["lmca", "left main", "avr elevation", "stemi equivalent"],
+    cycleSec: 0.86,
+    ventRateBpm: 70,
+    rateLabel: "70 bpm",
+  },
+  {
+    id: "dewinter",
+    name: "De Winter T waves",
+    short: "De Winter",
+    detail: "Upsloping STD + hyperacute peaked T V2–V4 · LAD equivalent",
+    category: "ischemia",
+    tags: ["stemi", "equivalent", "dewinter", "lad"],
+    aliases: ["dewinter", "de winter", "de winters"],
+    cycleSec: 0.86,
+    ventRateBpm: 70,
+    rateLabel: "70 bpm",
+  },
+  {
+    id: "wellens",
+    name: "Wellens syndrome",
+    short: "Wellens",
+    detail: "Deep / biphasic T V2–V3 · isoelectric ST · critical proximal LAD",
+    category: "ischemia",
+    tags: ["stemi", "equivalent", "wellens", "lad"],
+    aliases: ["wellens", "wellens waves", "wellens syndrome"],
+    cycleSec: 0.86,
+    ventRateBpm: 70,
+    rateLabel: "70 bpm",
+  },
+  {
+    id: "sgarbossa",
+    name: "Sgarbossa · STEMI with LBBB",
+    short: "Sgarbossa",
+    detail: "LBBB + concordant STE (I/aVL/V5–V6) · excessive discordant STE V1–V3",
+    category: "ischemia",
+    tags: ["stemi", "equivalent", "sgarbossa", "lbbb"],
+    aliases: ["sgarbossa", "sgarbossa criteria", "smith modified"],
     cycleSec: 0.86,
     ventRateBpm: 70,
     rateLabel: "70 bpm",

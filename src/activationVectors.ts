@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type { CycleMark, LeadId } from "./ekgWaveforms";
 import type { FindingId, SegmentId } from "./findings";
+import { getFinding } from "./findings";
 import type { ActiveFront, BranchWindow, PathwayProbePoint } from "./pathwayTiming";
 import { branchesForFinding, groupsForMark } from "./pathwayTiming";
 
@@ -283,6 +284,7 @@ function isDiscordantRepol(finding: FindingId): boolean {
     case "pacedBiv":
     case "av3":
     case "wpw":
+    case "sgarbossa":
       return true;
     default:
       return false;
@@ -604,7 +606,7 @@ function repolFlipsDepol(finding: FindingId, mark: CycleMark): boolean {
         const len = 0.65 * mag;
         lateArrow.setLength(len, len * 0.25, len * 0.15);
         lateArrow.setColor(0xc070ff);
-      } else if (opts.finding === "stemiAnt" && opts.mark === "ST") {
+      } else if (getFinding(opts.finding).category === "ischemia" && opts.mark === "ST") {
         lateArrow.visible = true;
         lateArrow.position.set(0.1, -0.2, 0.35);
         lateArrow.setDirection(new THREE.Vector3(0.15, -0.1, 0.95).normalize());
