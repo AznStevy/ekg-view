@@ -103,7 +103,7 @@ export const FINDINGS: Finding[] = [
   {
     id: "sinusBrady",
     name: "Sinus bradycardia",
-    short: "Brady",
+    short: "Sinus Brady",
     detail: "Slow SA pacing · long RR · upright P before each QRS",
     category: "rhythm",
     tags: ["sinus", "brady"],
@@ -115,7 +115,7 @@ export const FINDINGS: Finding[] = [
   {
     id: "sinusTachy",
     name: "Sinus tachycardia",
-    short: "Tachy",
+    short: "Sinus Tach",
     detail: "Fast SA pacing · short RR · P still precedes QRS",
     category: "rhythm",
     tags: ["sinus", "tachy"],

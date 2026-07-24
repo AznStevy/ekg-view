@@ -2,9 +2,15 @@
 
 Interactive 3D cardiac conduction system with a live, time-synced **12-lead EKG** (Three.js).
 
+Created by **Stevy**, an internal medicine resident who likes EKGs and cardiology.
+
 Pick classic findings (NSR, blocks, bundle branch block, AFib/flutter, VT, WPW, STEMI, and more). As the strip advances, matching pathways light up on the heart, and the cycle bar (P · PR · QRS · ST · T · TP) highlights the active ECG segment.
 
 **Live site:** [https://aznstevy.github.io/ekg-view/](https://aznstevy.github.io/ekg-view/)
+
+## Disclaimer
+
+This is an **educational tool** only. It is not medical advice, not a diagnostic device, and not a substitute for clinical judgment, formal ECG training, or patient care. Tracings are simplified teaching models and may not match real patient ECGs. The author assumes **no liability** for any decisions, outcomes, or damages arising from use of this tool.
 
 ## Controls
 
