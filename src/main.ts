@@ -28,6 +28,9 @@ import {
   cycleSecForRate,
   findingMatchesQuery,
   getFinding,
+  isAvnrtFinding,
+  isAvrtFinding,
+  avrtKentSide,
   type FindingId,
   type SegmentId,
 } from "./findings";
@@ -249,9 +252,54 @@ const STEMI_OPTIONS: { id: FindingId; short: string; name: string }[] = [
   },
 ];
 
+const AVNRT_FINDING_IDS = new Set<FindingId>(["avnrtTypical", "avnrtAtypical"]);
+
+const AVNRT_OPTIONS: { id: FindingId; short: string; name: string }[] = [
+  {
+    id: "avnrtTypical",
+    short: "Typical",
+    name: "Slow–fast · short RP · P-on-T",
+  },
+  {
+    id: "avnrtAtypical",
+    short: "Atypical",
+    name: "Fast–slow · long RP · inverted P",
+  },
+];
+
+const AVRT_FINDING_IDS = new Set<FindingId>([
+  "avrtOrthoLeft",
+  "avrtOrthoRight",
+  "avrtAntiLeft",
+  "avrtAntiRight",
+]);
+
+const AVRT_OPTIONS: { id: FindingId; short: string; name: string }[] = [
+  {
+    id: "avrtOrthoLeft",
+    short: "Ortho · L",
+    name: "Down AVN · up left Kent · narrow QRS",
+  },
+  {
+    id: "avrtOrthoRight",
+    short: "Ortho · R",
+    name: "Down AVN · up right Kent · narrow QRS",
+  },
+  {
+    id: "avrtAntiLeft",
+    short: "Anti · L",
+    name: "Down left Kent · up AVN · wide delta",
+  },
+  {
+    id: "avrtAntiRight",
+    short: "Anti · R",
+    name: "Down right Kent · up AVN · wide delta",
+  },
+];
+
 /** Keep expand panels open briefly after last option cleared */
 const EXPAND_HOLD_MS = 2000;
-type ExpandHoldKey = "bbb" | "chb" | "flutter" | "vf" | "vt" | "paced" | "stemi";
+type ExpandHoldKey = "bbb" | "chb" | "flutter" | "vf" | "vt" | "paced" | "stemi" | "avnrt" | "avrt";
 const expandHoldUntil: Record<ExpandHoldKey, number> = {
   bbb: 0,
   chb: 0,
@@ -260,6 +308,8 @@ const expandHoldUntil: Record<ExpandHoldKey, number> = {
   vt: 0,
   paced: 0,
   stemi: 0,
+  avnrt: 0,
+  avrt: 0,
 };
 const expandHoldTimers: Record<ExpandHoldKey, number | null> = {
   bbb: null,
@@ -269,6 +319,8 @@ const expandHoldTimers: Record<ExpandHoldKey, number | null> = {
   vt: null,
   paced: null,
   stemi: null,
+  avnrt: null,
+  avrt: null,
 };
 let expandResync: (() => void) | null = null;
 
@@ -518,6 +570,56 @@ function buildUI(root: HTMLElement): {
               </div>
             </div>`;
 
+  const avnrtGroupButton = `<button type="button" id="btn-avnrt" data-avnrt-group title="AV-nodal reentrant tachycardia · typical vs atypical">
+      AVNRT<small>Typical · atypical</small>
+    </button>`;
+
+  const avnrtOptionsHtml = `
+            <div class="finding-expand avnrt-options" id="avnrt-options" aria-hidden="true" style="display:none">
+              <div class="finding-expand-inner">
+                <div class="finding-expand-panel">
+                  <div class="finding-expand-head">
+                    <span>Typical or atypical?</span>
+                    <button type="button" id="btn-avnrt-clear" class="finding-expand-clear">Clear</button>
+                  </div>
+                  <div class="chb-escape-grid" id="avnrt-type-grid">
+                    ${AVNRT_OPTIONS.map(
+                      (o) => `<button type="button" class="chb-escape-chip" data-avnrt-finding="${o.id}">
+                        <span class="chb-escape-short">${o.short}</span>
+                        <span class="chb-escape-name">${o.name}</span>
+                      </button>`,
+                    ).join("")}
+                  </div>
+                  <div class="finding-expand-result" id="avnrt-result">Select typical (slow–fast) or atypical (fast–slow)</div>
+                </div>
+              </div>
+            </div>`;
+
+  const avrtGroupButton = `<button type="button" id="btn-avrt" data-avrt-group title="AV reentrant tachycardia · ortho/anti · left/right Kent">
+      AVRT<small>Ortho · anti · L/R Kent</small>
+    </button>`;
+
+  const avrtOptionsHtml = `
+            <div class="finding-expand avrt-options" id="avrt-options" aria-hidden="true" style="display:none">
+              <div class="finding-expand-inner">
+                <div class="finding-expand-panel">
+                  <div class="finding-expand-head">
+                    <span>Circuit & Kent side</span>
+                    <button type="button" id="btn-avrt-clear" class="finding-expand-clear">Clear</button>
+                  </div>
+                  <div class="chb-escape-grid" id="avrt-type-grid">
+                    ${AVRT_OPTIONS.map(
+                      (o) => `<button type="button" class="chb-escape-chip" data-avrt-finding="${o.id}">
+                        <span class="chb-escape-short">${o.short}</span>
+                        <span class="chb-escape-name">${o.name}</span>
+                      </button>`,
+                    ).join("")}
+                  </div>
+                  <div class="finding-expand-result" id="avrt-result">Select orthodromic/antidromic and left/right Kent</div>
+                </div>
+              </div>
+            </div>`;
+
   const findingButtonHtml: string[] = [];
   let bbbInserted = false;
   let chbInserted = false;
@@ -526,6 +628,8 @@ function buildUI(root: HTMLElement): {
   let vtInserted = false;
   let pacedInserted = false;
   let stemiInserted = false;
+  let avnrtInserted = false;
+  let avrtInserted = false;
   for (const f of FINDINGS) {
     if (f.category === "bbb") {
       if (!bbbInserted) {
@@ -548,6 +652,22 @@ function buildUI(root: HTMLElement): {
         findingButtonHtml.push(flutterGroupButton);
         findingButtonHtml.push(flutterOptionsHtml);
         flutterInserted = true;
+      }
+      continue;
+    }
+    if (AVNRT_FINDING_IDS.has(f.id)) {
+      if (!avnrtInserted) {
+        findingButtonHtml.push(avnrtGroupButton);
+        findingButtonHtml.push(avnrtOptionsHtml);
+        avnrtInserted = true;
+      }
+      continue;
+    }
+    if (AVRT_FINDING_IDS.has(f.id)) {
+      if (!avrtInserted) {
+        findingButtonHtml.push(avrtGroupButton);
+        findingButtonHtml.push(avrtOptionsHtml);
+        avrtInserted = true;
       }
       continue;
     }
@@ -587,6 +707,14 @@ function buildUI(root: HTMLElement): {
     <button type="button" data-finding="${f.id}" title="${f.name}" ${f.id === "nsr" ? 'class="active"' : ""}>
       ${f.short}<small>${f.rateLabel}</small>
     </button>`);
+  }
+  if (!avnrtInserted) {
+    findingButtonHtml.push(avnrtGroupButton);
+    findingButtonHtml.push(avnrtOptionsHtml);
+  }
+  if (!avrtInserted) {
+    findingButtonHtml.push(avrtGroupButton);
+    findingButtonHtml.push(avrtOptionsHtml);
   }
   if (!vtInserted) {
     findingButtonHtml.push(vtGroupButton);
@@ -728,9 +856,9 @@ function buildUI(root: HTMLElement): {
             <p class="stim-hint" id="stim-hint" hidden>Click a conduction pathway on the heart to pace from that site.</p>
             <div class="slider-row rate-row">
               <label for="rate-input">Rate</label>
-              <input id="rate-slider" type="range" min="30" max="200" value="70" step="1" />
+              <input id="rate-slider" type="range" min="30" max="300" value="70" step="1" />
               <div class="num-wrap">
-                <input id="rate-input" type="number" min="30" max="200" step="1" value="70" aria-label="Ventricular rate" />
+                <input id="rate-input" type="number" min="30" max="300" step="1" value="70" aria-label="Ventricular rate" />
                 <span class="unit">bpm</span>
               </div>
             </div>
@@ -886,6 +1014,16 @@ function buildUI(root: HTMLElement): {
     "stemi-result",
     "stemi-type-grid",
     "btn-stemi-clear",
+    "btn-avnrt",
+    "avnrt-options",
+    "avnrt-result",
+    "avnrt-type-grid",
+    "btn-avnrt-clear",
+    "btn-avrt",
+    "avrt-options",
+    "avrt-result",
+    "avrt-type-grid",
+    "btn-avrt-clear",
     "finding-grid",
     "finding-search",
     "finding-empty",
@@ -1132,17 +1270,18 @@ function main() {
     for (const g of SEGMENT_META) {
       conduction.setSegmentVisibility(g.id, segmentVisibility[g.id]);
     }
-    if (state.finding !== "wpw" && !segmentVisibility.accessory) {
-      conduction.setAccessoryVisible(false);
+    if (!isAvrtFinding(state.finding) && !segmentVisibility.accessory && !segmentVisibility.accessoryR) {
+      conduction.setAccessoryVisible(false, "both");
     }
     const isFlutter = FLUTTER_FINDING_IDS.has(state.finding);
     if (!isFlutter && !segmentVisibility.flutter) {
       conduction.setSegmentVisibility("flutter", false);
     }
-    if (state.finding !== "avnrt") {
+    if (!isAvnrtFinding(state.finding)) {
       if (!segmentVisibility.avnrtSlow) conduction.setSegmentVisibility("avnrtSlow", false);
       if (!segmentVisibility.avnrtFast) conduction.setSegmentVisibility("avnrtFast", false);
     }
+    conduction.setAvNodeEmphasis(isAvnrtFinding(state.finding) && !state.upload);
   }
   applySegmentVisibility();
 
@@ -1178,7 +1317,7 @@ function main() {
   }
 
   function syncRateUI(bpm: number) {
-    state.ventRateBpm = Math.max(30, Math.min(200, Math.round(bpm)));
+    state.ventRateBpm = Math.max(30, Math.min(300, Math.round(bpm)));
     (els["rate-slider"] as HTMLInputElement).value = String(state.ventRateBpm);
     (els["rate-input"] as HTMLInputElement).value = String(state.ventRateBpm);
     els["meta-rate"].textContent = `${state.ventRateBpm} bpm`;
@@ -1355,6 +1494,42 @@ function main() {
     }
   }
 
+  function syncAvnrtOptions() {
+    const avnrtActive =
+      !(state.cvRecovery && !state.cvRecovery.settled) && AVNRT_FINDING_IDS.has(state.finding);
+    if (avnrtActive) clearExpandHold("avnrt");
+    const avnrtOpen = avnrtActive || expandHeld("avnrt");
+    setFindingExpand(els["avnrt-options"], avnrtOpen);
+    els["btn-avnrt"].classList.toggle("active", avnrtOpen && !state.upload && !state.stim.site);
+    els["avnrt-type-grid"].querySelectorAll<HTMLButtonElement>("button[data-avnrt-finding]").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.avnrtFinding === state.finding);
+    });
+    if (avnrtActive) {
+      const f = getFinding(state.finding);
+      els["avnrt-result"].textContent = `${f.short} · ${f.detail}`;
+    } else {
+      els["avnrt-result"].textContent = "Select typical (slow–fast) or atypical (fast–slow)";
+    }
+  }
+
+  function syncAvrtOptions() {
+    const avrtActive =
+      !(state.cvRecovery && !state.cvRecovery.settled) && AVRT_FINDING_IDS.has(state.finding);
+    if (avrtActive) clearExpandHold("avrt");
+    const avrtOpen = avrtActive || expandHeld("avrt");
+    setFindingExpand(els["avrt-options"], avrtOpen);
+    els["btn-avrt"].classList.toggle("active", avrtOpen && !state.upload && !state.stim.site);
+    els["avrt-type-grid"].querySelectorAll<HTMLButtonElement>("button[data-avrt-finding]").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.avrtFinding === state.finding);
+    });
+    if (avrtActive) {
+      const f = getFinding(state.finding);
+      els["avrt-result"].textContent = `${f.short} · ${f.detail}`;
+    } else {
+      els["avrt-result"].textContent = "Select orthodromic/antidromic and left/right Kent";
+    }
+  }
+
   function syncFindingUI() {
     const f = getFinding(state.finding);
     const stimSite = state.stim.site;
@@ -1414,12 +1589,20 @@ function main() {
     canvasHost.classList.toggle("stim-armed", state.stim.armed);
     stimMarker.visible = !!stimSite && !state.upload;
 
-    if (state.finding === "wpw" && !state.upload) {
-      segmentVisibility.accessory = true;
-      const input = els["segment-toggles"].querySelector<HTMLInputElement>(
+    if (isAvrtFinding(state.finding) && !state.upload) {
+      const side = avrtKentSide(state.finding);
+      segmentVisibility.accessory = side === "left";
+      segmentVisibility.accessoryR = side === "right";
+      const leftInput = els["segment-toggles"].querySelector<HTMLInputElement>(
         'input[data-segment="accessory"]',
       );
-      if (input) input.checked = true;
+      if (leftInput) leftInput.checked = side === "left";
+      const rightInput = els["segment-toggles"].querySelector<HTMLInputElement>(
+        'input[data-segment="accessoryR"]',
+      );
+      if (rightInput) rightInput.checked = side === "right";
+      conduction.setAccessoryVisible(side === "left", "left");
+      conduction.setAccessoryVisible(side === "right", "right");
     }
     if (FLUTTER_FINDING_IDS.has(state.finding) && !state.upload) {
       segmentVisibility.flutter = true;
@@ -1428,7 +1611,7 @@ function main() {
       );
       if (input) input.checked = true;
     }
-    if (state.finding === "avnrt" && !state.upload) {
+    if (isAvnrtFinding(state.finding) && !state.upload) {
       segmentVisibility.avnrtSlow = true;
       segmentVisibility.avnrtFast = true;
       for (const id of ["avnrtSlow", "avnrtFast"] as const) {
@@ -1462,6 +1645,8 @@ function main() {
     syncVfOptions();
     syncPacedOptions();
     syncStemiOptions();
+    syncAvnrtOptions();
+    syncAvrtOptions();
     syncCardioversionUi();
   }
 
@@ -1634,6 +1819,8 @@ function main() {
     syncVfOptions();
     syncPacedOptions();
     syncStemiOptions();
+    syncAvnrtOptions();
+    syncAvrtOptions();
   };
   setPlaying(true);
   setVectors(false);
@@ -1836,6 +2023,40 @@ function main() {
       setFinding(id);
       return;
     }
+    const avnrtBtn = (e.target as HTMLElement).closest("#btn-avnrt");
+    if (avnrtBtn) {
+      const open = els["avnrt-options"].classList.contains("is-open");
+      if (open && AVNRT_FINDING_IDS.has(state.finding)) {
+        holdExpandOpen("avnrt");
+        setFinding("nsr");
+      } else {
+        setFinding("avnrtTypical");
+      }
+      return;
+    }
+    const avnrtOpt = (e.target as HTMLElement).closest("button[data-avnrt-finding]");
+    if (avnrtOpt) {
+      const id = (avnrtOpt as HTMLElement).dataset.avnrtFinding as FindingId;
+      setFinding(id);
+      return;
+    }
+    const avrtBtn = (e.target as HTMLElement).closest("#btn-avrt");
+    if (avrtBtn) {
+      const open = els["avrt-options"].classList.contains("is-open");
+      if (open && AVRT_FINDING_IDS.has(state.finding)) {
+        holdExpandOpen("avrt");
+        setFinding("nsr");
+      } else {
+        setFinding("avrtOrthoLeft");
+      }
+      return;
+    }
+    const avrtOpt = (e.target as HTMLElement).closest("button[data-avrt-finding]");
+    if (avrtOpt) {
+      const id = (avrtOpt as HTMLElement).dataset.avrtFinding as FindingId;
+      setFinding(id);
+      return;
+    }
     const btn = (e.target as HTMLElement).closest("button[data-finding]");
     if (!btn) return;
     const id = (btn as HTMLElement).dataset.finding as FindingId;
@@ -2014,6 +2235,20 @@ function main() {
     stemiBtn.hidden = !stemiMatch;
     if (stemiMatch) visible += 1;
 
+    const avnrtMatch =
+      q.trim().length === 0 ||
+      FINDINGS.some((f) => AVNRT_FINDING_IDS.has(f.id) && findingMatchesQuery(f, q));
+    const avnrtBtn = els["btn-avnrt"] as HTMLButtonElement;
+    avnrtBtn.hidden = !avnrtMatch;
+    if (avnrtMatch) visible += 1;
+
+    const avrtMatch =
+      q.trim().length === 0 ||
+      FINDINGS.some((f) => AVRT_FINDING_IDS.has(f.id) && findingMatchesQuery(f, q));
+    const avrtBtn = els["btn-avrt"] as HTMLButtonElement;
+    avrtBtn.hidden = !avrtMatch;
+    if (avrtMatch) visible += 1;
+
     // Auto-expand any group that has a matching option; collapse extras when search clears
     const qActive = q.trim().length > 0;
     if (qActive) {
@@ -2024,6 +2259,8 @@ function main() {
       if (vfMatch) setFindingExpand(els["vf-options"], true);
       if (pacedMatch) setFindingExpand(els["paced-options"], true);
       if (stemiMatch) setFindingExpand(els["stemi-options"], true);
+      if (avnrtMatch) setFindingExpand(els["avnrt-options"], true);
+      if (avrtMatch) setFindingExpand(els["avrt-options"], true);
     } else {
       expandResync?.();
     }
@@ -2043,6 +2280,8 @@ function main() {
     filterFindingChips("vt-type-grid", "data-vt-finding");
     filterFindingChips("paced-type-grid", "data-paced-finding");
     filterFindingChips("stemi-type-grid", "data-stemi-finding");
+    filterFindingChips("avnrt-type-grid", "data-avnrt-finding");
+    filterFindingChips("avrt-type-grid", "data-avrt-finding");
     // BBB chips are lesion toggles (not one finding each) — keep them all visible when BBB opens
 
     findingEmpty.hidden = visible > 0 || q.trim().length === 0;
@@ -2351,6 +2590,20 @@ function main() {
     clearStim();
     holdExpandOpen("stemi");
     if (STEMI_FINDING_IDS.has(state.finding)) setFinding("nsr");
+    else syncFindingUI();
+  });
+
+  els["btn-avnrt-clear"].addEventListener("click", () => {
+    clearStim();
+    holdExpandOpen("avnrt");
+    if (AVNRT_FINDING_IDS.has(state.finding)) setFinding("nsr");
+    else syncFindingUI();
+  });
+
+  els["btn-avrt-clear"].addEventListener("click", () => {
+    clearStim();
+    holdExpandOpen("avrt");
+    if (AVRT_FINDING_IDS.has(state.finding)) setFinding("nsr");
     else syncFindingUI();
   });
 

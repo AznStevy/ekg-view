@@ -106,15 +106,19 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
    * Grid lead cells show only the most recent COLUMN_WINDOW_SEC of this buffer
    * so paper speed matches the bottom Lead II strip.
    */
-  let viewWindowSec = 2.5;
+  let viewWindowSec = 2.0;
   /** Pixels per 1 mm (small box). Large box = 5 mm = 0.2 s at standard speed. */
   let paperMmPx = 4;
 
   /** Standard ECG: 25 mm/s → one large box (5 mm) = 0.2 s */
   const LARGE_BOX_SEC = 0.2;
   const SMALL_PER_LARGE = 5;
-  /** Seconds shown in one 12-lead grid column (12.5 large boxes) */
-  const COLUMN_WINDOW_SEC = 2.5;
+  /**
+   * Seconds shown in one 12-lead grid column.
+   * Slightly shorter than classic 2.5 s so paper boxes read larger on screen
+   * while speed (25 mm/s) and gain (10 mm/mV) stay calibrated.
+   */
+  const COLUMN_WINDOW_SEC = 2.0;
   /** Full12 rhythm strip = 4 columns wide → 4× the column window */
   const GRID_COLS = 4;
   const MAX_WINDOW_SEC = COLUMN_WINDOW_SEC * GRID_COLS;
@@ -545,7 +549,10 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
     drawGrid(true);
 
     const mid = y + h * 0.55;
-    const amp = h * 0.32;
+    // Standard ECG sensitivity: 10 mm/mV, using the same mm scale as the paper grid.
+    // Cap vs cell height so short rhythm strips don't clip a 1 mV QRS.
+    const MM_PER_MV = 10;
+    const amp = Math.min(paperMmPx * MM_PER_MV, h * 0.36);
     c.strokeStyle = GRID.baseline;
     c.beginPath();
     c.moveTo(x, mid);

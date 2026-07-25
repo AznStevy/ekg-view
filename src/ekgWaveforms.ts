@@ -1424,7 +1424,7 @@ function sampleVfFine(t: number): WaveSample {
   return sampleVf(t, "fine");
 }
 
-function sampleAvnrt(t: number): WaveSample {
+function sampleAvnrtTypical(t: number): WaveSample {
   const tt = clamp01(t);
   const CYCLE = 0.33;
   const abs = (sec: number) => sec / CYCLE;
@@ -1443,10 +1443,244 @@ function sampleAvnrt(t: number): WaveSample {
   return pack(
     leads,
     phaseFor(tt, [
-      { start: 0.0, end: 0.12, phase: "AVNRT · slow pathway anterograde", active: ["avnrtSlow", "av"], mark: "PR" },
+      { start: 0.0, end: 0.12, phase: "Typical AVNRT · slow pathway anterograde", active: ["avnrtSlow", "av"], mark: "PR" },
       { start: 0.12, end: 0.28, phase: "His–Purkinje · narrow QRS", active: ["his", "rbb", "lbb", "lbba", "lbbp", "purkinjeR", "purkinjeL", "myocardiumV"], mark: "QRS" },
-      { start: 0.28, end: 0.45, phase: "Retrograde P on early T (P-on-T)", active: ["avnrtFast", "av", "internodal", "myocardiumA", "myocardiumV"], mark: "T" },
+      { start: 0.28, end: 0.45, phase: "Retrograde fast pathway · P-on-T", active: ["avnrtFast", "av", "internodal", "myocardiumA", "myocardiumV"], mark: "T" },
       { start: 0.45, end: 0.85, phase: "T wave · next cycle imminent", active: ["myocardiumV"], mark: "T" },
+    ]),
+  );
+}
+
+function sampleAvnrtAtypical(t: number): WaveSample {
+  const tt = clamp01(t);
+  const CYCLE = 0.38;
+  const abs = (sec: number) => sec / CYCLE;
+  // Fast–slow: narrow QRS, long RP · inverted P well after QRS / before next
+  const qrsMu = 0.18;
+  let leads = qrsLeads(tt, qrsMu, abs(0.022), 1.0);
+  leads = addLeads(leads, tWaveLeads(tt, qrsMu + abs(0.16), 0.24, abs(0.04)));
+  // Late retrograde P (slow pathway) — long RP, inverted inferior
+  const retro =
+    gauss(tt, qrsMu + abs(0.2), abs(0.018), 0.16) + gauss(tt, qrsMu + abs(0.22), abs(0.014), 0.1);
+  leads = addLeads(
+    leads,
+    scaleLeads(retro, projectCardiacVector(1, { x: -0.1, y: -0.9, z: 0.25 })),
+  );
+  return pack(
+    leads,
+    phaseFor(tt, [
+      { start: 0.0, end: 0.1, phase: "Atypical AVNRT · fast pathway anterograde", active: ["avnrtFast", "av"], mark: "PR" },
+      { start: 0.1, end: 0.26, phase: "His–Purkinje · narrow QRS", active: ["his", "rbb", "lbb", "lbba", "lbbp", "purkinjeR", "purkinjeL", "myocardiumV"], mark: "QRS" },
+      { start: 0.26, end: 0.42, phase: "T wave", active: ["myocardiumV"], mark: "T" },
+      { start: 0.42, end: 0.62, phase: "Retrograde slow pathway · long-RP P", active: ["avnrtSlow", "av", "internodal", "myocardiumA"], mark: "P" },
+      { start: 0.62, end: 0.9, phase: "Diastolic pause · next anterograde fast", active: [], mark: "TP" },
+    ]),
+  );
+}
+
+function sampleAvrtOrtho(t: number, side: "left" | "right" = "left"): WaveSample {
+  const tt = clamp01(t);
+  const CYCLE = 0.28;
+  const abs = (sec: number) => sec / CYCLE;
+  const qrsMu = abs(0.05);
+  let leads = qrsLeads(tt, qrsMu, abs(0.02), 1.0);
+  leads = addLeads(
+    leads,
+    scaleLeads(gauss(tt, qrsMu + abs(0.045), abs(0.032), 0.14), {
+      I: -0.3,
+      II: -0.5,
+      III: -0.38,
+      aVR: 0.32,
+      aVL: -0.12,
+      aVF: -0.45,
+      V1: 0.08,
+      V2: -0.12,
+      V3: -0.3,
+      V4: -0.4,
+      V5: -0.45,
+      V6: -0.4,
+    }),
+  );
+  leads = addLeads(leads, tWaveLeads(tt, qrsMu + abs(0.09), 0.2, abs(0.032)));
+  const retro =
+    gauss(tt, qrsMu + abs(0.14), abs(0.014), 0.2) +
+    gauss(tt, qrsMu + abs(0.155), abs(0.011), 0.12);
+  // Eccentric atrial activation · left-lateral (+X) vs right-lateral (−X)
+  const atrVec =
+    side === "left"
+      ? { x: 0.7, y: -0.45, z: 0.4 }
+      : { x: -0.65, y: -0.4, z: 0.55 };
+  leads = addLeads(leads, scaleLeads(retro, projectCardiacVector(1, atrVec)));
+  const ap = side === "left" ? "accessory" : "accessoryR";
+  const purk = side === "left" ? "purkinjeL" : "purkinjeR";
+  const fasc = side === "left" ? "lbba" : "rbb";
+
+  return pack(
+    leads,
+    phaseFor(tt, [
+      { start: 0.0, end: 0.12, phase: `Orthodromic · AV → His (${side} Kent)`, active: ["av", "his"], mark: "PR" },
+      {
+        start: 0.12,
+        end: 0.32,
+        phase: "His–Purkinje · narrow QRS (no delta)",
+        active: ["his", "rbb", "lbb", "lbba", "lbbp", "purkinjeR", "purkinjeL", "myocardiumV"],
+        mark: "QRS",
+      },
+      {
+        start: 0.32,
+        end: 0.55,
+        phase: `Up ${side} Kent from Purkinje tip`,
+        active: [ap, fasc, purk, "myocardiumV"],
+        mark: "ST",
+      },
+      {
+        start: 0.55,
+        end: 0.78,
+        phase: "Long-RP retrograde P · return to AV",
+        active: [ap, "av", "internodal", "myocardiumA"],
+        mark: "P",
+      },
+      { start: 0.78, end: 0.95, phase: "Next AV anterograde", active: ["av"], mark: "TP" },
+    ]),
+  );
+}
+
+function sampleAvrtAnti(t: number, side: "left" | "right" = "left"): WaveSample {
+  const tt = clamp01(t);
+  // Prominent delta like classic WPW, but fully preexcited (no fusion) at SVT rate
+  // Left Kent → RBBB-like ( +V1 ); right Kent → LBBB-like ( −V1 )
+  const deltaW: Partial<Record<LeadId, number>> =
+    side === "left"
+      ? {
+          I: 0.7,
+          II: 0.55,
+          III: 0.15,
+          aVR: -0.55,
+          aVL: 0.55,
+          aVF: 0.35,
+          V1: 0.85,
+          V2: 0.9,
+          V3: 0.75,
+          V4: 0.7,
+          V5: 0.65,
+          V6: 0.6,
+        }
+      : {
+          I: 0.75,
+          II: 0.55,
+          III: 0.1,
+          aVR: -0.5,
+          aVL: 0.65,
+          aVF: 0.25,
+          V1: -0.75,
+          V2: -0.55,
+          V3: 0.35,
+          V4: 0.7,
+          V5: 0.85,
+          V6: 0.9,
+        };
+  const wideW: Partial<Record<LeadId, number>> =
+    side === "left"
+      ? {
+          I: 0.85,
+          II: 0.7,
+          III: 0.2,
+          aVR: -0.7,
+          aVL: 0.65,
+          aVF: 0.45,
+          V1: 0.95,
+          V2: 1.0,
+          V3: 0.85,
+          V4: 0.9,
+          V5: 0.85,
+          V6: 0.8,
+        }
+      : {
+          I: 0.9,
+          II: 0.65,
+          III: 0.12,
+          aVR: -0.6,
+          aVL: 0.75,
+          aVF: 0.3,
+          V1: -0.9,
+          V2: -0.7,
+          V3: 0.4,
+          V4: 0.85,
+          V5: 1.0,
+          V6: 1.05,
+        };
+
+  // Slow, obvious delta upstroke (WPW-style amplitudes) then wide body
+  const delta =
+    gauss(tt, 0.06, 0.028, 0.28) +
+    gauss(tt, 0.12, 0.032, 0.55) +
+    gauss(tt, 0.18, 0.03, 0.42);
+  let leads = scaleLeads(delta, deltaW);
+  const qrsBody =
+    gauss(tt, 0.26, 0.03, 1.0) +
+    gauss(tt, 0.32, 0.028, 0.35) +
+    gauss(tt, 0.38, 0.026, -0.28) +
+    gauss(tt, 0.44, 0.022, -0.12);
+  leads = addLeads(leads, scaleLeads(qrsBody, wideW));
+  leads = addLeads(
+    leads,
+    scaleLeads(gauss(tt, 0.55, 0.05, 0.28), {
+      I: -0.5,
+      II: -0.35,
+      III: side === "left" ? -0.12 : 0.1,
+      aVR: 0.35,
+      aVL: -0.4,
+      aVF: side === "left" ? -0.25 : -0.1,
+      V1: side === "left" ? -0.5 : 0.45,
+      V2: side === "left" ? -0.55 : 0.35,
+      V3: -0.35,
+      V4: -0.3,
+      V5: -0.35,
+      V6: -0.35,
+    }),
+  );
+  const retro = gauss(tt, 0.5, 0.014, 0.12) + gauss(tt, 0.53, 0.01, 0.07);
+  leads = addLeads(
+    leads,
+    scaleLeads(retro, projectCardiacVector(1, { x: -0.15, y: -0.8, z: 0.25 })),
+  );
+
+  const ap = side === "left" ? "accessory" : "accessoryR";
+  const purk = side === "left" ? "purkinjeL" : "purkinjeR";
+  const fasc = side === "left" ? "lbba" : "rbb";
+  const bundle = side === "left" ? "lbb" : "rbb";
+
+  return pack(
+    leads,
+    phaseFor(tt, [
+      {
+        start: 0.0,
+        end: 0.3,
+        phase: `Antidromic · down ${side} Kent · prominent delta`,
+        active: [ap, purk, "myocardiumV"],
+        mark: "QRS",
+      },
+      {
+        start: 0.3,
+        end: 0.55,
+        phase: "Wide fully preexcited QRS (VT mimic)",
+        active: [ap, purk, fasc, "myocardiumV"],
+        mark: "QRS",
+      },
+      {
+        start: 0.55,
+        end: 0.78,
+        phase: "Up Purkinje / fascicle → His → AV",
+        active: [purk, fasc, bundle, "his", "av", "myocardiumV"],
+        mark: "ST",
+      },
+      {
+        start: 0.78,
+        end: 0.95,
+        phase: "Atrial corridor → Kent (loop closes)",
+        active: ["av", ap, "internodal", "myocardiumA"],
+        mark: "P",
+      },
     ]),
   );
 }
@@ -1474,78 +1708,6 @@ function sampleAsystole(t: number): WaveSample {
     active: [],
     mark: "TP",
   });
-}
-
-function sampleWpw(t: number): WaveSample {
-  const tt = clamp01(t);
-  const deltaW: Partial<Record<LeadId, number>> = {
-    I: 0.7,
-    II: 0.55,
-    III: 0.15,
-    aVR: -0.55,
-    aVL: 0.55,
-    aVF: 0.35,
-    V1: 0.85,
-    V2: 0.9,
-    V3: 0.75,
-    V4: 0.7,
-    V5: 0.65,
-    V6: 0.6,
-  };
-  const wideW: Partial<Record<LeadId, number>> = {
-    I: 0.85,
-    II: 0.7,
-    III: 0.2,
-    aVR: -0.7,
-    aVL: 0.65,
-    aVF: 0.45,
-    V1: 0.95,
-    V2: 1.0,
-    V3: 0.85,
-    V4: 0.9,
-    V5: 0.85,
-    V6: 0.8,
-  };
-
-  let leads = pWaveLeads(tt, 0.1, 0.15);
-  const delta =
-    gauss(tt, 0.18, 0.028, 0.22) +
-    gauss(tt, 0.22, 0.032, 0.45) +
-    gauss(tt, 0.27, 0.03, 0.35);
-  leads = addLeads(leads, scaleLeads(delta, deltaW));
-  const qrsBody =
-    gauss(tt, 0.3, 0.028, 0.85) +
-    gauss(tt, 0.34, 0.03, -0.15) +
-    gauss(tt, 0.38, 0.025, -0.08);
-  leads = addLeads(leads, scaleLeads(qrsBody, wideW));
-  leads = addLeads(
-    leads,
-    scaleLeads(gauss(tt, 0.55, 0.06, 0.28), {
-      I: -0.55,
-      II: -0.4,
-      III: -0.15,
-      aVR: 0.4,
-      aVL: -0.45,
-      aVF: -0.3,
-      V1: -0.5,
-      V2: -0.55,
-      V3: -0.4,
-      V4: -0.35,
-      V5: -0.4,
-      V6: -0.4,
-    }),
-  );
-
-  return pack(
-    leads,
-    phaseFor(tt, [
-      { start: 0.05, end: 0.15, phase: "SA · atria", active: ["sa", "internodal", "myocardiumA"], mark: "P" },
-      { start: 0.15, end: 0.24, phase: "Accessory pathway · delta wave (short PR)", active: ["accessory", "myocardiumV"], mark: "PR" },
-      { start: 0.24, end: 0.4, phase: "Fusion QRS (AV + Kent)", active: ["av", "his", "rbb", "lbb", "accessory", "purkinjeR", "purkinjeL", "myocardiumV"], mark: "QRS" },
-      { start: 0.4, end: 0.48, phase: "ST segment", active: ["myocardiumV"], mark: "ST" },
-      { start: 0.48, end: 0.7, phase: "Secondary T-wave changes", active: ["myocardiumV"], mark: "T" },
-    ]),
-  );
 }
 
 /** Shared ST-elevation / injury morphology with lead-local weights. */
@@ -2471,7 +2633,12 @@ const SAMPLERS: Record<FindingId, (t: number) => WaveSample> = {
   afib: sampleAfib,
   aflutterCcw: sampleAflutterCcw,
   aflutterCw: sampleAflutterCw,
-  avnrt: sampleAvnrt,
+  avnrtTypical: sampleAvnrtTypical,
+  avnrtAtypical: sampleAvnrtAtypical,
+  avrtOrthoLeft: (t) => sampleAvrtOrtho(t, "left"),
+  avrtOrthoRight: (t) => sampleAvrtOrtho(t, "right"),
+  avrtAntiLeft: (t) => sampleAvrtAnti(t, "left"),
+  avrtAntiRight: (t) => sampleAvrtAnti(t, "right"),
   av1: sampleAv1,
   av2i: sampleAv2i,
   av2ii: sampleAv2ii,
@@ -2493,7 +2660,6 @@ const SAMPLERS: Record<FindingId, (t: number) => WaveSample> = {
   vfCoarse: sampleVfCoarse,
   vfFine: sampleVfFine,
   asystole: sampleAsystole,
-  wpw: sampleWpw,
   stemiAnt: sampleStemi,
   stemiInferior: sampleStemiInferior,
   stemiLateral: sampleStemiLateral,
@@ -2537,7 +2703,7 @@ export function cardioversionDurationSec(from: FindingId): number {
   if (from === "vfCoarse" || from === "vfFine" || from === "torsades") return 7.8;
   if (from === "vt" || from === "vtMonoLbbb" || from === "vtMonoRbbb" || from === "vtPoly") return 7.2;
   if (from === "afib" || from === "aflutterCcw" || from === "aflutterCw") return 6.8;
-  if (from === "avnrt" || from === "sinusTachy") return 6.4;
+  if (from === "avnrtTypical" || from === "avnrtAtypical" || from === "avrtOrthoLeft" || from === "avrtOrthoRight" || from === "avrtAntiLeft" || from === "avrtAntiRight" || from === "sinusTachy") return 6.4;
   if (from === "asystole") return 5.5;
   return 6.2;
 }
@@ -2695,8 +2861,14 @@ function getFindingShort(id: FindingId): string {
       return "sinus";
     case "asystole":
       return "asystole";
-    case "avnrt":
+    case "avnrtTypical":
+    case "avnrtAtypical":
       return "AVNRT";
+    case "avrtOrthoLeft":
+    case "avrtOrthoRight":
+    case "avrtAntiLeft":
+    case "avrtAntiRight":
+      return "AVRT";
     case "afib":
       return "AFib";
     case "sinusBrady":
@@ -2817,6 +2989,7 @@ function stimKind(id: SegmentId): "atrial" | "junctional" | "rightVent" | "leftV
     case "purkinjeL":
       return "leftVent";
     case "accessory":
+    case "accessoryR":
       return "accessory";
     default:
       return "ventricular";

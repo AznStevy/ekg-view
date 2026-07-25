@@ -154,9 +154,10 @@ export function createActivationVectors(probes: PathwayProbePoint[]): VectorView
         id === "av" ||
         id === "avnrtSlow" ||
         id === "avnrtFast" ||
-        id === "accessory";
+        id === "accessory" ||
+        id === "accessoryR";
       if (tissue === "atrial" && !atrialSeg && id !== "his") continue;
-      if (tissue === "ventricular" && atrialSeg && id !== "accessory") continue;
+      if (tissue === "ventricular" && atrialSeg && id !== "accessory" && id !== "accessoryR") continue;
       const d = pos.distanceToSquared(probePos[i]!);
       if (d < bestD) {
         bestD = d;
@@ -284,7 +285,8 @@ function isDiscordantRepol(finding: FindingId): boolean {
     case "pacedDual":
     case "pacedBiv":
     case "av3":
-    case "wpw":
+    case "avrtAntiLeft":
+    case "avrtAntiRight":
     case "sgarbossa":
       return true;
     default:
@@ -480,19 +482,29 @@ function repolFlipsDepol(finding: FindingId, mark: CycleMark): boolean {
 
       // Chamber gating from EKG mark
       let chamberOk = true;
-      if (opts.mark === "P" || (opts.mark === "PR" && opts.finding !== "wpw")) {
+      if (
+        opts.mark === "P" ||
+        (opts.mark === "PR" &&
+          opts.finding !== "avrtAntiLeft" &&
+          opts.finding !== "avrtAntiRight")
+      ) {
         chamberOk = s.tissue === "atrial" || s.nearestId === "av" || s.nearestId === "his";
       } else if (opts.mark === "QRS" || opts.mark === "ST" || opts.mark === "T") {
         chamberOk =
           s.tissue === "ventricular" ||
           s.nearestId === "his" ||
           s.nearestId === "accessory" ||
+          s.nearestId === "accessoryR" ||
           opts.finding === "av3" ||
           opts.finding === "av3Junctional";
       } else if (opts.mark === "TP") {
         chamberOk = false;
       }
-      if (opts.finding === "wpw" && opts.mark === "PR" && s.nearestId === "accessory") {
+      if (
+        (opts.finding === "avrtAntiLeft" || opts.finding === "avrtAntiRight") &&
+        opts.mark === "PR" &&
+        (s.nearestId === "accessory" || s.nearestId === "accessoryR")
+      ) {
         chamberOk = true;
       }
       if (opts.finding === "vt" || opts.finding === "pvc") {

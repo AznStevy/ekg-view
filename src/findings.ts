@@ -13,6 +13,7 @@ export type SegmentId =
   | "myocardiumA"
   | "myocardiumV"
   | "accessory"
+  | "accessoryR"
   | "flutter"
   | "avnrtSlow"
   | "avnrtFast";
@@ -35,7 +36,12 @@ export type FindingId =
   | "afib"
   | "aflutterCcw"
   | "aflutterCw"
-  | "avnrt"
+  | "avnrtTypical"
+  | "avnrtAtypical"
+  | "avrtOrthoLeft"
+  | "avrtOrthoRight"
+  | "avrtAntiLeft"
+  | "avrtAntiRight"
   | "av1"
   | "av2i"
   | "av2ii"
@@ -57,7 +63,6 @@ export type FindingId =
   | "vfCoarse"
   | "vfFine"
   | "asystole"
-  | "wpw"
   | "stemiAnt"
   | "stemiInferior"
   | "stemiLateral"
@@ -169,16 +174,76 @@ export const FINDINGS: Finding[] = [
     rateLabel: "Inf + F",
   },
   {
-    id: "avnrt",
-    name: "AVNRT (AV-nodal reentrant tachycardia)",
-    short: "AVNRT",
-    detail: "Dual AV-node pathways · typical slow–fast · narrow QRS · RP≪PR · pseudo-r′ V1",
+    id: "avnrtTypical",
+    name: "Typical AVNRT (slow–fast)",
+    short: "Typical",
+    detail: "Anterograde slow · retrograde fast · narrow QRS · RP≪PR · pseudo-r′ V1 / P-on-T",
     category: "rhythm",
-    tags: ["svt", "reentry", "avnrt", "narrow", "nodal"],
-    aliases: ["avnrt", "svt", "psvt", "av nodal reentry", "slow fast"],
+    tags: ["svt", "reentry", "avnrt", "narrow", "nodal", "typical", "slow-fast"],
+    aliases: ["avnrt", "typical avnrt", "slow fast", "svt", "psvt", "av nodal reentry"],
     cycleSec: 0.33,
     ventRateBpm: 180,
     rateLabel: "180 bpm",
+  },
+  {
+    id: "avnrtAtypical",
+    name: "Atypical AVNRT (fast–slow)",
+    short: "Atypical",
+    detail: "Anterograde fast · retrograde slow · long RP · inverted P before next QRS",
+    category: "rhythm",
+    tags: ["svt", "reentry", "avnrt", "narrow", "nodal", "atypical", "fast-slow"],
+    aliases: ["atypical avnrt", "fast slow", "long rp avnrt", "uncommon avnrt"],
+    cycleSec: 0.38,
+    ventRateBpm: 160,
+    rateLabel: "160 bpm",
+  },
+  {
+    id: "avrtOrthoLeft",
+    name: "Orthodromic AVRT · left Kent",
+    short: "Ortho L",
+    detail: "Down AV/His–Purkinje · up left Kent · narrow QRS · long RP",
+    category: "preexcitation",
+    tags: ["svt", "reentry", "avrt", "orthodromic", "accessory", "left", "narrow"],
+    aliases: ["orthodromic left", "ortho avrt left", "left kent ortho"],
+    cycleSec: 0.28,
+    ventRateBpm: 214,
+    rateLabel: "214 bpm",
+  },
+  {
+    id: "avrtOrthoRight",
+    name: "Orthodromic AVRT · right Kent",
+    short: "Ortho R",
+    detail: "Down AV/His–Purkinje · up right Kent · narrow QRS · long RP",
+    category: "preexcitation",
+    tags: ["svt", "reentry", "avrt", "orthodromic", "accessory", "right", "narrow"],
+    aliases: ["orthodromic right", "ortho avrt right", "right kent ortho"],
+    cycleSec: 0.28,
+    ventRateBpm: 214,
+    rateLabel: "214 bpm",
+  },
+  {
+    id: "avrtAntiLeft",
+    name: "Antidromic AVRT · left Kent",
+    short: "Anti L",
+    detail: "Down left Kent · up His/AV · wide preexcited QRS · VT mimic",
+    category: "preexcitation",
+    tags: ["svt", "reentry", "avrt", "antidromic", "accessory", "left", "wide", "preexcitation", "delta"],
+    aliases: ["antidromic left", "anti avrt left", "left kent anti", "wpw", "wolff parkinson white"],
+    cycleSec: 0.27,
+    ventRateBpm: 222,
+    rateLabel: "222 bpm",
+  },
+  {
+    id: "avrtAntiRight",
+    name: "Antidromic AVRT · right Kent",
+    short: "Anti R",
+    detail: "Down right Kent · up His/AV · wide preexcited QRS · VT mimic",
+    category: "preexcitation",
+    tags: ["svt", "reentry", "avrt", "antidromic", "accessory", "right", "wide", "preexcitation", "delta"],
+    aliases: ["antidromic right", "anti avrt right", "right kent anti"],
+    cycleSec: 0.27,
+    ventRateBpm: 222,
+    rateLabel: "222 bpm",
   },
   {
     id: "av1",
@@ -436,18 +501,6 @@ export const FINDINGS: Finding[] = [
     rateLabel: "None",
   },
   {
-    id: "wpw",
-    name: "WPW pattern",
-    short: "WPW",
-    detail: "Short PR · delta wave · wide fusion QRS",
-    category: "preexcitation",
-    tags: ["accessory", "preexcitation", "delta"],
-    aliases: ["wolff parkinson white", "preexcitation"],
-    cycleSec: 0.86,
-    ventRateBpm: 70,
-    rateLabel: "70 bpm",
-  },
-  {
     id: "stemiAnt",
     name: "Anterior STEMI",
     short: "Anterior",
@@ -703,7 +756,7 @@ export const FINDINGS: Finding[] = [
 
 /** Pattern duration at a chosen ventricular rate */
 export function cycleSecForRate(finding: Finding, ventRateBpm: number): number {
-  const rate = Math.max(20, Math.min(250, ventRateBpm));
+  const rate = Math.max(20, Math.min(320, ventRateBpm));
   return finding.cycleSec * (finding.ventRateBpm / rate);
 }
 
@@ -724,4 +777,31 @@ export function findingMatchesQuery(f: Finding, query: string): boolean {
   if (!q) return true;
   const hay = findingSearchText(f);
   return q.split(/\s+/).every((token) => hay.includes(token));
+}
+
+export function isAvnrtFinding(id: FindingId | string | undefined): boolean {
+  return id === "avnrtTypical" || id === "avnrtAtypical";
+}
+
+export function isAvrtFinding(id: FindingId | string | undefined): boolean {
+  return (
+    id === "avrtOrthoLeft" ||
+    id === "avrtOrthoRight" ||
+    id === "avrtAntiLeft" ||
+    id === "avrtAntiRight"
+  );
+}
+
+export function isAvrtOrthoFinding(id: FindingId | string | undefined): boolean {
+  return id === "avrtOrthoLeft" || id === "avrtOrthoRight";
+}
+
+export function isAvrtAntiFinding(id: FindingId | string | undefined): boolean {
+  return id === "avrtAntiLeft" || id === "avrtAntiRight";
+}
+
+export function avrtKentSide(id: FindingId | string | undefined): "left" | "right" | null {
+  if (id === "avrtOrthoLeft" || id === "avrtAntiLeft") return "left";
+  if (id === "avrtOrthoRight" || id === "avrtAntiRight") return "right";
+  return null;
 }

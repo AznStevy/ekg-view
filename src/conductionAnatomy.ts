@@ -18,8 +18,8 @@ export const SEGMENT_META: SegmentMeta[] = [
   { id: "internodal", label: "Internodal tracts", color: "#e8a838", defaultOn: true },
   { id: "flutter", label: "Flutter circuit (CTI)", color: "#8a9aa8", defaultOn: false },
   { id: "av", label: "AV node", color: "#ff7a4a", defaultOn: true },
-  { id: "avnrtSlow", label: "AVNRT slow pathway", color: "#5eb8d4", defaultOn: false },
-  { id: "avnrtFast", label: "AVNRT fast pathway", color: "#ff8a5c", defaultOn: false },
+  { id: "avnrtSlow", label: "AVN slow pathway", color: "#9aa4ae", defaultOn: false },
+  { id: "avnrtFast", label: "AVN fast pathway", color: "#b0b8c0", defaultOn: false },
   { id: "his", label: "Bundle of His", color: "#ff5e6c", defaultOn: true },
   { id: "rbb", label: "Right bundle", color: "#5ec8ff", defaultOn: true },
   { id: "lbb", label: "Left bundle", color: "#6ae0a8", defaultOn: true },
@@ -27,7 +27,8 @@ export const SEGMENT_META: SegmentMeta[] = [
   { id: "lbbp", label: "Left posterior fascicle", color: "#3ab078", defaultOn: true },
   { id: "purkinjeR", label: "Purkinje (RV)", color: "#7ad4ff", defaultOn: true },
   { id: "purkinjeL", label: "Purkinje (LV)", color: "#88f0c0", defaultOn: true },
-  { id: "accessory", label: "Accessory pathway", color: "#c070ff", defaultOn: false },
+  { id: "accessory", label: "Kent (left)", color: "#c070ff", defaultOn: false },
+  { id: "accessoryR", label: "Kent (right)", color: "#a060e8", defaultOn: false },
   { id: "myocardiumA", label: "Atrial myocardium", color: "#d08090", defaultOn: false },
   { id: "myocardiumV", label: "Ventricular myocardium", color: "#c06070", defaultOn: false },
 ];
@@ -37,8 +38,8 @@ const SEGMENT_COLORS: Record<SegmentId, number> = {
   internodal: 0xe8a838,
   flutter: 0x8a9aa8,
   av: 0xff7a4a,
-  avnrtSlow: 0x5eb8d4,
-  avnrtFast: 0xff8a5c,
+  avnrtSlow: 0x9aa4ae,
+  avnrtFast: 0xb0b8c0,
   his: 0xff5e6c,
   rbb: 0x5ec8ff,
   lbb: 0x6ae0a8,
@@ -47,6 +48,7 @@ const SEGMENT_COLORS: Record<SegmentId, number> = {
   purkinjeR: 0x7ad4ff,
   purkinjeL: 0x88f0c0,
   accessory: 0xc070ff,
+  accessoryR: 0xa060e8,
   myocardiumA: 0xd08090,
   myocardiumV: 0xc06070,
 };
@@ -69,22 +71,31 @@ type GuideSpec = {
   tubularSegments?: number;
 };
 
-/** Thin grey anatomic landmarks (context only — not impulse pathways) */
+/** Thin grey anatomic landmarks (context only — not impulse pathways).
+ *  AV valve rings lie in a shared plane ≈ perpendicular to the long axis (−Y),
+ *  so they stay “en face” relative to the heart after anatomic orientation.
+ */
 const ANATOMY_GUIDES: GuideSpec[] = [
   {
     name: "Tricuspid annulus",
-    detail: "RA–RV junction · flutter circuit boundary",
+    detail: "RA–RV junction · flutter circuit boundary · more apical than mitral",
     radius: 0.007,
-    tubularSegments: 64,
+    tubularSegments: 72,
+    // Ellipse in AV plane (normal ≈ apex); right-sided, slightly anterior
     points: [
-      [-0.42, 0.08, 0.22],
-      [-0.2, -0.02, 0.28],
-      [0.05, -0.06, 0.18],
-      [0.12, 0.05, -0.02],
-      [0.02, 0.18, -0.18],
-      [-0.2, 0.22, -0.12],
-      [-0.4, 0.16, 0.05],
-      [-0.42, 0.08, 0.22],
+      [0.136, 0.02, 0.082],
+      [0.079, 0.03, 0.195],
+      [-0.042, 0.033, 0.265],
+      [-0.195, 0.027, 0.276],
+      [-0.339, 0.013, 0.223],
+      [-0.434, -0.004, 0.121],
+      [-0.456, -0.02, -0.002],
+      [-0.399, -0.03, -0.115],
+      [-0.278, -0.033, -0.185],
+      [-0.125, -0.027, -0.196],
+      [0.019, -0.013, -0.143],
+      [0.114, 0.004, -0.041],
+      [0.136, 0.02, 0.082],
     ],
   },
   {
@@ -103,10 +114,10 @@ const ANATOMY_GUIDES: GuideSpec[] = [
     detail: "Posteroseptal RA · near triangle of Koch",
     radius: 0.007,
     points: [
-      [-0.12, -0.06, -0.22],
-      [-0.06, -0.02, -0.18],
+      [-0.1, -0.04, -0.2],
+      [-0.05, -0.01, -0.17],
       [0.0, 0.02, -0.14],
-      [0.04, 0.06, -0.1],
+      [0.03, 0.05, -0.11],
     ],
   },
   {
@@ -144,17 +155,24 @@ const ANATOMY_GUIDES: GuideSpec[] = [
   },
   {
     name: "Mitral annulus (guide)",
-    detail: "LA–LV junction · anatomic reference",
+    detail: "LA–LV junction · slightly more basal/posterior than tricuspid",
     radius: 0.006,
-    tubularSegments: 48,
+    tubularSegments: 64,
+    // Same AV plane as TA; left-sided, slightly basal (+Y) and posterior (−Z)
     points: [
-      [0.35, 0.12, -0.15],
-      [0.48, 0.02, -0.05],
-      [0.42, -0.12, 0.1],
-      [0.22, -0.08, 0.18],
-      [0.18, 0.08, 0.02],
-      [0.28, 0.16, -0.1],
-      [0.35, 0.12, -0.15],
+      [0.598, 0.096, 0.004],
+      [0.554, 0.105, 0.1],
+      [0.452, 0.108, 0.163],
+      [0.32, 0.103, 0.178],
+      [0.194, 0.092, 0.139],
+      [0.106, 0.078, 0.058],
+      [0.082, 0.064, -0.044],
+      [0.126, 0.055, -0.14],
+      [0.228, 0.052, -0.203],
+      [0.36, 0.057, -0.218],
+      [0.486, 0.068, -0.179],
+      [0.574, 0.082, -0.098],
+      [0.598, 0.096, 0.004],
     ],
   },
 ];
@@ -203,12 +221,32 @@ function createGuideMesh(spec: GuideSpec): THREE.Mesh {
  */
 const SA: [number, number, number] = [-0.52, 0.58, 0.22];
 const AV: [number, number, number] = [0.0, 0.02, -0.12];
-const HIS_PEN: [number, number, number] = [0.04, -0.1, -0.08];
+/** Compact AV node radius; dual pathways wrap a larger translucent halo in AVNRT. */
+const AV_R = 0.048;
+const AV_HALO_R = AV_R * 1.55;
+/** AVNRT loop radius — sits on the translucent halo surface. */
+const AVN_LOOP_R = AV_HALO_R * 1.02;
 const HIS_BRANCH: [number, number, number] = [0.05, -0.28, -0.04];
 const LBB_ORIGIN: [number, number, number] = [0.14, -0.34, 0.0];
+/** Fascicle tips — Purkinje arborizations must start here so tubes visibly join.
+ *  Kept inside FIELD_ELLIPSOID with margin for tube radius / Catmull-Rom overshoot. */
+const LAF_TIP: [number, number, number] = [0.5, -0.82, 0.24];
+const LPF_TIP: [number, number, number] = [0.28, -1.08, 0.0];
+const SEPTAL_TIP: [number, number, number] = [0.12, -1.02, -0.02];
+/** Distal tip of LV anterolateral Purkinje · base (left Kent ventricular insertion). */
+const PURK_L_ANT_BASE_TIP: [number, number, number] = [0.52, -0.34, 0.1];
+/** Distal tip of RV free-wall Purkinje · superior (right Kent ventricular insertion). */
+const PURK_R_FW_SUP_TIP: [number, number, number] = [-0.58, -0.28, 0.18];
 const RBB_MID: [number, number, number] = [-0.08, -0.55, 0.18];
 const RBB_APEX: [number, number, number] = [-0.18, -0.95, 0.32];
 const MOD_BAND_END: [number, number, number] = [-0.48, -0.62, 0.48];
+
+/** Left-lateral Kent · atrial insert outside mitral ring; LV end = anterolateral Purkinje · base tip. */
+const ACC_L_LA: [number, number, number] = [0.64, 0.16, 0.06];
+const ACC_L_EPIC: [number, number, number] = [0.72, 0.06, 0.1];
+/** Right-lateral Kent · atrial insert outside tricuspid ring; RV end = free-wall superior tip. */
+const ACC_R_LA: [number, number, number] = [-0.55, 0.08, 0.22];
+const ACC_R_EPIC: [number, number, number] = [-0.68, 0.0, 0.32];
 
 /** CTI flutter ring landmarks (RA around tricuspid annulus) */
 const CTI_LAT: [number, number, number] = [-0.48, -0.02, 0.18];
@@ -216,12 +254,112 @@ const CTI_MED: [number, number, number] = [-0.06, 0.0, -0.14];
 const SEPT_SUP: [number, number, number] = [0.06, 0.42, -0.16];
 const ROOF_LAT: [number, number, number] = [-0.42, 0.62, 0.2];
 
-/** Triangle of Koch · dual AV-nodal pathways (typical slow–fast AVNRT) */
-const KOCH_CS: [number, number, number] = [-0.1, -0.06, -0.2];
-const KOCH_SLOW_MID: [number, number, number] = [-0.05, -0.02, -0.16];
-const KOCH_TODARO: [number, number, number] = [0.08, 0.16, -0.14];
-const KOCH_FAST_MID: [number, number, number] = [0.04, 0.09, -0.13];
-const KOCH_ATRIAL_EXIT: [number, number, number] = [0.02, 0.22, -0.1];
+/** Must stay in sync with applyAnatomicOrientation when pose changes. */
+const ANATOMIC_EULER_DEG = { z: 22, x: -38, y: 8 } as const;
+
+function degToRad(d: number): number {
+  return (d * Math.PI) / 180;
+}
+
+/** Inverse of Three.js ZYX euler (Rz·Ry·Rx) — map world → heart-local. */
+function worldToLocalAnatomic(v: [number, number, number]): [number, number, number] {
+  const z = degToRad(-ANATOMIC_EULER_DEG.z);
+  const y = degToRad(-ANATOMIC_EULER_DEG.y);
+  const x = degToRad(-ANATOMIC_EULER_DEG.x);
+  const cz = Math.cos(z);
+  const sz = Math.sin(z);
+  const cy = Math.cos(y);
+  const sy = Math.sin(y);
+  const cx = Math.cos(x);
+  const sx = Math.sin(x);
+  let x1 = v[0] * cz - v[1] * sz;
+  let y1 = v[0] * sz + v[1] * cz;
+  let z1 = v[2];
+  const x2 = x1 * cy + z1 * sy;
+  const y2 = y1;
+  const z2 = -x1 * sy + z1 * cy;
+  return [x2, y2 * cx - z2 * sx, y2 * sx + z2 * cx];
+}
+
+function vecSub(a: [number, number, number], b: [number, number, number]): [number, number, number] {
+  return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+}
+
+function vecAdd(a: [number, number, number], b: [number, number, number], s = 1): [number, number, number] {
+  return [a[0] + s * b[0], a[1] + s * b[1], a[2] + s * b[2]];
+}
+
+function vecDot(a: [number, number, number], b: [number, number, number]): number {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+function vecLen(v: [number, number, number]): number {
+  return Math.hypot(v[0], v[1], v[2]) || 1;
+}
+
+function vecUnit(v: [number, number, number]): [number, number, number] {
+  const m = vecLen(v);
+  return [v[0] / m, v[1] / m, v[2] / m];
+}
+
+function vecCross(a: [number, number, number], b: [number, number, number]): [number, number, number] {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+}
+
+/** Straight AV → bifurcation axis (His must stay collinear — no off-axis control points). */
+const HIS_DIR = vecUnit(vecSub(HIS_BRANCH, AV));
+/** Loop / penetrating-His junction on the AV halo, on the His axis. */
+const HIS_PEN: [number, number, number] = vecAdd(AV, HIS_DIR, AVN_LOOP_R);
+
+/**
+ * Dual-pathway loop on the AV halo. Diameter is fixed on the His axis (HIS_PEN unchanged);
+ * the wrap direction is tipped partly toward the AP camera so the ring faces the user a bit more.
+ */
+function avnrtLimbPoints(side: number, steps: number): [number, number, number][] {
+  const C: [number, number, number] = [AV[0], AV[1], AV[2]];
+  const R = AVN_LOOP_R;
+  const U = HIS_DIR;
+
+  // Edge-on / His-plane wrap (previous look)
+  let ref: [number, number, number] = [0, 0, 1];
+  if (Math.abs(vecDot(U, ref)) > 0.85) ref = [1, 0, 0];
+  const NEdge = vecUnit(vecCross(U, ref));
+  const VEdge = vecUnit(vecCross(NEdge, U));
+
+  // Most face-on plane that still contains His (normal = camera ⊥ His)
+  const cam = vecUnit(worldToLocalAnatomic([0, 0, 1]));
+  let NFace = vecAdd(cam, U, -vecDot(cam, U));
+  if (vecLen(NFace) < 0.15) NFace = NEdge;
+  else NFace = vecUnit(NFace);
+  const VFace = vecUnit(vecCross(NFace, U));
+
+  // Blend toward the user without leaving the His diameter / halo
+  const faceBlend = 0.42;
+  const VMixed: [number, number, number] = [
+    VEdge[0] + (VFace[0] - VEdge[0]) * faceBlend,
+    VEdge[1] + (VFace[1] - VEdge[1]) * faceBlend,
+    VEdge[2] + (VFace[2] - VEdge[2]) * faceBlend,
+  ];
+  const V = vecUnit(vecAdd(VMixed, U, -vecDot(VMixed, U)));
+
+  const pts: [number, number, number][] = [];
+  for (let i = 0; i <= steps; i++) {
+    const a = Math.PI + (i / steps) * Math.PI; // atrial (π) → His (2π)
+    const cos = Math.cos(a);
+    const sin = Math.sin(a);
+    pts.push([
+      C[0] + R * (cos * U[0] + side * sin * V[0]),
+      C[1] + R * (cos * U[1] + side * sin * V[1]),
+      C[2] + R * (cos * U[2] + side * sin * V[2]),
+    ]);
+  }
+  pts[0] = vecAdd(C, U, -R);
+  pts[pts.length - 1] = [HIS_PEN[0], HIS_PEN[1], HIS_PEN[2]];
+  return pts;
+}
+
+const AVNRT_SLOW_POINTS = avnrtLimbPoints(-1, 18);
+const AVNRT_FAST_POINTS = avnrtLimbPoints(1, 18);
 
 const PATHS: PathSpec[] = [
   // —— Internodal / atrial ——
@@ -360,82 +498,61 @@ const PATHS: PathSpec[] = [
     ],
   },
 
-  // —— AVNRT dual pathways (triangle of Koch) ——
+  // —— Dual AV-nodal pathways · full reentrant loop on the AV halo ——
+  // Slow (posteroinferior) + fast (anterosuperior) share atrial & His poles.
   {
     id: "avnrtSlow",
-    name: "Slow pathway (posterior)",
-    detail: "CS ostium / inferior Koch → compact AV node · typical AVNRT anterograde limb",
-    radiusStart: 0.011,
-    radiusEnd: 0.008,
-    tubularSegments: 40,
-    points: [
-      KOCH_CS,
-      [-0.08, -0.04, -0.18],
-      KOCH_SLOW_MID,
-      [-0.02, 0.0, -0.14],
-      AV,
-    ],
+    name: "Slow pathway (AVN loop)",
+    detail: "Posteroinferior half-loop · typical anterograde / atypical retrograde limb",
+    radiusStart: 0.0075,
+    radiusEnd: 0.0055,
+    tubularSegments: 64,
+    points: AVNRT_SLOW_POINTS,
   },
   {
     id: "avnrtFast",
-    name: "Fast pathway (anterior)",
-    detail: "Tendon of Todaro / superior Koch → compact AV node · typical AVNRT retrograde limb",
-    radiusStart: 0.01,
-    radiusEnd: 0.008,
-    tubularSegments: 40,
-    points: [
-      KOCH_TODARO,
-      KOCH_FAST_MID,
-      [0.02, 0.05, -0.125],
-      AV,
-    ],
-  },
-  {
-    id: "avnrtFast",
-    name: "Fast-pathway atrial exit",
-    detail: "Retrograde exit toward atrial septum / superior approaches",
-    radiusStart: 0.009,
-    radiusEnd: 0.007,
-    tubularSegments: 32,
-    points: [
-      AV,
-      [0.03, 0.1, -0.12],
-      KOCH_ATRIAL_EXIT,
-      [0.0, 0.28, -0.08],
-    ],
+    name: "Fast pathway (AVN loop)",
+    detail: "Anterosuperior half-loop · typical retrograde / atypical anterograde limb",
+    radiusStart: 0.007,
+    radiusEnd: 0.0055,
+    tubularSegments: 64,
+    points: AVNRT_FAST_POINTS,
   },
 
-  // —— His ——
+  // —— His (collinear AV → HIS_PEN → HIS_BRANCH — no off-axis mids) ——
   {
     id: "his",
     name: "Penetrating His bundle",
-    detail: "AV node → central fibrous body",
-    radiusStart: 0.034,
-    radiusEnd: 0.028,
-    points: [AV, [0.02, -0.04, -0.1], HIS_PEN],
+    detail: "Compact AVN → halo exit · meets dual-pathway split",
+    radiusStart: 0.028,
+    radiusEnd: 0.032,
+    tubularSegments: 24,
+    points: [AV, HIS_PEN],
   },
   {
     id: "his",
     name: "Branching His bundle",
-    detail: "Membranous septum → bifurcation",
-    radiusStart: 0.028,
-    radiusEnd: 0.026,
-    points: [HIS_PEN, [0.05, -0.18, -0.06], HIS_BRANCH],
+    detail: "From dual-pathway / penetrating junction → bifurcation",
+    radiusStart: 0.032,
+    radiusEnd: 0.028,
+    tubularSegments: 32,
+    points: [HIS_PEN, HIS_BRANCH],
   },
 
   // —— Right bundle ——
+  // RV is patient's right (−X) and more anterior (+Z) than LV
   {
     id: "rbb",
     name: "Right bundle branch",
     detail: "Right septal subendocardium",
-    radiusStart: 0.022,
+    radiusStart: 0.028,
     radiusEnd: 0.014,
     tubularSegments: 72,
     points: [
       HIS_BRANCH,
-      [-0.02, -0.38, 0.06],
+      [-0.05, -0.4, 0.08],
       RBB_MID,
-      [-0.12, -0.72, 0.26],
+      [-0.15, -0.72, 0.28],
       RBB_APEX,
     ],
   },
@@ -448,18 +565,19 @@ const PATHS: PathSpec[] = [
     tubularSegments: 40,
     points: [
       RBB_APEX,
-      [-0.3, -0.85, 0.42],
-      [-0.42, -0.72, 0.5],
+      [-0.32, -0.88, 0.42],
+      [-0.45, -0.75, 0.52],
       MOD_BAND_END,
     ],
   },
 
   // —— Left bundle / fascicles ——
+  // LV is patient's left (+X). LAF = anterosuperior; LPF = posteroinferior; septal hugs septum.
   {
     id: "lbb",
     name: "Left bundle (cascade)",
     detail: "Left septal surface under aortic cusp",
-    radiusStart: 0.036,
+    radiusStart: 0.028,
     radiusEnd: 0.028,
     points: [HIS_BRANCH, [0.1, -0.3, -0.02], LBB_ORIGIN],
   },
@@ -467,51 +585,51 @@ const PATHS: PathSpec[] = [
     id: "lbba",
     name: "Left anterior fascicle",
     detail: "Thin · anterosuperior LV / AL papillary",
-    radiusStart: 0.02,
+    radiusStart: 0.026,
     radiusEnd: 0.01,
     tubularSegments: 56,
     points: [
       LBB_ORIGIN,
-      [0.28, -0.32, 0.15],
-      [0.42, -0.38, 0.32],
-      [0.55, -0.52, 0.4],
-      [0.58, -0.72, 0.35],
-      [0.5, -0.9, 0.22],
+      [0.22, -0.28, 0.16],
+      [0.35, -0.32, 0.32],
+      [0.45, -0.48, 0.38],
+      [0.52, -0.65, 0.34],
+      LAF_TIP,
     ],
   },
   {
     id: "lbbp",
     name: "Left posterior fascicle",
-    detail: "Broad · inferior / PM papillary",
-    radiusStart: 0.026,
+    detail: "Broad · inferior–posterior LV / PM papillary",
+    radiusStart: 0.028,
     radiusEnd: 0.012,
     tubularSegments: 56,
     points: [
       LBB_ORIGIN,
-      [0.26, -0.48, -0.08],
-      [0.38, -0.68, -0.1],
-      [0.42, -0.9, -0.02],
-      [0.35, -1.08, 0.06],
-      [0.22, -1.15, 0.08],
+      [0.18, -0.48, -0.14],
+      [0.26, -0.68, -0.22],
+      [0.32, -0.88, -0.16],
+      [0.3, -1.0, -0.06],
+      LPF_TIP,
     ],
   },
   {
     id: "lbb",
     name: "Left septal fascicle",
-    detail: "Mid-septal fibers (variable)",
-    radiusStart: 0.016,
+    detail: "Mid-septal fibers (variable) · stays on left septum",
+    radiusStart: 0.022,
     radiusEnd: 0.008,
     tubularSegments: 40,
     points: [
       LBB_ORIGIN,
-      [0.12, -0.5, 0.08],
-      [0.08, -0.7, 0.12],
-      [0.06, -0.92, 0.1],
-      [0.05, -1.1, 0.04],
+      [0.12, -0.48, 0.02],
+      [0.1, -0.68, 0.04],
+      [0.1, -0.88, 0.02],
+      SEPTAL_TIP,
     ],
   },
 
-  // —— RV Purkinje ——
+  // —— RV Purkinje (stay right of septum: X ≲ 0, more anterior +Z) ——
   {
     id: "purkinjeR",
     name: "RV free wall Purkinje · superior",
@@ -521,9 +639,9 @@ const PATHS: PathSpec[] = [
     tubularSegments: 40,
     points: [
       MOD_BAND_END,
-      [-0.58, -0.55, 0.42],
-      [-0.62, -0.42, 0.28],
-      [-0.55, -0.28, 0.15],
+      [-0.58, -0.55, 0.45],
+      [-0.65, -0.4, 0.32],
+      PURK_R_FW_SUP_TIP,
     ],
   },
   {
@@ -534,9 +652,9 @@ const PATHS: PathSpec[] = [
     radiusEnd: 0.004,
     points: [
       MOD_BAND_END,
-      [-0.6, -0.7, 0.38],
-      [-0.58, -0.88, 0.25],
-      [-0.45, -1.02, 0.12],
+      [-0.62, -0.72, 0.4],
+      [-0.6, -0.92, 0.28],
+      [-0.48, -1.05, 0.15],
     ],
   },
   {
@@ -547,9 +665,9 @@ const PATHS: PathSpec[] = [
     radiusEnd: 0.004,
     points: [
       RBB_APEX,
-      [-0.32, -1.05, 0.22],
-      [-0.38, -1.12, 0.08],
-      [-0.28, -1.15, -0.02],
+      [-0.35, -1.05, 0.28],
+      [-0.42, -1.15, 0.15],
+      [-0.38, -1.18, 0.02],
     ],
   },
   {
@@ -560,9 +678,9 @@ const PATHS: PathSpec[] = [
     radiusEnd: 0.004,
     points: [
       RBB_APEX,
-      [-0.08, -1.12, 0.2],
-      [0.05, -1.18, 0.08],
-      [0.12, -1.12, -0.02],
+      [-0.22, -1.12, 0.28],
+      [-0.12, -1.2, 0.18],
+      [-0.08, -1.18, 0.05],
     ],
   },
   {
@@ -573,118 +691,167 @@ const PATHS: PathSpec[] = [
     radiusEnd: 0.004,
     points: [
       RBB_MID,
-      [-0.05, -0.68, 0.12],
-      [0.0, -0.85, 0.08],
-      [0.02, -1.0, 0.02],
+      [-0.1, -0.68, 0.14],
+      [-0.08, -0.88, 0.1],
+      [-0.06, -1.05, 0.04],
     ],
   },
 
-  // —— LV Purkinje ——
+  // —— LV Purkinje · each branch starts at a fascicle tip; territories stay apart ——
+  // Kept well inside FIELD_ELLIPSOID so tubes don't poke through the ovoid shell.
+  // LAF territory: anterolateral free wall / base (high +X, +Z)
   {
     id: "purkinjeL",
     name: "LV anterolateral Purkinje",
-    detail: "From LAF · free wall",
+    detail: "From LAF tip · lateral free wall",
     radiusStart: 0.012,
     radiusEnd: 0.004,
     tubularSegments: 40,
     points: [
-      [0.5, -0.9, 0.22],
-      [0.58, -1.0, 0.12],
-      [0.48, -1.12, 0.02],
-      [0.28, -1.18, -0.02],
+      LAF_TIP,
+      [0.56, -0.86, 0.16],
+      [0.56, -0.9, 0.04],
+      [0.5, -0.92, -0.04],
+    ],
+  },
+  {
+    id: "purkinjeL",
+    name: "LV anterolateral Purkinje · apex",
+    detail: "From LAF tip · apical free wall",
+    radiusStart: 0.011,
+    radiusEnd: 0.004,
+    points: [
+      LAF_TIP,
+      [0.48, -0.92, 0.14],
+      [0.44, -1.0, 0.04],
+      [0.42, -1.04, -0.04],
     ],
   },
   {
     id: "purkinjeL",
     name: "LV anterolateral Purkinje · base",
-    detail: "Toward LVOT / base",
+    detail: "From LAF tip · toward LV base / LVOT",
     radiusStart: 0.01,
     radiusEnd: 0.004,
     points: [
-      [0.58, -0.72, 0.35],
-      [0.65, -0.58, 0.28],
-      [0.62, -0.42, 0.15],
-      [0.5, -0.3, 0.05],
+      LAF_TIP,
+      [0.58, -0.68, 0.28],
+      [0.6, -0.5, 0.22],
+      PURK_L_ANT_BASE_TIP,
     ],
   },
+  // LPF territory: inferior–posterior (lower +X, −Z)
   {
     id: "purkinjeL",
     name: "LV inferior Purkinje",
-    detail: "From LPF",
+    detail: "From LPF tip · inferior wall",
     radiusStart: 0.012,
     radiusEnd: 0.004,
     points: [
-      [0.22, -1.15, 0.08],
-      [0.08, -1.2, 0.0],
-      [-0.05, -1.15, -0.06],
-      [-0.12, -1.02, -0.1],
+      LPF_TIP,
+      [0.26, -1.1, -0.08],
+      [0.22, -1.06, -0.2],
+      [0.26, -0.96, -0.26],
     ],
   },
   {
     id: "purkinjeL",
-    name: "LV inferior Purkinje · mid",
-    detail: "Posterolateral LV",
+    name: "LV posterolateral Purkinje",
+    detail: "From LPF tip · posterolateral free wall",
+    radiusStart: 0.011,
+    radiusEnd: 0.004,
+    points: [
+      LPF_TIP,
+      [0.4, -1.05, -0.12],
+      [0.5, -0.95, -0.22],
+      [0.52, -0.82, -0.26],
+    ],
+  },
+  {
+    id: "purkinjeL",
+    name: "LV inferior Purkinje · basal",
+    detail: "From LPF tip · toward posterior base",
     radiusStart: 0.01,
     radiusEnd: 0.004,
     points: [
-      [0.35, -1.08, 0.06],
-      [0.48, -1.05, -0.05],
-      [0.55, -0.9, -0.12],
-      [0.52, -0.72, -0.15],
+      LPF_TIP,
+      [0.34, -0.95, -0.14],
+      [0.38, -0.78, -0.24],
+      [0.36, -0.6, -0.22],
     ],
   },
+  // Septal territory: hugs left septum (X ≈ 0.1–0.2)
   {
     id: "purkinjeL",
     name: "LV septal Purkinje · superior",
-    detail: "Left mid-septum",
+    detail: "From septal tip · mid-septum toward base",
     radiusStart: 0.01,
     radiusEnd: 0.004,
     points: [
-      [0.06, -0.92, 0.1],
-      [0.1, -0.78, 0.05],
-      [0.12, -0.62, 0.0],
-      [0.1, -0.48, -0.04],
+      SEPTAL_TIP,
+      [0.14, -0.88, 0.0],
+      [0.15, -0.7, -0.02],
+      [0.14, -0.48, -0.04],
     ],
   },
   {
     id: "purkinjeL",
     name: "LV septal Purkinje · apex",
-    detail: "Apical left septum",
+    detail: "From septal tip · apical septum",
     radiusStart: 0.01,
     radiusEnd: 0.004,
     points: [
-      [0.05, -1.1, 0.04],
-      [0.12, -1.18, -0.02],
-      [0.22, -1.2, -0.05],
-      [0.32, -1.15, -0.02],
-    ],
-  },
-  {
-    id: "purkinjeL",
-    name: "LV apical Purkinje fan",
-    detail: "Dense apical network",
-    radiusStart: 0.009,
-    radiusEnd: 0.0035,
-    points: [
-      [0.28, -1.18, -0.02],
-      [0.18, -1.22, 0.05],
-      [0.05, -1.2, 0.1],
-      [-0.05, -1.15, 0.08],
+      SEPTAL_TIP,
+      [0.14, -1.08, -0.04],
+      [0.16, -1.12, -0.06],
+      [0.2, -1.1, -0.08],
     ],
   },
 
-  // —— Accessory (WPW) ——
+  // —— Accessory pathways (WPW / AVRT) · left & right Kent ——
+  // Outside the AV valve orifices (epicardial groove), then to distal Purkinje tips
+  // so ortho/anti circuits close through the Purkinje network.
   {
     id: "accessory",
     name: "Kent bundle (left lateral)",
-    detail: "Accessory AV connection · mitral annulus",
-    radiusStart: 0.018,
-    radiusEnd: 0.01,
+    detail: "AVRT limb · AV ↔ LA ↔ epicardial groove ↔ LV anterolateral Purkinje · base tip",
+    radiusStart: 0.015,
+    radiusEnd: 0.004,
+    tubularSegments: 96,
     points: [
-      [0.48, 0.28, 0.12],
-      [0.55, 0.12, 0.25],
-      [0.58, -0.08, 0.32],
-      [0.5, -0.28, 0.28],
+      AV,
+      [0.08, 0.12, -0.12],
+      [0.2, 0.22, -0.16],
+      [0.36, 0.26, -0.1],
+      [0.5, 0.22, -0.02],
+      ACC_L_LA,
+      ACC_L_EPIC,
+      [0.7, -0.02, 0.12],
+      [0.66, -0.12, 0.16],
+      [0.6, -0.22, 0.14],
+      [0.56, -0.28, 0.12],
+      PURK_L_ANT_BASE_TIP,
+    ],
+  },
+  {
+    id: "accessoryR",
+    name: "Kent bundle (right lateral)",
+    detail: "AVRT limb · AV ↔ RA ↔ epicardial groove ↔ RV free-wall Purkinje · superior tip",
+    radiusStart: 0.015,
+    radiusEnd: 0.004,
+    tubularSegments: 96,
+    points: [
+      AV,
+      [-0.08, 0.1, -0.06],
+      [-0.22, 0.14, 0.06],
+      [-0.38, 0.12, 0.14],
+      ACC_R_LA,
+      ACC_R_EPIC,
+      [-0.7, -0.08, 0.34],
+      [-0.68, -0.14, 0.3],
+      [-0.64, -0.2, 0.24],
+      [-0.6, -0.24, 0.2],
+      PURK_R_FW_SUP_TIP,
     ],
   },
 ];
@@ -808,17 +975,18 @@ function createPathMesh(spec: PathSpec): THREE.Mesh {
     spec.id === "flutter" ? 6 : 10,
   );
   const isFlutter = spec.id === "flutter";
-  const isAccessory = spec.id === "accessory";
+  const isAccessory = spec.id === "accessory" || spec.id === "accessoryR";
   const isAvnrt = spec.id === "avnrtSlow" || spec.id === "avnrtFast";
-  const color = isFlutter ? 0x7a8a96 : SEGMENT_COLORS[spec.id];
+  // Slow/fast limbs: grey inside the AV sphere; accessory stays vivid purple
+  const color = isFlutter || isAvnrt ? 0x9aa4ae : SEGMENT_COLORS[spec.id];
   const mat = new THREE.MeshStandardMaterial({
     color,
-    roughness: isFlutter ? 0.55 : 0.35,
-    metalness: isFlutter ? 0.05 : 0.08,
-    emissive: isFlutter ? 0x3a4550 : color,
-    emissiveIntensity: isFlutter || isAvnrt ? 0.08 : 0.12,
+    roughness: isFlutter || isAvnrt ? 0.55 : 0.35,
+    metalness: isFlutter || isAvnrt ? 0.05 : 0.08,
+    emissive: isFlutter || isAvnrt ? 0x3a4550 : color,
+    emissiveIntensity: isFlutter || isAvnrt ? 0.1 : 0.12,
     transparent: true,
-    opacity: isFlutter ? 0.45 : isAccessory || isAvnrt ? 0.35 : 0.95,
+    opacity: isFlutter ? 0.45 : isAccessory || isAvnrt ? 0.55 : 0.95,
     depthWrite: isFlutter || isAvnrt ? false : true,
   });
   const mesh = new THREE.Mesh(geo, mat);
@@ -827,9 +995,12 @@ function createPathMesh(spec: PathSpec): THREE.Mesh {
   mesh.userData.segmentName = spec.name;
   mesh.userData.segmentDetail = spec.detail;
   mesh.userData.isConduction = true;
-  mesh.userData.baseEmissive = isFlutter || isAvnrt ? 0.08 : 0.12;
+  mesh.userData.baseEmissive = isFlutter || isAvnrt ? 0.1 : 0.12;
   mesh.userData.curve = curve;
   mesh.userData.pathPoints = spec.points;
+  if (isAvnrt) {
+    mesh.renderOrder = 3; // above translucent AV halo
+  }
   return mesh;
 }
 
@@ -859,6 +1030,52 @@ function createNode(
   mesh.userData.isConduction = true;
   mesh.userData.baseEmissive = 0.4;
   return mesh;
+}
+
+/** Pie-slice sphere whose wedges mirror every branch that meets at this point. */
+function createMultiColorJunction(
+  position: [number, number, number],
+  radius: number,
+  wedges: { color: number; id: SegmentId }[],
+  name: string,
+  detail: string,
+): THREE.Group {
+  const group = new THREE.Group();
+  group.position.set(...position);
+  group.name = name;
+  group.userData.isJunction = true;
+  group.userData.segmentIds = wedges.map((w) => w.id);
+  group.userData.segmentName = name;
+  group.userData.segmentDetail = detail;
+  group.userData.isConduction = true;
+  group.userData.junctionRadius = radius;
+
+  const n = Math.max(1, wedges.length);
+  wedges.forEach((w, i) => {
+    const phi0 = (i / n) * Math.PI * 2 + Math.PI * 0.15;
+    const phiLen = (Math.PI * 2) / n;
+    const mat = new THREE.MeshStandardMaterial({
+      color: w.color,
+      roughness: 0.3,
+      metalness: 0.1,
+      emissive: w.color,
+      emissiveIntensity: 0.4,
+      transparent: true,
+      opacity: 0.95,
+    });
+    const sliceGeo = new THREE.SphereGeometry(radius, 14, 12, phi0, phiLen);
+    const mesh = new THREE.Mesh(sliceGeo, mat);
+    mesh.userData.segmentId = w.id;
+    mesh.userData.segmentName = name;
+    mesh.userData.segmentDetail = detail;
+    mesh.userData.isConduction = true;
+    mesh.userData.isJunctionWedge = true;
+    mesh.userData.baseEmissive = 0.4;
+    mesh.userData.sliceGeo = sliceGeo;
+    mesh.userData.fullGeo = new THREE.SphereGeometry(radius, 20, 16);
+    group.add(mesh);
+  });
+  return group;
 }
 
 /**
@@ -917,9 +1134,9 @@ function fitHeartShellToPathways(heartShell: THREE.Group, _pathways: THREE.Objec
 export function applyAnatomicOrientation(target: THREE.Object3D): void {
   target.rotation.order = "ZYX";
   // Less roll than a full side-lie so the long axis still reads inferiorly
-  target.rotation.z = THREE.MathUtils.degToRad(22); // toward patient's left
-  target.rotation.x = THREE.MathUtils.degToRad(-38); // tip apex anteriorly
-  target.rotation.y = THREE.MathUtils.degToRad(8);
+  target.rotation.z = THREE.MathUtils.degToRad(ANATOMIC_EULER_DEG.z); // toward patient's left
+  target.rotation.x = THREE.MathUtils.degToRad(ANATOMIC_EULER_DEG.x); // tip apex anteriorly
+  target.rotation.y = THREE.MathUtils.degToRad(ANATOMIC_EULER_DEG.y);
 }
 
 function createPulseSprite(radius = 0.05, color = 0xffffff): THREE.Mesh {
@@ -964,7 +1181,9 @@ export type ConductionSystem = {
     branches?: import("./pathwayTiming").BranchWindow[];
   }) => import("./pathwayTiming").ActiveFront[];
   setSegmentVisibility: (id: SegmentId, visible: boolean) => void;
-  setAccessoryVisible: (visible: boolean) => void;
+  setAccessoryVisible: (visible: boolean, side?: "left" | "right" | "both") => void;
+  /** Enlarge / translucify AV node when dual pathways are shown (AVNRT). */
+  setAvNodeEmphasis: (emphasized: boolean) => void;
   /** Highlight AV-nodal (supra-His) vs infra-His block level */
   setBlockSite: (site: "none" | "supra-his" | "infra-his") => void;
   /** Place lesion markers on blocked bundle / fascicle segments */
@@ -1034,23 +1253,175 @@ export function createConductionSystem(): ConductionSystem {
   );
   const avNode = createNode(
     AV,
-    0.048,
+    AV_R,
     SEGMENT_COLORS.av,
     "AV node",
-    "Triangle of Koch · delay & filter",
+    "Triangle of Koch · compact node · delay & filter",
     "av",
   );
-  const hisBranch = createNode(
-    HIS_BRANCH,
-    0.03,
-    SEGMENT_COLORS.his,
-    "His bifurcation",
-    "Crest of muscular IV septum",
-    "his",
-  );
 
-  pathways.add(saMain, saSup, saInf, avNode, hisBranch);
+  // Larger translucent halo — dual pathways wrap on this surface during AVNRT
+  const avHalo = new THREE.Mesh(
+    new THREE.SphereGeometry(AV_HALO_R, 32, 24),
+    new THREE.MeshStandardMaterial({
+      color: SEGMENT_COLORS.av,
+      roughness: 0.45,
+      metalness: 0.05,
+      emissive: SEGMENT_COLORS.av,
+      emissiveIntensity: 0.12,
+      transparent: true,
+      opacity: 0.28,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    }),
+  );
+  avHalo.name = "AV node halo";
+  avHalo.position.set(...AV);
+  avHalo.visible = false;
+  avHalo.userData.isAvHalo = true;
+  avHalo.userData.isConduction = false;
+  avHalo.renderOrder = 1;
+
+  // Multicolor junction beads — hide tube end-caps / color seams at branch points
+  const junctions: THREE.Group[] = [
+    createMultiColorJunction(
+      HIS_PEN,
+      0.038,
+      [
+        { color: SEGMENT_COLORS.his, id: "his" },
+        { color: 0x9aa4ae, id: "avnrtSlow" },
+        { color: 0xb0b8c0, id: "avnrtFast" },
+      ],
+      "His / AVN loop junction",
+      "Penetrating His meets slow & fast pathways",
+    ),
+    createMultiColorJunction(
+      HIS_BRANCH,
+      0.036,
+      [
+        { color: SEGMENT_COLORS.his, id: "his" },
+        { color: SEGMENT_COLORS.rbb, id: "rbb" },
+        { color: SEGMENT_COLORS.lbb, id: "lbb" },
+      ],
+      "His bifurcation",
+      "Crest of muscular IV septum · His → RBB / LBB",
+    ),
+    createMultiColorJunction(
+      LBB_ORIGIN,
+      0.034,
+      [
+        { color: SEGMENT_COLORS.lbb, id: "lbb" },
+        { color: SEGMENT_COLORS.lbba, id: "lbba" },
+        { color: SEGMENT_COLORS.lbbp, id: "lbbp" },
+      ],
+      "Left bundle fan",
+      "LBB cascade → anterior / posterior / septal fascicles",
+    ),
+    createMultiColorJunction(
+      LAF_TIP,
+      0.02,
+      [
+        { color: SEGMENT_COLORS.lbba, id: "lbba" },
+        { color: SEGMENT_COLORS.purkinjeL, id: "purkinjeL" },
+      ],
+      "LAF–Purkinje junction",
+      "Left anterior fascicle → LV anterolateral Purkinje",
+    ),
+    createMultiColorJunction(
+      LPF_TIP,
+      0.02,
+      [
+        { color: SEGMENT_COLORS.lbbp, id: "lbbp" },
+        { color: SEGMENT_COLORS.purkinjeL, id: "purkinjeL" },
+      ],
+      "LPF–Purkinje junction",
+      "Left posterior fascicle → LV inferior Purkinje",
+    ),
+    createMultiColorJunction(
+      SEPTAL_TIP,
+      0.018,
+      [
+        { color: SEGMENT_COLORS.lbb, id: "lbb" },
+        { color: SEGMENT_COLORS.purkinjeL, id: "purkinjeL" },
+      ],
+      "Septal–Purkinje junction",
+      "Left septal fascicle → LV septal Purkinje",
+    ),
+    createMultiColorJunction(
+      RBB_APEX,
+      0.022,
+      [
+        { color: SEGMENT_COLORS.rbb, id: "rbb" },
+        { color: SEGMENT_COLORS.purkinjeR, id: "purkinjeR" },
+      ],
+      "RBB–Purkinje junction",
+      "Right bundle → RV Purkinje network",
+    ),
+    createMultiColorJunction(
+      MOD_BAND_END,
+      0.02,
+      [
+        { color: SEGMENT_COLORS.rbb, id: "rbb" },
+        { color: SEGMENT_COLORS.purkinjeR, id: "purkinjeR" },
+      ],
+      "Moderator band insertion",
+      "Moderator band → anterior papillary / Purkinje",
+    ),
+    createMultiColorJunction(
+      ACC_L_LA,
+      0.018,
+      [{ color: SEGMENT_COLORS.accessory, id: "accessory" }],
+      "Left Kent atrial insertion",
+      "Left-lateral LA · basal/outside mitral annulus",
+    ),
+    createMultiColorJunction(
+      ACC_L_EPIC,
+      0.014,
+      [{ color: SEGMENT_COLORS.accessory, id: "accessory" }],
+      "Left Kent epicardial bridge",
+      "AV-groove fat pad · lateral to fibrous mitral ring",
+    ),
+    createMultiColorJunction(
+      PURK_L_ANT_BASE_TIP,
+      0.02,
+      [
+        { color: SEGMENT_COLORS.accessory, id: "accessory" },
+        { color: SEGMENT_COLORS.purkinjeL, id: "purkinjeL" },
+      ],
+      "Left Kent–Purkinje tip",
+      "Left-lateral Kent meets LV anterolateral Purkinje · base tip",
+    ),
+    createMultiColorJunction(
+      ACC_R_LA,
+      0.018,
+      [{ color: SEGMENT_COLORS.accessoryR, id: "accessoryR" }],
+      "Right Kent atrial insertion",
+      "Right-lateral RA · outside tricuspid annulus",
+    ),
+    createMultiColorJunction(
+      ACC_R_EPIC,
+      0.014,
+      [{ color: SEGMENT_COLORS.accessoryR, id: "accessoryR" }],
+      "Right Kent epicardial bridge",
+      "AV-groove fat pad · lateral to fibrous tricuspid ring",
+    ),
+    createMultiColorJunction(
+      PURK_R_FW_SUP_TIP,
+      0.02,
+      [
+        { color: SEGMENT_COLORS.accessoryR, id: "accessoryR" },
+        { color: SEGMENT_COLORS.purkinjeR, id: "purkinjeR" },
+      ],
+      "Right Kent–Purkinje tip",
+      "Right-lateral Kent meets RV free-wall Purkinje · superior tip",
+    ),
+  ];
+
+  pathways.add(saMain, saSup, saInf, avNode, avHalo, ...junctions);
   root.add(pathways);
+
+  const segmentVis: Partial<Record<SegmentId, boolean>> = {};
+  for (const g of SEGMENT_META) segmentVis[g.id] = g.defaultOn;
 
   // Animated “block level” markers (supra-His vs infra-His)
   const blockSiteGroup = new THREE.Group();
@@ -1276,8 +1647,8 @@ export function createConductionSystem(): ConductionSystem {
         mat.color.setHex(SEGMENT_COLORS[id] ?? 0xffffff);
         mat.emissive.setHex(SEGMENT_COLORS[id] ?? 0xffffff);
         mat.emissiveIntensity = Number(obj.userData.baseEmissive ?? 0.12);
-        mat.opacity = id === "accessory" || id === "avnrtSlow" || id === "avnrtFast" ? 0.35 : id === "flutter" ? 0.45 : 1;
-        mat.transparent = id === "accessory" || id === "flutter" || id === "avnrtSlow" || id === "avnrtFast";
+        mat.opacity = id === "accessory" || id === "accessoryR" || id === "avnrtSlow" || id === "avnrtFast" ? 0.55 : id === "flutter" ? 0.45 : 1;
+        mat.transparent = id === "accessory" || id === "accessoryR" || id === "flutter" || id === "avnrtSlow" || id === "avnrtFast";
       }
     });
     branchLesionGroup.visible = unique.length > 0;
@@ -1328,10 +1699,13 @@ export function createConductionSystem(): ConductionSystem {
       let intensity = base;
       if (obj.userData.hovered) intensity = Math.max(intensity, 1.15);
       mat.emissiveIntensity = intensity;
-      if (obj.userData.segmentId === "accessory") mat.opacity = 0.35;
+      if (obj.userData.segmentId === "accessory" || obj.userData.segmentId === "accessoryR") mat.opacity = 0.55;
       if (obj.userData.segmentId === "flutter") mat.opacity = 0.45;
       if (obj.userData.segmentId === "avnrtSlow" || obj.userData.segmentId === "avnrtFast") {
-        mat.opacity = 0.35;
+        mat.color.setHex(0x9aa4ae);
+        mat.emissive.setHex(0x3a4550);
+        mat.opacity = 0.55;
+        obj.userData.avnrtState = "rest";
       }
     });
   }
@@ -1390,18 +1764,37 @@ export function createConductionSystem(): ConductionSystem {
       } else if (glow > 0) {
         intensity = base + (0.48 - base) * (glow / 0.55);
       }
-      if (obj.userData.hovered) intensity = Math.max(intensity, 1.15);
-      mat.emissiveIntensity = intensity;
 
-      if (id === "accessory") {
-        mat.opacity = glow > 0 || ekgActive.has(id) ? 0.85 : 0.35;
+      if (id === "accessory" || id === "accessoryR") {
+        mat.opacity = glow > 0 || ekgActive.has(id) ? 0.95 : 0.55;
       }
       if (id === "flutter") {
         mat.opacity = glow > 0 || ekgActive.has(id) ? 0.7 : 0.45;
       }
-      if (id === "avnrtSlow" || id === "avnrtFast") {
-        mat.opacity = glow > 0 || ekgActive.has(id) ? 0.9 : 0.35;
+      if ((id === "avnrtSlow" || id === "avnrtFast") && !obj.userData.isJunctionWedge) {
+        // Conducting vs refractory (inhibited) vs resting — pulse the limb itself
+        if (glow >= 0.95 || ekgActive.has(id)) {
+          mat.color.setHex(0xe8eef4);
+          mat.emissive.setHex(0xc8d4e0);
+          mat.opacity = 0.95;
+          intensity = peak;
+          obj.userData.avnrtState = "conducting";
+        } else if (glow > 0) {
+          const pulse = 0.5 + 0.5 * Math.sin(opts.tCycle * Math.PI * 1.6);
+          mat.color.setHex(0xe07050);
+          mat.emissive.setHex(0xb03820);
+          mat.opacity = 0.55 + 0.4 * pulse;
+          intensity = 0.4 + 0.55 * pulse;
+          obj.userData.avnrtState = "refractory";
+        } else {
+          mat.color.setHex(0x9aa4ae);
+          mat.emissive.setHex(0x3a4550);
+          mat.opacity = 0.55;
+          obj.userData.avnrtState = "rest";
+        }
       }
+      if (obj.userData.hovered) intensity = Math.max(intensity, 1.15);
+      mat.emissiveIntensity = intensity;
     });
   }
 
@@ -1640,20 +2033,52 @@ export function createConductionSystem(): ConductionSystem {
   }
 
   function setSegmentVisibility(id: SegmentId, visible: boolean) {
+    segmentVis[id] = visible;
     pathways.traverse((obj) => {
+      if (obj.userData.isJunction || obj.userData.isJunctionWedge || obj.userData.isAvHalo) return;
       if (obj.userData.segmentId === id) obj.visible = visible;
     });
+    for (const j of junctions) {
+      const live: THREE.Mesh[] = [];
+      for (const child of j.children) {
+        if (!(child instanceof THREE.Mesh) || !child.userData.isJunctionWedge) continue;
+        const on = !!segmentVis[child.userData.segmentId as SegmentId];
+        child.visible = on;
+        if (on) live.push(child);
+      }
+      j.visible = live.length > 0;
+      // One live branch → full bead; several → pie wedges of each color
+      for (const m of live) {
+        const geo = live.length === 1 ? m.userData.fullGeo : m.userData.sliceGeo;
+        if (geo && m.geometry !== geo) m.geometry = geo;
+      }
+    }
   }
 
-  function setAccessoryVisible(visible: boolean) {
-    setSegmentVisibility("accessory", visible);
+  function setAccessoryVisible(visible: boolean, side: "left" | "right" | "both" = "both") {
+    if (side === "left" || side === "both") setSegmentVisibility("accessory", visible);
+    if (side === "right" || side === "both") setSegmentVisibility("accessoryR", visible);
+  }
+
+  function setAvNodeEmphasis(emphasized: boolean) {
+    // Core AV stays solid; translucent halo + grey wraps appear for AVNRT
+    avHalo.visible = emphasized;
+    if (avNode.material instanceof THREE.MeshStandardMaterial) {
+      avNode.material.opacity = 0.95;
+      avNode.material.transparent = true;
+      avNode.material.depthWrite = true;
+    }
   }
 
   resetGlow();
+  for (const g of SEGMENT_META) {
+    setSegmentVisibility(g.id, g.defaultOn);
+  }
   setAccessoryVisible(false);
   setSegmentVisibility("flutter", false);
   setSegmentVisibility("avnrtSlow", false);
   setSegmentVisibility("avnrtFast", false);
+  setAvNodeEmphasis(false);
 
   // Wrap pathways snugly, then center the whole conduction root
   fitHeartShellToPathways(heartShell, pathways);
@@ -1679,6 +2104,7 @@ export function createConductionSystem(): ConductionSystem {
     getActiveFronts,
     setSegmentVisibility,
     setAccessoryVisible,
+    setAvNodeEmphasis,
     setBlockSite,
     setBranchBlocks,
     updateBlockSitePulse,

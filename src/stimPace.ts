@@ -55,6 +55,7 @@ export function classifyStim(id: SegmentId): StimKind {
     case "purkinjeL":
       return "leftVent";
     case "accessory":
+    case "accessoryR":
       return "accessory";
     default:
       return "ventricular";

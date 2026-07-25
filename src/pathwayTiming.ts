@@ -333,7 +333,7 @@ function buildBranchesForFinding(finding: FindingId | string | undefined): Branc
     ];
   }
 
-  if (finding === "avnrt") {
+  if (finding === "avnrtTypical" || finding === "avnrt") {
     // Typical slow–fast: anterograde slow → His–Purkinje; retrograde fast → atria
     return [
       { id: "avnrtSlow", t0: 0.0, t1: 0.16, group: "avnrt" },
@@ -345,11 +345,70 @@ function buildBranchesForFinding(finding: FindingId | string | undefined): Branc
       { id: "lbbp", t0: 0.2, t1: 0.3, group: "fascicles" },
       { id: "purkinjeR", t0: 0.22, t1: 0.34, group: "purkinje" },
       { id: "purkinjeL", t0: 0.22, t1: 0.34, group: "purkinje" },
-      // Fast pathway retrograde: compact node → Todaro (curve 0), then atrial exit (curve 1)
-      { id: "avnrtFast", curveIndex: 0, t0: 0.2, t1: 0.32, group: "avnrt", reverse: true },
-      { id: "avnrtFast", curveIndex: 1, t0: 0.26, t1: 0.38, group: "avnrt" },
+      { id: "avnrtFast", t0: 0.2, t1: 0.34, group: "avnrt", reverse: true },
       { id: "internodal", t0: 0.28, t1: 0.4, group: "atrial", reverse: true },
       { id: "sa", t0: 0.32, t1: 0.4, group: "pacemaker", reverse: true },
+    ];
+  }
+
+  if (finding === "avnrtAtypical") {
+    // Fast–slow: anterograde fast → His–Purkinje; retrograde slow → atria (long RP)
+    return [
+      { id: "avnrtFast", t0: 0.0, t1: 0.12, group: "avnrt" },
+      { id: "av", t0: 0.08, t1: 0.16, group: "av-delay" },
+      { id: "his", t0: 0.12, t1: 0.2, group: "his" },
+      { id: "rbb", t0: 0.16, t1: 0.28, group: "bundles" },
+      { id: "lbb", t0: 0.16, t1: 0.26, group: "bundles" },
+      { id: "lbba", t0: 0.18, t1: 0.28, group: "fascicles" },
+      { id: "lbbp", t0: 0.18, t1: 0.28, group: "fascicles" },
+      { id: "purkinjeR", t0: 0.2, t1: 0.32, group: "purkinje" },
+      { id: "purkinjeL", t0: 0.2, t1: 0.32, group: "purkinje" },
+      { id: "avnrtSlow", t0: 0.28, t1: 0.52, group: "avnrt", reverse: true },
+      { id: "internodal", t0: 0.45, t1: 0.62, group: "atrial", reverse: true },
+      { id: "sa", t0: 0.52, t1: 0.62, group: "pacemaker", reverse: true },
+    ];
+  }
+
+  if (finding === "avrtOrthoLeft" || finding === "avrtOrthoRight") {
+    const left = finding === "avrtOrthoLeft";
+    const ap: SegmentId = left ? "accessory" : "accessoryR";
+    const purk: SegmentId = left ? "purkinjeL" : "purkinjeR";
+    const purkCi = left ? 2 : 0; // LV anterolateral · base / RV free-wall · superior
+    // Orthodromic: AV → His → bundles → fascicles → Purkinje tip → up Kent → AV
+    return [
+      { id: "av", t0: 0.0, t1: 0.14, group: "av-delay" },
+      { id: "his", t0: 0.08, t1: 0.22, group: "his" },
+      { id: "rbb", t0: 0.14, t1: 0.34, group: "bundles" },
+      { id: "lbb", t0: 0.14, t1: 0.34, group: "bundles" },
+      { id: "lbba", t0: 0.18, t1: 0.4, group: "fascicles" },
+      { id: "lbbp", t0: 0.18, t1: 0.38, group: "fascicles" },
+      { id: "purkinjeR", t0: 0.24, t1: 0.48, group: "purkinje" },
+      { id: "purkinjeL", t0: 0.24, t1: 0.5, group: "purkinje" },
+      { id: ap, t0: 0.42, t1: 0.8, group: "accessory", reverse: true },
+      { id: purk, t0: 0.38, t1: 0.55, group: "purkinje", curveIndex: purkCi },
+      { id: "internodal", t0: 0.68, t1: 0.9, group: "atrial", reverse: true },
+      { id: "av", t0: 0.74, t1: 0.95, group: "av-delay" },
+    ];
+  }
+
+  if (finding === "avrtAntiLeft" || finding === "avrtAntiRight") {
+    const left = finding === "avrtAntiLeft";
+    const ap: SegmentId = left ? "accessory" : "accessoryR";
+    const purk: SegmentId = left ? "purkinjeL" : "purkinjeR";
+    const fasc: SegmentId = left ? "lbba" : "rbb";
+    const bundle: SegmentId = left ? "lbb" : "rbb";
+    const purkCi = left ? 2 : 0; // LV anterolateral · base / RV free-wall · superior
+    // Antidromic: down Kent → Purkinje tip · reverse up to His → AV → atrial Kent
+    return [
+      { id: ap, t0: 0.0, t1: 0.3, group: "accessory", u0: 0.4 },
+      // Reverse along the tip curve (tip → fascicle / moderator band)
+      { id: purk, t0: 0.12, t1: 0.42, group: "purkinje", reverse: true, curveIndex: purkCi },
+      { id: fasc, t0: 0.28, t1: 0.52, group: "fascicles", reverse: true },
+      { id: bundle, t0: 0.4, t1: 0.6, group: "bundles", reverse: true },
+      { id: "his", t0: 0.5, t1: 0.7, group: "his", reverse: true },
+      { id: "av", t0: 0.6, t1: 0.78, group: "av-delay", reverse: true },
+      { id: ap, t0: 0.7, t1: 0.92, group: "accessory", u0: 0, u1: 0.42 },
+      { id: "internodal", t0: 0.74, t1: 0.95, group: "atrial", reverse: true },
     ];
   }
 
@@ -407,15 +466,6 @@ function buildBranchesForFinding(finding: FindingId | string | undefined): Branc
       { id: "rbb", t0: 0.32, t1: 0.46, group: "ectopy", reverse: true },
       { id: "lbb", t0: 0.32, t1: 0.46, group: "ectopy", reverse: true },
     ];
-  }
-  if (finding === "wpw") {
-    base.push({ id: "accessory", t0: 0.14, t1: 0.3, group: "accessory" });
-    for (const b of base) {
-      if (b.group === "bundles" || b.group === "fascicles" || b.group === "purkinje") {
-        b.t0 -= 0.02;
-        b.t1 -= 0.01;
-      }
-    }
   }
   if (finding === "av1") {
     for (const b of base) {
@@ -667,7 +717,9 @@ export function refractoryFrac(id: SegmentId): number {
       return 0.09;
     case "avnrtSlow":
     case "avnrtFast":
-      return 0.12;
+      // Long ERP so the unused limb stays inhibited into the next lap
+      // (why the wave can only go one way around the dual-pathway loop).
+      return 0.78;
     case "av":
       return 0.36;
     case "his":
@@ -682,6 +734,7 @@ export function refractoryFrac(id: SegmentId): number {
     case "myocardiumV":
       return 0.34;
     case "accessory":
+    case "accessoryR":
       return 0.26;
     default:
       return 0.25;
