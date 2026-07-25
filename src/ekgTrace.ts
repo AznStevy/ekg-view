@@ -57,6 +57,9 @@ export type CalipersReadout = {
   bpm: number;
 };
 
+/** Classic 3×4 paper grid (+ rhythm) vs stacked 12-row monitor. */
+export type EkgDisplayMode = "grid" | "channels";
+
 export type EkgTrace = {
   canvas: HTMLCanvasElement;
   setFinding: (id: FindingId) => void;
@@ -71,6 +74,8 @@ export type EkgTrace = {
   getCalipers: () => CalipersState;
   getCalipersReadout: () => CalipersReadout | null;
   onCalipersChange: (handler: (readout: CalipersReadout | null) => void) => void;
+  setDisplayMode: (mode: EkgDisplayMode) => void;
+  getDisplayMode: () => EkgDisplayMode;
   update: (elapsedSec: number) => Pick<WaveSample, "phase" | "active" | "mark" | "leads"> & { tCycle: number };
   resize: () => void;
   getWindowSec: () => number;
@@ -96,6 +101,10 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
   let calipers: CalipersState = { enabled: false, x0: null, x1: null, march: false };
   let caliperDragging = false;
   let caliperDragWhich: "x0" | "x1" | "new" | null = null;
+  let caliperMoved = false;
+  let caliperCommittedNew = false;
+  let caliperDown = { x: 0, y: 0, frac: 0 };
+  let displayMode: EkgDisplayMode = "grid";
   let dpr = 1;
   let cssW = 0;
   let cssH = 0;
@@ -229,10 +238,12 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
       calipers.x1 = null;
       caliperDragging = false;
       caliperDragWhich = null;
+      caliperMoved = false;
+      caliperCommittedNew = false;
     }
     canvas.style.cursor = on ? "crosshair" : "ew-resize";
     canvas.title = on
-      ? "Drag to set caliper interval · wheel still scrubs"
+      ? "Click two points or drag to set calipers · wheel still scrubs"
       : "Drag or swipe to scrub the EKG";
     notifyCalipers();
   }
@@ -246,7 +257,19 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
     calipers.x1 = null;
     caliperDragging = false;
     caliperDragWhich = null;
+    caliperMoved = false;
+    caliperCommittedNew = false;
     notifyCalipers();
+  }
+
+  function setDisplayMode(mode: EkgDisplayMode) {
+    if (displayMode === mode) return;
+    displayMode = mode;
+    invalidateBuffers();
+  }
+
+  function getDisplayMode(): EkgDisplayMode {
+    return displayMode;
   }
 
   function clientXToFrac(clientX: number): number {
@@ -299,13 +322,13 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
         const frac = clientXToFrac(e.clientX);
         const handle = nearestCaliperHandle(frac);
         caliperDragging = true;
+        caliperMoved = false;
+        caliperCommittedNew = false;
+        caliperDown = { x: e.clientX, y: e.clientY, frac };
         if (handle) {
           caliperDragWhich = handle;
         } else {
           caliperDragWhich = "new";
-          calipers.x0 = frac;
-          calipers.x1 = frac;
-          notifyCalipers();
         }
         return;
       }
@@ -322,10 +345,30 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
       if (calipers.enabled && caliperDragging) {
         e.preventDefault();
         const frac = clientXToFrac(e.clientX);
-        if (caliperDragWhich === "x0") calipers.x0 = frac;
-        else if (caliperDragWhich === "x1") calipers.x1 = frac;
-        else if (caliperDragWhich === "new") calipers.x1 = frac;
-        notifyCalipers();
+        const dx = e.clientX - caliperDown.x;
+        const dy = e.clientY - caliperDown.y;
+        if (dx * dx + dy * dy > 25) caliperMoved = true;
+
+        if (caliperDragWhich === "x0") {
+          calipers.x0 = frac;
+          notifyCalipers();
+        } else if (caliperDragWhich === "x1") {
+          calipers.x1 = frac;
+          notifyCalipers();
+        } else if (caliperDragWhich === "new" && caliperMoved) {
+          // Drag sets a full interval; if awaiting a second click, only move x1.
+          if (calipers.x0 != null && calipers.x1 == null) {
+            calipers.x1 = frac;
+            caliperCommittedNew = true;
+          } else if (!caliperCommittedNew) {
+            calipers.x0 = caliperDown.frac;
+            calipers.x1 = frac;
+            caliperCommittedNew = true;
+          } else {
+            calipers.x1 = frac;
+          }
+          notifyCalipers();
+        }
         return;
       }
 
@@ -342,9 +385,23 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
   );
   const endDrag = (e: PointerEvent) => {
     if (activePointerId !== null && e.pointerId !== activePointerId) return;
+
+    if (calipers.enabled && caliperDragging && caliperDragWhich === "new" && !caliperMoved) {
+      // Click-to-place: first click sets x0; second sets x1; a third starts over.
+      if (calipers.x0 == null || calipers.x1 != null) {
+        calipers.x0 = caliperDown.frac;
+        calipers.x1 = null;
+      } else {
+        calipers.x1 = caliperDown.frac;
+      }
+      notifyCalipers();
+    }
+
     dragging = false;
     caliperDragging = false;
     caliperDragWhich = null;
+    caliperMoved = false;
+    caliperCommittedNew = false;
     activePointerId = null;
   };
   canvas.addEventListener("pointerup", endDrag);
@@ -353,6 +410,8 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
     dragging = false;
     caliperDragging = false;
     caliperDragWhich = null;
+    caliperMoved = false;
+    caliperCommittedNew = false;
     activePointerId = null;
   });
   canvas.addEventListener(
@@ -728,17 +787,21 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
       : available[0] ?? "II";
 
     // Match classic paper: grid cells = 1 column window; rhythm strip = full width at same speed
+    const isChannels = displayMode === "channels";
     const isSingleOrPair =
-      layout === "telemetry" ||
-      available.length === 1 ||
-      layout === "rhythm" ||
-      available.length === 2;
-    const isSixPack = layout === "limb6" || layout === "precordial6";
+      !isChannels &&
+      (layout === "telemetry" ||
+        available.length === 1 ||
+        layout === "rhythm" ||
+        available.length === 2);
+    const isSixPack = !isChannels && (layout === "limb6" || layout === "precordial6");
     const showRhythmStrip =
+      !isChannels &&
       !isSingleOrPair &&
       !isSixPack &&
       (layout === "full12" || shown.has("II") || available.length >= 6);
-    viewWindowSec = showRhythmStrip ? MAX_WINDOW_SEC : COLUMN_WINDOW_SEC;
+    // 12-channel rows share the full rhythm-strip window so paper speed matches
+    viewWindowSec = isChannels || showRhythmStrip ? MAX_WINDOW_SEC : COLUMN_WINDOW_SEC;
     const gridFromFrac = showRhythmStrip ? 1 - COLUMN_WINDOW_SEC / viewWindowSec : 0;
 
     const pad = 2;
@@ -758,6 +821,30 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
 
     const gridTop = barH + 4;
     caliperTop = gridTop;
+
+    // Stacked 12-channel monitor: one full-width row per lead
+    if (isChannels) {
+      const pack = LEADS;
+      const rowH = (cssH - gridTop - 4) / pack.length;
+      const cursorLocal = cssW - pad * 2 - 6;
+      pack.forEach((lead, i) => {
+        drawLeadCell(
+          lead,
+          pad,
+          gridTop + i * rowH,
+          cssW - pad * 2,
+          Math.max(1, rowH - 1),
+          cursorLocal,
+          {
+            label: labelFor(lead),
+            missing: upload ? !shown.has(lead) : false,
+            fromFrac: 0,
+            toFrac: 1,
+          },
+        );
+      });
+      return finishFrame(sample, tCycle);
+    }
 
     // Telemetry / single-channel: one large strip
     if (layout === "telemetry" || available.length === 1) {
@@ -867,6 +954,8 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
     getCalipers,
     getCalipersReadout,
     onCalipersChange,
+    setDisplayMode,
+    getDisplayMode,
     update,
     resize,
     getWindowSec: () => viewWindowSec,

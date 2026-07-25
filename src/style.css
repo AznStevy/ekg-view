@@ -209,12 +209,56 @@ body.is-resizing canvas {
   border-bottom: 1px solid rgba(94, 160, 180, 0.18);
 }
 
+.ekg-header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
 .ekg-header h2 {
   font-size: 0.7rem;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted);
+}
+
+.ekg-view-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  border: 1px solid rgba(94, 160, 180, 0.28);
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(8, 14, 18, 0.45);
+}
+
+.ekg-view-btn {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  padding: 0.22rem 0.55rem;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.ekg-view-btn + .ekg-view-btn {
+  border-left: 1px solid rgba(94, 160, 180, 0.28);
+}
+
+.ekg-view-btn:hover {
+  color: var(--text);
+}
+
+.ekg-view-btn[aria-pressed="true"] {
+  color: var(--accent);
+  background: rgba(61, 184, 200, 0.14);
 }
 
 .ekg-meta {

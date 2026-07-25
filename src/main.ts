@@ -761,7 +761,17 @@ function buildUI(root: HTMLElement): {
       <div id="splitter" role="separator" aria-orientation="vertical" aria-label="Resize panes" tabindex="0"></div>
       <section class="view-pane" id="view-ekg" aria-label="Live EKG tracing">
         <div class="ekg-header">
-          <h2>12-lead · scrub to explore</h2>
+          <div class="ekg-header-left">
+            <h2>12-lead · scrub to explore</h2>
+            <div class="ekg-view-toggle" role="group" aria-label="EKG layout">
+              <button type="button" class="ekg-view-btn" id="btn-ekg-grid" aria-pressed="true" title="Classic 3×4 grid with rhythm strip">
+                Grid
+              </button>
+              <button type="button" class="ekg-view-btn" id="btn-ekg-channels" aria-pressed="false" title="All 12 leads stacked, one row each">
+                12-channel
+              </button>
+            </div>
+          </div>
           <div class="ekg-meta">
             <span class="meta-pill" id="meta-finding">NSR</span>
             <span class="meta-pill" id="meta-rate">70 bpm</span>
@@ -954,6 +964,8 @@ function buildUI(root: HTMLElement): {
     "btn-calipers",
     "btn-calipers-march",
     "caliper-readout",
+    "btn-ekg-grid",
+    "btn-ekg-channels",
     "ekg-footer",
     "panel-shell",
     "btn-collapse",
@@ -1844,7 +1856,16 @@ function main() {
   const FOOTER_SCRUB =
     "← → scrub (pauses) · ↑ ↓ rate · drag/swipe also scrubs.";
   const FOOTER_CALIPERS =
-    "Drag on the strip to set calipers · ← → / wheel still scrub · March out repeats the interval.";
+    "Click two points or drag to set calipers · ← → / wheel still scrub · March out repeats the interval.";
+
+  function syncEkgDisplayModeUI() {
+    const mode = ekg.getDisplayMode();
+    (els["btn-ekg-grid"] as HTMLButtonElement).setAttribute("aria-pressed", mode === "grid" ? "true" : "false");
+    (els["btn-ekg-channels"] as HTMLButtonElement).setAttribute(
+      "aria-pressed",
+      mode === "channels" ? "true" : "false",
+    );
+  }
 
   function syncCalipersUI() {
     const on = ekg.getCalipers().enabled;
@@ -1876,6 +1897,16 @@ function main() {
     readout.hidden = false;
     readout.textContent = `${r.intervalMs} ms · ${r.bpm}/min`;
   });
+
+  els["btn-ekg-grid"].addEventListener("click", () => {
+    ekg.setDisplayMode("grid");
+    syncEkgDisplayModeUI();
+  });
+  els["btn-ekg-channels"].addEventListener("click", () => {
+    ekg.setDisplayMode("channels");
+    syncEkgDisplayModeUI();
+  });
+  syncEkgDisplayModeUI();
 
   els["btn-calipers"].addEventListener("click", () => {
     const next = !ekg.getCalipers().enabled;
