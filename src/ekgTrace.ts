@@ -608,10 +608,9 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
     drawGrid(true);
 
     const mid = y + h * 0.55;
-    // Standard ECG sensitivity: 10 mm/mV, using the same mm scale as the paper grid.
-    // Cap vs cell height so short rhythm strips don't clip a 1 mV QRS.
+    // Fixed paper gain: 10 mm/mV — same in grid and 12-channel (do not scale by row height).
     const MM_PER_MV = 10;
-    const amp = Math.min(paperMmPx * MM_PER_MV, h * 0.36);
+    const amp = paperMmPx * MM_PER_MV;
     c.strokeStyle = GRID.baseline;
     c.beginPath();
     c.moveTo(x, mid);
