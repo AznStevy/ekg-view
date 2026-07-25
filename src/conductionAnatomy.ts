@@ -63,7 +63,8 @@ type PathSpec = {
   tubularSegments?: number;
 };
 
-type GuideSpec = {
+type GuideTubeSpec = {
+  kind?: "tube";
   name: string;
   detail: string;
   points: [number, number, number][];
@@ -71,9 +72,51 @@ type GuideSpec = {
   tubularSegments?: number;
 };
 
+/** Orifice / junction as a grey ring (vena cava, CS ostium). */
+type GuideRingSpec = {
+  kind: "ring";
+  name: string;
+  detail: string;
+  center: [number, number, number];
+  /** Axis of the vessel / orifice (out of the RA). */
+  normal: [number, number, number];
+  radius: number;
+  tubeRadius?: number;
+};
+
+/** Septal landmark as a grey oval outline (fossa ovalis). */
+type GuideOvalSpec = {
+  kind: "oval";
+  name: string;
+  detail: string;
+  center: [number, number, number];
+  /** Plane normal (≈ toward LA / left). */
+  normal: [number, number, number];
+  /** Preferred major-axis direction (projected onto the plane). */
+  majorHint: [number, number, number];
+  major: number;
+  minor: number;
+  tubeRadius?: number;
+};
+
+type GuideSpec = GuideTubeSpec | GuideRingSpec | GuideOvalSpec;
+
+/**
+ * RA anatomic guide anchors (patient frame: +X left, +Y superior, +Z anterior).
+ * Placed relative to SA / CTI / CS used by the conduction paths.
+ */
+/** Orifice center; SA sits on the lateral rim along the sulcus. */
+const SVC_RA_CENTER: [number, number, number] = [-0.47, 0.64, 0.17];
+/** Inferior RA orifice; lateral CTI starts just superior-lateral to this ring. */
+const IVC_RA_CENTER: [number, number, number] = [-0.4, -0.18, 0.1];
+const CS_OST_CENTER: [number, number, number] = [-0.06, -0.01, -0.16];
+/** Mid interatrial septum, between AV (Koch) and superior septal flutter limb. */
+const FOSSA_CENTER: [number, number, number] = [0.01, 0.26, -0.14];
+
 /** Thin grey anatomic landmarks (context only — not impulse pathways).
  *  AV valve rings lie in a shared plane ≈ perpendicular to the long axis (−Y),
  *  so they stay “en face” relative to the heart after anatomic orientation.
+ *  Vena-cava junctions are orifice rings; Eustachian is a ridge; fossa is a septal oval.
  */
 const ANATOMY_GUIDES: GuideSpec[] = [
   {
@@ -99,59 +142,59 @@ const ANATOMY_GUIDES: GuideSpec[] = [
     ],
   },
   {
+    kind: "ring",
     name: "IVC–RA junction",
-    detail: "Inferior vena cava orifice · CTI lateral margin",
-    radius: 0.008,
-    points: [
-      [-0.35, -0.22, 0.05],
-      [-0.42, -0.12, 0.12],
-      [-0.48, -0.02, 0.18],
-      [-0.4, 0.02, 0.1],
-    ],
+    detail: "Inferior vena cava orifice · inferior RA · CTI lateral border",
+    center: IVC_RA_CENTER,
+    // Vessel axis inferior, slightly right / anterior toward free wall
+    normal: [-0.12, -1, 0.08],
+    radius: 0.11,
+    tubeRadius: 0.007,
   },
   {
+    kind: "ring",
     name: "Coronary sinus ostium",
     detail: "Posteroseptal RA · near triangle of Koch",
-    radius: 0.007,
-    points: [
-      [-0.1, -0.04, -0.2],
-      [-0.05, -0.01, -0.17],
-      [0.0, 0.02, -0.14],
-      [0.03, 0.05, -0.11],
-    ],
+    center: CS_OST_CENTER,
+    // CS enters from left/posterior
+    normal: [0.55, -0.15, -0.82],
+    radius: 0.045,
+    tubeRadius: 0.006,
   },
   {
+    // Posterior CTI border: medial/posterior IVC rim → CS ostium
     name: "Eustachian ridge",
     detail: "IVC to CS · forms CTI posterior border",
-    radius: 0.006,
+    radius: 0.0055,
+    tubularSegments: 48,
     points: [
-      [-0.45, -0.08, 0.08],
-      [-0.32, -0.04, -0.02],
-      [-0.18, -0.02, -0.12],
-      [-0.08, 0.0, -0.16],
+      [-0.32, -0.16, -0.01],
+      [-0.24, -0.1, -0.06],
+      [-0.15, -0.05, -0.11],
+      [-0.09, -0.02, -0.14],
+      CS_OST_CENTER,
     ],
   },
   {
+    kind: "oval",
     name: "Fossa ovalis (septum)",
-    detail: "Interatrial septum landmark",
-    radius: 0.006,
-    points: [
-      [-0.05, 0.35, -0.08],
-      [0.0, 0.28, -0.12],
-      [0.02, 0.18, -0.14],
-      [0.0, 0.08, -0.12],
-    ],
+    detail: "Interatrial septum · mid RA oval depression",
+    center: FOSSA_CENTER,
+    normal: [1, 0.04, 0.18],
+    majorHint: [0.05, 1, -0.1],
+    major: 0.13,
+    minor: 0.085,
+    tubeRadius: 0.005,
   },
   {
+    kind: "ring",
     name: "SVC–RA junction",
-    detail: "Superior vena cava · near SA node",
-    radius: 0.008,
-    points: [
-      [-0.4, 0.78, 0.08],
-      [-0.48, 0.68, 0.15],
-      [-0.52, 0.58, 0.22],
-      [-0.48, 0.5, 0.18],
-    ],
+    detail: "Superior vena cava orifice · SA node on lateral rim",
+    center: SVC_RA_CENTER,
+    // Vessel axis superior; SA sits on the lateral (right / −X) rim
+    normal: [0.08, 1, -0.12],
+    radius: 0.115,
+    tubeRadius: 0.007,
   },
   {
     name: "Mitral annulus (guide)",
@@ -177,17 +220,8 @@ const ANATOMY_GUIDES: GuideSpec[] = [
   },
 ];
 
-function createGuideMesh(spec: GuideSpec): THREE.Mesh {
-  const curve = makeCurve(spec.points);
-  const r = spec.radius ?? 0.007;
-  const geo = createTaperedTubeGeometry(
-    curve,
-    spec.tubularSegments ?? 40,
-    r,
-    r * 0.85,
-    6,
-  );
-  const mat = new THREE.MeshStandardMaterial({
+function createGuideMaterial(): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({
     color: 0x7a8a96,
     roughness: 0.55,
     metalness: 0.05,
@@ -197,15 +231,79 @@ function createGuideMesh(spec: GuideSpec): THREE.Mesh {
     opacity: 0.42,
     depthWrite: false,
   });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.name = spec.name;
-  mesh.userData.segmentName = spec.name;
-  mesh.userData.segmentDetail = spec.detail;
+}
+
+function tagAnatomyGuide(mesh: THREE.Mesh, name: string, detail: string): THREE.Mesh {
+  mesh.name = name;
+  mesh.userData.segmentName = name;
+  mesh.userData.segmentDetail = detail;
   mesh.userData.segmentId = "guide";
   mesh.userData.isConduction = false;
   mesh.userData.isAnatomyGuide = true;
   mesh.userData.baseEmissive = 0.08;
   return mesh;
+}
+
+function createGuideTube(spec: GuideTubeSpec): THREE.Mesh {
+  const curve = makeCurve(spec.points);
+  const r = spec.radius ?? 0.007;
+  const geo = createTaperedTubeGeometry(
+    curve,
+    spec.tubularSegments ?? 40,
+    r,
+    r * 0.85,
+    6,
+  );
+  return tagAnatomyGuide(new THREE.Mesh(geo, createGuideMaterial()), spec.name, spec.detail);
+}
+
+function createGuideRing(spec: GuideRingSpec): THREE.Mesh {
+  const tubeR = spec.tubeRadius ?? 0.007;
+  const geo = new THREE.TorusGeometry(spec.radius, tubeR, 8, 48);
+  const mesh = new THREE.Mesh(geo, createGuideMaterial());
+  mesh.position.set(...spec.center);
+  const n = new THREE.Vector3(...spec.normal).normalize();
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
+  return tagAnatomyGuide(mesh, spec.name, spec.detail);
+}
+
+function createGuideOval(spec: GuideOvalSpec): THREE.Mesh {
+  const n = vecUnit(spec.normal);
+  let majorDir = vecAdd(spec.majorHint, n, -vecDot(spec.majorHint, n));
+  if (vecLen(majorDir) < 0.12) {
+    const ref: [number, number, number] = Math.abs(n[1]) < 0.85 ? [0, 1, 0] : [0, 0, 1];
+    majorDir = vecCross(n, ref);
+  }
+  majorDir = vecUnit(majorDir);
+  const minorDir = vecUnit(vecCross(n, majorDir));
+  const steps = 40;
+  const pts: [number, number, number][] = [];
+  for (let i = 0; i <= steps; i++) {
+    const a = (i / steps) * Math.PI * 2;
+    const c = Math.cos(a);
+    const s = Math.sin(a);
+    pts.push([
+      spec.center[0] + spec.major * c * majorDir[0] + spec.minor * s * minorDir[0],
+      spec.center[1] + spec.major * c * majorDir[1] + spec.minor * s * minorDir[1],
+      spec.center[2] + spec.major * c * majorDir[2] + spec.minor * s * minorDir[2],
+    ]);
+  }
+  const curve = new THREE.CatmullRomCurve3(
+    pts.map(([x, y, z]) => new THREE.Vector3(x, y, z)),
+    true,
+    "centripetal",
+    0.5,
+  );
+  const tubeR = spec.tubeRadius ?? 0.005;
+  // Closed TubeGeometry so the oval reads as one continuous rim (no seam gap).
+  const geo = new THREE.TubeGeometry(curve, 64, tubeR, 6, true);
+  return tagAnatomyGuide(new THREE.Mesh(geo, createGuideMaterial()), spec.name, spec.detail);
+}
+
+function createGuideMesh(spec: GuideSpec): THREE.Mesh {
+  if (spec.kind === "ring") return createGuideRing(spec);
+  if (spec.kind === "oval") return createGuideOval(spec);
+  return createGuideTube(spec);
 }
 
 /**

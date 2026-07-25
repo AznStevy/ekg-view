@@ -785,7 +785,6 @@ body.cv-active .finding-readout,
 body.cv-active .rate-row,
 body.cv-active .speed-row,
 body.cv-active #btn-stim,
-body.cv-active #btn-stim-clear,
 body.cv-active .cv-select {
   opacity: 0.38;
   pointer-events: none;

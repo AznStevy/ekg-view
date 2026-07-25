@@ -39,6 +39,7 @@ import {
   sampleStim,
   stimDetail,
   stimLabel,
+  stimSegmentForGuide,
   type StimSite,
   type StimState,
 } from "./stimPace";
@@ -818,8 +819,7 @@ function buildUI(root: HTMLElement): {
               <button type="button" id="btn-leads">Leads</button>
             </div>
             <div class="transport-row">
-              <button type="button" id="btn-stim" title="Click a pathway to pace from that site">Stimulate</button>
-              <button type="button" id="btn-stim-clear" title="Clear stimulated pace site">Clear stim</button>
+              <button type="button" id="btn-stim" title="Click to arm, then click anywhere on pathways or grey landmarks to pace. Click again to cancel.">Stimulate</button>
             </div>
             <div class="cv-row">
               <span class="cv-label" id="cv-label">Post-shock</span>
@@ -853,7 +853,7 @@ function buildUI(root: HTMLElement): {
               </div>
               <button type="button" id="btn-cv" title="Cardioversion / defibrillation → selected rhythm">Cardiovert / Defib</button>
             </div>
-            <p class="stim-hint" id="stim-hint" hidden>Click a conduction pathway on the heart to pace from that site.</p>
+            <p class="stim-hint" id="stim-hint" hidden>Click pathways or grey landmarks to pace (one site at a time). Click Stimulate again when done.</p>
             <div class="slider-row rate-row">
               <label for="rate-input">Rate</label>
               <input id="rate-slider" type="range" min="30" max="300" value="70" step="1" />
@@ -968,7 +968,6 @@ function buildUI(root: HTMLElement): {
     "btn-field",
     "btn-leads",
     "btn-stim",
-    "btn-stim-clear",
     "btn-cv",
     "cv-select",
     "cv-target-input",
@@ -1584,7 +1583,7 @@ function main() {
       ekg.setCustomSample(null);
     }
 
-    els["btn-stim"].classList.toggle("active", state.stim.armed);
+    els["btn-stim"].classList.toggle("active", state.stim.armed || !!stimSite);
     els["stim-hint"].hidden = !state.stim.armed;
     canvasHost.classList.toggle("stim-armed", state.stim.armed);
     stimMarker.visible = !!stimSite && !state.upload;
@@ -1728,9 +1727,19 @@ function main() {
     syncViewLabel();
   }
 
+  /** One Stimulate button: arm to pick/relocate sites, or cancel when already armed. */
+  function toggleStim() {
+    if (state.stim.armed) {
+      clearStim();
+      return;
+    }
+    setStimArmed(true);
+  }
+
   function applyStimSite(site: StimSite, worldPos: THREE.Vector3) {
     state.stim.site = site;
-    state.stim.armed = false;
+    // Stay armed so further clicks relocate the single stim site until Stimulate is toggled off.
+    state.stim.armed = true;
     state.elapsed = 0;
     state.upload = null;
     ekg.setUpload(null);
@@ -2294,8 +2303,7 @@ function main() {
     searchTimer = window.setTimeout(() => filterFindings(), 180);
   });
 
-  els["btn-stim"].addEventListener("click", () => setStimArmed(!state.stim.armed));
-  els["btn-stim-clear"].addEventListener("click", () => clearStim());
+  els["btn-stim"].addEventListener("click", () => toggleStim());
 
   function flashCardioversion() {
     const flash = document.createElement("div");
@@ -2708,9 +2716,12 @@ function main() {
     if (!hoverMesh) return;
     hoverMesh.userData.hovered = false;
     const mat = hoverMesh.material;
-    if (mat instanceof THREE.MeshStandardMaterial && hoverMesh.userData.isAnatomyGuide) {
+    if (!(mat instanceof THREE.MeshStandardMaterial)) return;
+    if (hoverMesh.userData.isAnatomyGuide) {
       mat.emissiveIntensity = Number(hoverMesh.userData.baseEmissive ?? 0.08);
       mat.opacity = 0.42;
+    } else if (hoverMesh.userData.isDeviceLead) {
+      mat.emissiveIntensity = Number(hoverMesh.userData.baseEmissive ?? 0.15);
     }
   }
 
@@ -2730,9 +2741,17 @@ function main() {
         mat.emissiveIntensity = 0.35;
         mat.opacity = 0.7;
       }
+    } else if (mesh.userData.isDeviceLead) {
+      const mat = mesh.material;
+      if (mat instanceof THREE.MeshStandardMaterial) {
+        mat.emissiveIntensity = Number(mesh.userData.baseEmissive ?? 0.15) + 0.35;
+      }
     }
     const segId = String(mesh.userData.segmentId ?? "");
-    if (mesh.userData.isAnatomyGuide) {
+    if (mesh.userData.isDeviceLead) {
+      tipGroup.textContent = "Pacer lead";
+      tipGroup.style.color = String(mesh.userData.leadColor ?? "#c8d0d8");
+    } else if (mesh.userData.isAnatomyGuide) {
       tipGroup.textContent = "Anatomy";
       tipGroup.style.color = "#8a9aa8";
     } else {
@@ -2773,6 +2792,14 @@ function main() {
         targets.push(obj);
       }
     });
+    if (deviceLeads.root.visible) {
+      deviceLeads.root.traverse((obj) => {
+        if (!(obj instanceof THREE.Mesh) || !obj.userData.isDeviceLead) return;
+        // Lead group may be hidden for the current pacing mode
+        if (obj.parent && !obj.parent.visible) return;
+        targets.push(obj);
+      });
+    }
     const hits = raycaster.intersectObjects(targets, false);
     return hits.length ? (hits[0]!.object as THREE.Mesh) : null;
   }
@@ -2787,7 +2814,11 @@ function main() {
     raycaster.setFromCamera(pointer, camera);
     const targets: THREE.Object3D[] = [];
     conduction.root.traverse((obj) => {
-      if (obj instanceof THREE.Mesh && obj.visible && obj.userData.isConduction) {
+      if (
+        obj instanceof THREE.Mesh &&
+        obj.visible &&
+        (obj.userData.isConduction || obj.userData.isAnatomyGuide)
+      ) {
         targets.push(obj);
       }
     });
@@ -2795,8 +2826,16 @@ function main() {
     const hit = hits[0];
     if (!hit) return null;
     const mesh = hit.object as THREE.Mesh;
-    const segmentId = mesh.userData.segmentId as SegmentId | undefined;
-    if (!segmentId || segmentId === ("guide" as SegmentId)) return null;
+    const isGuide = !!mesh.userData.isAnatomyGuide;
+    const rawId = mesh.userData.segmentId as SegmentId | "guide" | undefined;
+    const name = String(mesh.userData.segmentName ?? mesh.name ?? rawId ?? "site");
+    const detail = String(mesh.userData.segmentDetail ?? "");
+    const segmentId: SegmentId | undefined = isGuide
+      ? stimSegmentForGuide(name)
+      : rawId && rawId !== "guide"
+        ? rawId
+        : undefined;
+    if (!segmentId) return null;
 
     let pathU = hit.uv?.x;
     if (pathU == null || Number.isNaN(pathU)) {
@@ -2815,7 +2854,7 @@ function main() {
         }
         pathU = bestU;
       } else {
-        pathU = segmentId === "av" ? 0.5 : 0;
+        pathU = isGuide || segmentId === "av" ? 0.5 : 0;
       }
     }
 
@@ -2823,8 +2862,8 @@ function main() {
       segmentId,
       curveIndex: typeof mesh.userData.curveIndex === "number" ? mesh.userData.curveIndex : undefined,
       pathU,
-      name: String(mesh.userData.segmentName ?? mesh.name ?? segmentId),
-      detail: String(mesh.userData.segmentDetail ?? ""),
+      name,
+      detail,
     };
     return { site, worldPos: hit.point.clone() };
   }

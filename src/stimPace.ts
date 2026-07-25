@@ -62,6 +62,21 @@ export function classifyStim(id: SegmentId): StimKind {
   }
 }
 
+/**
+ * Map a grey anatomy-guide label to a conduction segment used for pace
+ * schedule / ECG morphology (guides themselves are not impulse pathways).
+ */
+export function stimSegmentForGuide(name: string): SegmentId {
+  const n = name.toLowerCase();
+  if (n.includes("mitral")) return "myocardiumV";
+  if (n.includes("svc")) return "sa";
+  if (n.includes("fossa")) return "internodal";
+  if (n.includes("tricuspid") || n.includes("ivc") || n.includes("eustachian") || n.includes("coronary") || n.includes("cs ")) {
+    return "flutter";
+  }
+  return "myocardiumA";
+}
+
 /** Pathway schedule starting at the paced site */
 export function branchesFromStim(site: StimSite): BranchWindow[] {
   const kind = classifyStim(site.segmentId);
