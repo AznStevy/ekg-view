@@ -1,8 +1,8 @@
 import * as THREE from "three";
 import type { CycleMark, LeadId } from "./ekgWaveforms";
 import type { FindingId, SegmentId } from "./findings";
-import { getFinding } from "./findings";
 import { FIELD_ELLIPSOID } from "./conductionAnatomy";
+import { fitCardiacVector } from "./leadAxes";
 import type { ActiveFront, BranchWindow, PathwayProbePoint } from "./pathwayTiming";
 import { branchesForFinding, groupsForMark } from "./pathwayTiming";
 
@@ -59,9 +59,40 @@ function makeArrow(color: number, length: number): THREE.ArrowHelper {
   return arrow;
 }
 
+/** Relative mass / teaching weight for impulse-front contributions to the resultant. */
+function frontMass(id: SegmentId): number {
+  switch (id) {
+    case "sa":
+      return 1.35;
+    case "internodal":
+    case "flutter":
+      return 1.1;
+    case "av":
+    case "avnrtSlow":
+    case "avnrtFast":
+      return 1.0;
+    case "his":
+      return 0.95;
+    case "rbb":
+    case "lbb":
+    case "lbba":
+    case "lbbp":
+      return 1.05;
+    case "purkinjeR":
+      return 1.15;
+    case "purkinjeL":
+      return 1.45;
+    case "accessory":
+    case "accessoryR":
+      return 1.2;
+    default:
+      return 1;
+  }
+}
+
 /**
  * Mean + field vectors driven by the same physiologic timeline as the EKG / impulse.
- * Instantaneous mean axis = vector sum of currently activating myocardium.
+ * Main arrow tracks the activation (and recovery) front — not the ECG lead dipole.
  */
 export function createActivationVectors(probes: PathwayProbePoint[]): VectorView {
   const root = new THREE.Group();
@@ -75,15 +106,14 @@ export function createActivationVectors(probes: PathwayProbePoint[]): VectorView
   fieldGroup.name = "vectorField";
   fieldGroup.visible = false;
 
-  const meanArrow = makeArrow(0xf0c040, 1.2);
-  const lateArrow = makeArrow(0xc070ff, 0.7);
-  meanGroup.add(meanArrow, lateArrow);
+  const meanArrow = makeArrow(0xf0c040, 2.2);
+  meanGroup.add(meanArrow);
 
-  /** One arrow per currently activating anatomic branch (travel direction) */
-  const BRANCH_ARROW_POOL = 32;
+  /** One arrow per currently activating anatomic curve (matches impulse pulse fronts). */
+  const BRANCH_ARROW_POOL = 96;
   const branchArrows: THREE.ArrowHelper[] = [];
   for (let i = 0; i < BRANCH_ARROW_POOL; i++) {
-    const a = makeArrow(0x3db8c8, 0.45);
+    const a = makeArrow(0x3db8c8, 0.4);
     a.visible = false;
     branchArrows.push(a);
     meanGroup.add(a);
@@ -244,8 +274,39 @@ export function createActivationVectors(probes: PathwayProbePoint[]): VectorView
   root.add(meanGroup, fieldGroup);
 
   const tmpSum = new THREE.Vector3();
-  const tmpLate = new THREE.Vector3();
   const tmpOrigin = new THREE.Vector3();
+  /** Smoothed resultant — direction/strength track the EKG dipole; origin tracks the front. */
+  const smoothMeanDir = new THREE.Vector3(0.45, -0.72, 0.22).normalize();
+  const smoothMeanOrigin = new THREE.Vector3(-0.52, 0.58, 0.22); // SA
+  let smoothMeanStrength = 0;
+  let smoothMeanReady = false;
+  let smoothMeanColor = new THREE.Color(0xf0c040);
+  let smoothWaveColor = new THREE.Color(0xf0c040);
+
+/**
+ * Instantaneous ECG dipole from the same lead voltages drawn on the strip.
+ * leadAxes: +X left, +Y inferior, +Z anterior.
+ * heart model: +X left, +Y superior, +Z anterior → negate Y.
+ *
+ * Mean QRS teaching axis is mostly frontal (~+40° left-inferior, mild anterior).
+ * Precordial residuals (late S in V1–V2) are damped so they don't yank the
+ * arrow strongly posterior through the R peak.
+ */
+function meanFromLeads(leads?: Partial<Record<LeadId, number>>): {
+  dir: THREE.Vector3;
+  strength: number;
+} | null {
+  if (!leads) return null;
+  const v = fitCardiacVector(leads);
+  const z = (v.z ?? 0) * 0.4;
+  const model = new THREE.Vector3(v.x, -v.y, z);
+  const m = model.length();
+  if (m < 1e-5) return null;
+  return {
+    dir: model.multiplyScalar(1 / m),
+    strength: Math.min(1.05, m * 0.72),
+  };
+}
 
 function ekgMagnitude(leads?: Partial<Record<LeadId, number>>): number {
   if (!leads) return 1;
@@ -303,8 +364,9 @@ function repolFlipsDepol(finding: FindingId, mark: CycleMark): boolean {
     fronts: ActiveFront[],
     opts: { mark: CycleMark; finding: FindingId; mag: number },
   ) {
-    // T/ST are myocardial recovery — not impulse travel along conduction fibers
-    if (opts.mark === "T" || opts.mark === "ST" || opts.mark === "TP") {
+    // Only clear during TP — fascicles/Purkinje finish into early ST; hiding on ST
+    // made those arrows vanish before they reached the tip.
+    if (opts.mark === "TP") {
       for (const arrow of branchArrows) arrow.visible = false;
       return;
     }
@@ -323,8 +385,10 @@ function repolFlipsDepol(finding: FindingId, mark: CycleMark): boolean {
       }
       dir.normalize();
 
-      const envelope = 0.35 + 0.65 * Math.sin(Math.PI * Math.min(1, Math.max(0, f.progress)));
-      const len = (0.32 + 0.38 * envelope) * (0.75 + 0.35 * opts.mag);
+      // Rise early, then hold full strength through the tip
+      const p = Math.min(1, Math.max(0, f.progress));
+      const envelope = p < 0.12 ? 0.4 + 0.6 * (p / 0.12) : 1;
+      const len = (0.28 + 0.28 * envelope) * (0.75 + 0.35 * opts.mag);
       arrow.visible = true;
       arrow.position.set(...f.pos);
       arrow.setDirection(dir);
@@ -399,28 +463,31 @@ function repolFlipsDepol(finding: FindingId, mark: CycleMark): boolean {
     hisGap.visible = fieldGroup.visible;
 
     tmpSum.set(0, 0, 0);
-    tmpLate.set(0, 0, 0);
     tmpOrigin.set(0, 0, 0);
     let nActive = 0;
-    let nLate = 0;
+    let nMyo = 0;
+    let nOrigin = 0;
 
-    // Mean from pathway fronts only while depolarizing — T/ST is myocardial recovery
-    const useFrontMean =
-      meanGroup.visible && !!opts.fronts?.length && !isRepol && opts.mark !== "TP";
-    if (useFrontMean) {
-      for (const f of opts.fronts!) {
+    // Impulse fronts drive the resultant whenever they are live — including retrograde
+    // atrial / Kent limbs that the EKG marks as ST or T (P-on-T). Pure myocardial
+    // recovery (no fronts) falls through to ± QRS axis below.
+    if (meanGroup.visible && !!opts.fronts?.length && opts.mark !== "TP") {
+      const fronts = opts.fronts!;
+      const hasReverse = fronts.some((f) => f.reverse);
+      for (const f of fronts) {
+        // When a retrograde limb is lit, don't let leftover anterograde Purkinje
+        // drown the mean (AVNRT/AVRT upstroke should point superior).
+        if (hasReverse && !f.reverse) continue;
         let dir = new THREE.Vector3(...f.dir);
         if (dir.lengthSq() < 1e-8) continue;
         dir.normalize();
-        const envelope = Math.sin(Math.PI * Math.min(1, Math.max(0, f.progress)));
-        const w = 0.35 + 0.65 * envelope;
+        const p = Math.min(1, Math.max(0, f.progress));
+        const envelope = p < 0.12 ? p / 0.12 : 1;
+        const w = (0.35 + 0.65 * envelope) * frontMass(f.id) * (f.reverse ? 1.35 : 1);
         tmpSum.addScaledVector(dir, w);
         tmpOrigin.addScaledVector(new THREE.Vector3(...f.pos), w);
         nActive += w;
-        if (f.id === "rbb" || f.id === "purkinjeR") {
-          tmpLate.addScaledVector(dir, w);
-          nLate += w;
-        }
+        nOrigin += w;
       }
     }
 
@@ -516,11 +583,14 @@ function repolFlipsDepol(finding: FindingId, mark: CycleMark): boolean {
         groupOk &&
         (onFront || justPassed || approaching || (pathwayLive && Math.abs(dist) < 0.12));
 
-      // Direction: depol along pathway travel.
-      // T/ST: normal (concordant) keeps QRS-like polarity; discordant findings reverse.
+      // Direction: depol along pathway travel; during ST/T align with the EKG dipole.
       let dir = s.dir.clone();
       if (lmLive?.reverse) dir.negate();
-      if (flipRepol) dir.negate();
+      if (isRepol) {
+        const leadDipole = meanFromLeads(opts.leads);
+        if (leadDipole && leadDipole.strength > 0.04) dir.copy(leadDipole.dir);
+        else if (flipRepol) dir.negate();
+      }
 
       // Dynamic length/opacity from how centered we are on the wavefront
       const closeness = Math.exp(-((dist * dist) / (2 * frontWidth * frontWidth)));
@@ -545,89 +615,133 @@ function repolFlipsDepol(finding: FindingId, mark: CycleMark): boolean {
         s.arrow.visible = false;
       }
 
-      // Accumulate instantaneous resultant for mean vector (fallback if no pathway mean)
-      if (!useFrontMean && show && intensity > 0.15 && chamberOk) {
-        const w = intensity * intensity;
-        tmpSum.addScaledVector(dir, w);
-        tmpOrigin.addScaledVector(s.pos, w);
-        nActive += w;
-
-        // Late forces (right / terminal)
-        if (
-          (s.nearestId === "rbb" || s.nearestId === "purkinjeR" || s.pos.x < -0.15) &&
-          (opts.mark === "QRS" || opts.finding === "rbbb")
-        ) {
-          tmpLate.addScaledVector(dir, w);
-          nLate += w;
+      // Myocardial samples: origin during recovery; light mass during depol fallback.
+      if (meanGroup.visible && show && intensity > 0.12 && chamberOk) {
+        const mass = s.tissue === "ventricular" && s.pos.x > 0.05 ? 1.55 : s.tissue === "atrial" ? 0.55 : 1;
+        const w = intensity * intensity * mass;
+        if (!isRepol) {
+          tmpSum.addScaledVector(dir, w * 0.5);
+          nMyo += w * 0.5;
+          if (nActive < 0.01) {
+            tmpOrigin.addScaledVector(s.pos, w);
+            nOrigin += w;
+          }
+        } else {
+          nMyo += w;
+          tmpOrigin.addScaledVector(s.pos, w);
+          nOrigin += w;
         }
       }
     }
 
-    // Mean instantaneous cardiac vector — rotates with the EKG / wavefront
+    // Mean arrow: direction + strength from the same lead voltages as the EKG strip;
+    // origin still tracks the activation / recovery front.
     if (meanGroup.visible) {
-      if (nActive > 0.01 && opts.mark !== "TP") {
-        const dir = tmpSum.normalize();
-        const origin = tmpOrigin.multiplyScalar(1 / nActive);
-        // Keep origin near heart center with mild bias toward active mass
-        origin.lerp(new THREE.Vector3(0.02, -0.2, 0.05), 0.55);
+      const fromLeads = meanFromLeads(opts.leads);
+      const hasFronts = nActive > 0.01 && tmpSum.lengthSq() > 1e-8;
+      const hasMyoDepol = !isRepol && nMyo > 0.01 && tmpSum.lengthSq() > 1e-8;
+      let targetDir = smoothMeanDir.clone();
+      let targetStrength = 0;
+      let targetColor = 0x3db8c8;
+      let targetWave = 0x88f0c0;
+      let hasSignal = false;
 
-        const baseLen =
-          opts.mark === "QRS" ? 1.05 : opts.mark === "P" ? 0.65 : opts.mark === "T" ? 0.7 : 0.45;
-        const len = baseLen * mag * (opts.fronts?.length ? 0.85 : 1);
-
-        meanArrow.visible = true;
-        meanArrow.position.copy(origin);
-        meanArrow.setDirection(dir);
-        meanArrow.setLength(len, len * 0.2, len * 0.12);
-        meanArrow.setColor(
+      if (fromLeads && fromLeads.strength > 0.025) {
+        // Matches I / II / aVF / V1–V6 at the scrub cursor (including T-wave size)
+        targetDir = fromLeads.dir;
+        targetStrength = fromLeads.strength;
+        hasSignal = true;
+        targetColor =
           opts.mark === "P" || opts.mark === "PR"
             ? 0xf0c040
             : opts.mark === "T"
               ? 0x8eb0ff
               : opts.mark === "ST"
                 ? 0x6ec896
-                : 0x3db8c8,
-        );
-        const lm = meanArrow.line.material;
-        if (lm instanceof THREE.LineBasicMaterial) lm.opacity = 0.55 + 0.4 * Math.min(1, mag);
+                : 0x3db8c8;
+        targetWave =
+          opts.mark === "P" || opts.mark === "PR"
+            ? 0xf0c040
+            : opts.mark === "T" || opts.mark === "ST"
+              ? 0x8eb0ff
+              : 0x88f0c0;
+      } else if (hasFronts || hasMyoDepol) {
+        // Fallback if leads are flat — anatomic travel
+        targetDir = tmpSum.clone().normalize();
+        targetStrength = Math.min(1.35, 0.28 + Math.sqrt(hasFronts ? nActive : nMyo) * 0.22);
+        hasSignal = true;
+        targetColor = opts.mark === "P" || opts.mark === "PR" ? 0xf0c040 : 0x3db8c8;
+        targetWave = opts.mark === "P" || opts.mark === "PR" ? 0xf0c040 : 0x88f0c0;
+      } else if (opts.mark === "TP") {
+        targetStrength = 0;
+        hasSignal = true;
+      }
 
-        wavefront.visible = true;
-        wavefront.position.copy(origin);
-        const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
+      if (!smoothMeanReady) {
+        if (hasSignal && targetStrength > 0.02) smoothMeanDir.copy(targetDir);
+        smoothMeanStrength = targetStrength;
+        smoothMeanColor.setHex(targetColor);
+        smoothWaveColor.setHex(targetWave);
+        smoothMeanReady = true;
+      } else {
+        if (hasSignal && targetStrength > 0.02) {
+          // Responsive so scrubbing the strip updates the arrow with the leads
+          smoothMeanDir.lerp(targetDir, 0.32);
+          if (smoothMeanDir.lengthSq() > 1e-8) smoothMeanDir.normalize();
+        }
+        const sFollow = targetStrength >= smoothMeanStrength ? 0.32 : 0.2;
+        smoothMeanStrength += (targetStrength - smoothMeanStrength) * sFollow;
+        smoothMeanColor.lerp(new THREE.Color(targetColor), 0.18);
+        smoothWaveColor.lerp(new THREE.Color(targetWave), 0.18);
+      }
+
+      const originWeight = nOrigin;
+      if (originWeight > 0.01) {
+        const targetOrigin = tmpOrigin.clone().multiplyScalar(1 / originWeight);
+        smoothMeanOrigin.lerp(targetOrigin, 0.22);
+      } else if (isRepol) {
+        smoothMeanOrigin.lerp(new THREE.Vector3(0.06, -0.35, 0.08), 0.08);
+      }
+
+      const baseLen =
+        opts.mark === "QRS"
+          ? 1.45
+          : opts.mark === "T"
+            ? 1.15
+            : opts.mark === "P" || opts.mark === "PR"
+              ? 0.95
+              : opts.mark === "ST"
+                ? 0.75
+                : 0.7;
+      const s = Math.max(0, smoothMeanStrength);
+      const len = Math.max(0.05, baseLen * Math.max(0.04, s));
+      const opacity = Math.min(0.92, 0.1 + 0.8 * Math.min(1, s));
+
+      meanArrow.visible = true;
+      meanArrow.position.copy(smoothMeanOrigin);
+      meanArrow.setDirection(smoothMeanDir);
+      meanArrow.setLength(len, len * 0.24, len * 0.14);
+      meanArrow.setColor(smoothMeanColor.getHex());
+      const lm = meanArrow.line.material;
+      if (lm instanceof THREE.LineBasicMaterial) lm.opacity = opacity;
+      const cm = meanArrow.cone.material;
+      if (cm instanceof THREE.MeshBasicMaterial) cm.opacity = opacity;
+
+      const waveOpacity = Math.max(0, 0.03 + 0.22 * Math.min(1, s));
+      wavefront.visible = waveOpacity > 0.04;
+      if (wavefront.visible) {
+        wavefront.position.copy(smoothMeanOrigin);
+        const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), smoothMeanDir);
         wavefront.quaternion.copy(q);
-        wavefront.scale.setScalar(0.7 + 0.5 * mag);
-        waveMat.color.setHex(
-          opts.mark === "P" ? 0xf0c040 : opts.mark === "T" ? 0x8eb0ff : 0x88f0c0,
-        );
-        waveMat.opacity = 0.2 + 0.25 * Math.min(1, mag);
-      } else {
-        meanArrow.visible = false;
-        wavefront.visible = false;
+        wavefront.scale.setScalar(0.32 + 0.35 * Math.min(1, s));
+        waveMat.color.copy(smoothWaveColor);
+        waveMat.opacity = waveOpacity;
       }
-
-      // Terminal / late vector (RBBB, injury)
-      if (
-        nLate > 0.05 &&
-        (opts.finding === "rbbb" || opts.mark === "QRS") &&
-        opts.mark !== "TP" &&
-        opts.mark !== "P"
-      ) {
-        const dir = tmpLate.normalize();
-        lateArrow.visible = true;
-        lateArrow.position.set(-0.15, -0.45, 0.2);
-        lateArrow.setDirection(dir);
-        const len = 0.65 * mag;
-        lateArrow.setLength(len, len * 0.25, len * 0.15);
-        lateArrow.setColor(0xc070ff);
-      } else if (getFinding(opts.finding).category === "ischemia" && opts.mark === "ST") {
-        lateArrow.visible = true;
-        lateArrow.position.set(0.1, -0.2, 0.35);
-        lateArrow.setDirection(new THREE.Vector3(0.15, -0.1, 0.95).normalize());
-        lateArrow.setLength(0.9 * mag, 0.2, 0.12);
-        lateArrow.setColor(0x6ec896);
-      } else {
-        lateArrow.visible = false;
-      }
+    } else {
+      meanArrow.visible = false;
+      wavefront.visible = false;
+      smoothMeanReady = false;
+      smoothMeanStrength = 0;
     }
   }
 
@@ -643,8 +757,9 @@ function repolFlipsDepol(finding: FindingId, mark: CycleMark): boolean {
     // Always run physics when either overlay is visible so mean tracks the field
     if (!meanGroup.visible && !fieldGroup.visible) {
       meanArrow.visible = false;
-      lateArrow.visible = false;
       wavefront.visible = false;
+      smoothMeanReady = false;
+      smoothMeanStrength = 0;
       for (const a of branchArrows) a.visible = false;
       for (const s of samples) s.arrow.visible = false;
       return;
@@ -656,6 +771,10 @@ function repolFlipsDepol(finding: FindingId, mark: CycleMark): boolean {
     root,
     setMeanVisible: (v: boolean) => {
       meanGroup.visible = v;
+      if (!v) {
+        smoothMeanReady = false;
+        smoothMeanStrength = 0;
+      }
     },
     setFieldVisible: (v: boolean) => {
       fieldGroup.visible = v;

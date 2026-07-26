@@ -61,6 +61,8 @@ type PathSpec = {
   radiusStart: number;
   radiusEnd: number;
   tubularSegments?: number;
+  /** Radius mix along the path. Default smoothstep; smootherstep = gentler shoulders. */
+  taperEase?: "smoothstep" | "smootherstep";
 };
 
 type GuideTubeSpec = {
@@ -483,7 +485,8 @@ const PATHS: PathSpec[] = [
     detail: "Interatrial conduction · superior LA",
     radiusStart: 0.03,
     radiusEnd: 0.014,
-    tubularSegments: 48,
+    tubularSegments: 64,
+    taperEase: "smootherstep",
     points: [
       SA,
       [-0.28, 0.68, 0.08],
@@ -1007,6 +1010,7 @@ function createTaperedTubeGeometry(
   radiusStart: number,
   radiusEnd: number,
   radialSegments: number,
+  taperEase: "smoothstep" | "smootherstep" = "smoothstep",
 ): THREE.BufferGeometry {
   const frames = curve.computeFrenetFrames(tubularSegments, false);
   const positions: number[] = [];
@@ -1022,7 +1026,12 @@ function createTaperedTubeGeometry(
     const p = curve.getPointAt(t);
     const N = frames.normals[i]!;
     const B = frames.binormals[i]!;
-    const radius = THREE.MathUtils.lerp(radiusStart, radiusEnd, t * t * (3 - 2 * t));
+    // smootherstep = C² ease — gentler shoulders so thick→thin doesn't kink
+    const mix =
+      taperEase === "smootherstep"
+        ? t * t * t * (t * (t * 6 - 15) + 10)
+        : t * t * (3 - 2 * t);
+    const radius = THREE.MathUtils.lerp(radiusStart, radiusEnd, mix);
 
     for (let j = 0; j <= radialSegments; j++) {
       const v = j / radialSegments;
@@ -1071,6 +1080,7 @@ function createPathMesh(spec: PathSpec): THREE.Mesh {
     spec.radiusStart,
     spec.radiusEnd,
     spec.id === "flutter" ? 6 : 10,
+    spec.taperEase ?? "smoothstep",
   );
   const isFlutter = spec.id === "flutter";
   const isAccessory = spec.id === "accessory" || spec.id === "accessoryR";
@@ -1940,17 +1950,21 @@ export function createConductionSystem(): ConductionSystem {
     const out: import("./pathwayTiming").ActiveFront[] = [];
 
     for (const b of branches) {
-      if (t < b.t0 || t > b.t1) continue;
+      // Hold the front at the tip briefly so vectors finish the tract instead of
+      // vanishing the frame they reach u=1 (noticeable on short fascicle windows).
+      const tipHold = 0.04;
+      if (t < b.t0 || t > b.t1 + tipHold) continue;
       if (!ventPhase && isVentricularSeg(b.id)) continue;
       const span = Math.max(1e-4, b.t1 - b.t0);
-      const progress = (t - b.t0) / span;
+      const progress = Math.min(1, (t - b.t0) / span);
       const uStart = b.u0 ?? (b.reverse ? 1 : 0);
       const uEnd = b.u1 ?? (b.reverse ? 0 : 1);
       const u = uStart + (uEnd - uStart) * progress;
       const curves = curvesBySegment.get(b.id);
       const color = SEGMENT_COLORS[b.id];
+      const isReverse = !!b.reverse || uEnd < uStart;
 
-      const pushFront = (curveIndex: number) => {
+      const pushFrontAt = (curveIndex: number) => {
         const pt = pointOnSegment(b.id, u, curveIndex);
         const dir = travelOnSegment(b.id, u, uEnd, curveIndex);
         if (!pt || !dir) return;
@@ -1960,16 +1974,20 @@ export function createConductionSystem(): ConductionSystem {
           dir: [dir.x, dir.y, dir.z],
           color,
           progress,
+          reverse: isReverse,
         });
       };
 
       if (!curves?.length) {
-        if (b.id === "sa" || b.id === "av") pushFront(0);
+        if (b.id === "sa" || b.id === "av") pushFrontAt(0);
         continue;
       }
-      if (b.curveIndex != null) pushFront(b.curveIndex);
+
+      // Match impulse pulses: every anatomic curve of this segment gets its own front
+      // (internodals, both His parts, RBB+moderator, fascicles, all Purkinje branches).
+      if (b.curveIndex != null) pushFrontAt(b.curveIndex);
       else {
-        for (let ci = 0; ci < curves.length; ci++) pushFront(ci);
+        for (let ci = 0; ci < curves.length; ci++) pushFrontAt(ci);
       }
     }
     return out;
@@ -2137,6 +2155,22 @@ export function createConductionSystem(): ConductionSystem {
       if (obj.userData.segmentId === id) obj.visible = visible;
     });
     for (const j of junctions) {
+      const ids = (j.userData.segmentIds as SegmentId[]) ?? [];
+      const kentLeft = ids.includes("accessory");
+      const kentRight = ids.includes("accessoryR");
+      // Kent tip beads include Purkinje wedges — hide the whole bead unless that Kent is on
+      if (kentLeft || kentRight) {
+        const kentOn =
+          (kentLeft && !!segmentVis.accessory) || (kentRight && !!segmentVis.accessoryR);
+        j.visible = kentOn;
+        for (const child of j.children) {
+          if (child instanceof THREE.Mesh && child.userData.isJunctionWedge) {
+            child.visible = kentOn && !!segmentVis[child.userData.segmentId as SegmentId];
+          }
+        }
+        continue;
+      }
+
       const live: THREE.Mesh[] = [];
       for (const child of j.children) {
         if (!(child instanceof THREE.Mesh) || !child.userData.isJunctionWedge) continue;

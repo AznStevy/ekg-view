@@ -30,10 +30,10 @@ export const NSR_BRANCHES: BranchWindow[] = [
   { id: "his", t0: 0.28, t1: 0.32, group: "his" },
   { id: "rbb", t0: 0.31, t1: 0.40, group: "bundles" },
   { id: "lbb", t0: 0.31, t1: 0.36, group: "bundles" },
-  { id: "lbba", t0: 0.34, t1: 0.42, group: "fascicles" },
-  { id: "lbbp", t0: 0.34, t1: 0.43, group: "fascicles" },
-  { id: "purkinjeR", t0: 0.37, t1: 0.48, group: "purkinje" },
-  { id: "purkinjeL", t0: 0.36, t1: 0.48, group: "purkinje" },
+  { id: "lbba", t0: 0.34, t1: 0.46, group: "fascicles" },
+  { id: "lbbp", t0: 0.34, t1: 0.47, group: "fascicles" },
+  { id: "purkinjeR", t0: 0.37, t1: 0.50, group: "purkinje" },
+  { id: "purkinjeL", t0: 0.36, t1: 0.50, group: "purkinje" },
 ];
 
 function ventCascade(q: number, opts?: { lDelay?: number; rDelay?: number }): BranchWindow[] {
@@ -44,10 +44,10 @@ function ventCascade(q: number, opts?: { lDelay?: number; rDelay?: number }): Br
     { id: "his", t0: q - 0.015, t1: q + 0.025, group: "his" },
     { id: "rbb", t0: q + r, t1: q + 0.07 + r, group: "bundles" },
     { id: "lbb", t0: q + l, t1: q + 0.06 + l, group: "bundles" },
-    { id: "lbba", t0: q + 0.02 + l, t1: q + 0.09 + l, group: "fascicles" },
-    { id: "lbbp", t0: q + 0.02 + l, t1: q + 0.09 + l, group: "fascicles" },
-    { id: "purkinjeR", t0: q + 0.03 + r, t1: q + 0.11 + r, group: "purkinje" },
-    { id: "purkinjeL", t0: q + 0.03 + l, t1: q + 0.11 + l, group: "purkinje" },
+    { id: "lbba", t0: q + 0.02 + l, t1: q + 0.12 + l, group: "fascicles" },
+    { id: "lbbp", t0: q + 0.02 + l, t1: q + 0.12 + l, group: "fascicles" },
+    { id: "purkinjeR", t0: q + 0.03 + r, t1: q + 0.14 + r, group: "purkinje" },
+    { id: "purkinjeL", t0: q + 0.03 + l, t1: q + 0.14 + l, group: "purkinje" },
   ];
 }
 
@@ -681,6 +681,8 @@ export type ActiveFront = {
   color: number;
   /** Progress through this branch window 0–1 */
   progress: number;
+  /** True when this limb is traversed retrograde (u decreasing) */
+  reverse?: boolean;
 };
 
 /** Map EKG cycle mark → expected conduction groups */

@@ -1281,7 +1281,9 @@ function main() {
     for (const g of SEGMENT_META) {
       conduction.setSegmentVisibility(g.id, segmentVisibility[g.id]);
     }
-    if (!isAvrtFinding(state.finding) && !segmentVisibility.accessory && !segmentVisibility.accessoryR) {
+    if (!isAvrtFinding(state.finding) || state.upload) {
+      segmentVisibility.accessory = false;
+      segmentVisibility.accessoryR = false;
       conduction.setAccessoryVisible(false, "both");
     }
     const isFlutter = FLUTTER_FINDING_IDS.has(state.finding);
@@ -1614,6 +1616,19 @@ function main() {
       if (rightInput) rightInput.checked = side === "right";
       conduction.setAccessoryVisible(side === "left", "left");
       conduction.setAccessoryVisible(side === "right", "right");
+    } else {
+      // Kent tubes + tip beads only for AVRT findings
+      segmentVisibility.accessory = false;
+      segmentVisibility.accessoryR = false;
+      const leftInput = els["segment-toggles"].querySelector<HTMLInputElement>(
+        'input[data-segment="accessory"]',
+      );
+      if (leftInput) leftInput.checked = false;
+      const rightInput = els["segment-toggles"].querySelector<HTMLInputElement>(
+        'input[data-segment="accessoryR"]',
+      );
+      if (rightInput) rightInput.checked = false;
+      conduction.setAccessoryVisible(false, "both");
     }
     if (FLUTTER_FINDING_IDS.has(state.finding) && !state.upload) {
       segmentVisibility.flutter = true;
@@ -2668,6 +2683,13 @@ function main() {
     const input = e.target as HTMLInputElement;
     if (!input.dataset.segment) return;
     const id = input.dataset.segment as SegmentId;
+    // Kent pathways only while an AVRT finding is selected
+    if ((id === "accessory" || id === "accessoryR") && !isAvrtFinding(state.finding)) {
+      input.checked = false;
+      segmentVisibility[id] = false;
+      conduction.setSegmentVisibility(id, false);
+      return;
+    }
     segmentVisibility[id] = input.checked;
     conduction.setSegmentVisibility(id, input.checked);
   });
@@ -2675,6 +2697,10 @@ function main() {
   els["btn-seg-all"].addEventListener("click", () => {
     for (const g of SEGMENT_META) {
       if (g.id === "myocardiumA" || g.id === "myocardiumV") continue;
+      if ((g.id === "accessory" || g.id === "accessoryR") && !isAvrtFinding(state.finding)) {
+        segmentVisibility[g.id] = false;
+        continue;
+      }
       segmentVisibility[g.id] = true;
     }
     applySegmentVisibility();

@@ -163,8 +163,8 @@ const NSR_T: Partial<Record<LeadId, number>> = projectCardiacVector(1, {
 const NSR_SEPTAL = projectCardiacVector(1, { x: -0.55, y: 0.05, z: 0.9 });
 /** Main free wall: ~+40° (left of +60°) so aVL keeps a real R · mild anterior */
 const NSR_MAIN = projectCardiacVector(1, vectorFromAxis(40, 0.3));
-/** Terminal: rightward / posterior → S in V1–V2 */
-const NSR_TERM = projectCardiacVector(1, { x: -0.2, y: -0.2, z: -0.95 });
+/** Terminal: mild rightward / posterior → small S in V1–V2 (not a huge −Z yank) */
+const NSR_TERM = projectCardiacVector(1, { x: -0.18, y: -0.12, z: -0.42 });
 /** Early right-atrial P (anterior) for biphasic V1 */
 const NSR_P_EARLY = projectCardiacVector(1, { x: 0.05, y: 0.45, z: 1.05 });
 
