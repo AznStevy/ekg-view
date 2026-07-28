@@ -5,6 +5,18 @@ import {
   refractoryGlow,
   type PathwayProbePoint,
 } from "./pathwayTiming";
+import {
+  FIELD_ELLIPSOID,
+} from "./heartEllipsoid";
+
+export {
+  FIELD_ELLIPSOID,
+  ellipsoidNorm2,
+  ellipsoidNormal,
+  inMyocardialShell,
+  projectOntoMyocardialShell,
+  projectOntoShellTangent,
+} from "./heartEllipsoid";
 
 export type SegmentMeta = {
   id: SegmentId;
@@ -332,11 +344,13 @@ const LBB_ORIGIN: [number, number, number] = [0.14, -0.34, 0.0];
  *  Kept inside FIELD_ELLIPSOID with margin for tube radius / Catmull-Rom overshoot. */
 const LAF_TIP: [number, number, number] = [0.5, -0.82, 0.24];
 const LPF_TIP: [number, number, number] = [0.28, -1.08, 0.0];
-const SEPTAL_TIP: [number, number, number] = [0.12, -1.02, -0.02];
+/** Mid-septal end of left septal fascicle (Purkinje continues toward apex). */
+const SEPTAL_TIP: [number, number, number] = [0.1, -0.78, 0.02];
 /** Distal tip of LV anterolateral Purkinje · base (left Kent ventricular insertion). */
-const PURK_L_ANT_BASE_TIP: [number, number, number] = [0.52, -0.34, 0.1];
+const PURK_L_ANT_BASE_TIP: [number, number, number] = [0.7, -0.41, 0.14];
 /** Distal tip of RV free-wall Purkinje · superior (right Kent ventricular insertion). */
-const PURK_R_FW_SUP_TIP: [number, number, number] = [-0.58, -0.28, 0.18];
+const PURK_R_FW_SUP_TIP: [number, number, number] = [-0.7, -0.31, 0.22];
+/** RBB mid-septal point — stays in the cavity / endocardial plane (not wall-nudged). */
 const RBB_MID: [number, number, number] = [-0.08, -0.55, 0.18];
 const RBB_APEX: [number, number, number] = [-0.18, -0.95, 0.32];
 const MOD_BAND_END: [number, number, number] = [-0.48, -0.62, 0.48];
@@ -724,8 +738,7 @@ const PATHS: PathSpec[] = [
     points: [
       LBB_ORIGIN,
       [0.12, -0.48, 0.02],
-      [0.1, -0.68, 0.04],
-      [0.1, -0.88, 0.02],
+      [0.11, -0.62, 0.03],
       SEPTAL_TIP,
     ],
   },
@@ -890,9 +903,9 @@ const PATHS: PathSpec[] = [
     radiusEnd: 0.004,
     points: [
       SEPTAL_TIP,
-      [0.14, -0.88, 0.0],
-      [0.15, -0.7, -0.02],
-      [0.14, -0.48, -0.04],
+      [0.12, -0.62, 0.01],
+      [0.14, -0.48, -0.02],
+      [0.13, -0.36, -0.04],
     ],
   },
   {
@@ -903,9 +916,9 @@ const PATHS: PathSpec[] = [
     radiusEnd: 0.004,
     points: [
       SEPTAL_TIP,
+      [0.11, -0.92, 0.0],
       [0.14, -1.08, -0.04],
-      [0.16, -1.12, -0.06],
-      [0.2, -1.1, -0.08],
+      [0.18, -1.12, -0.06],
     ],
   },
 
@@ -1187,52 +1200,70 @@ function createMultiColorJunction(
 }
 
 /**
- * Myocardial vector-field ellipsoid (must stay in sync with activationVectors.ts):
- *   (x/rx)² + ((y - cy)/ry)² + (z/rz)² ≤ limit
+ * Myocardial vector-field ellipsoid — see heartEllipsoid.ts (re-exported above).
+ * Samples and pathways live in the thick wall between endo and epi.
  */
-export const FIELD_ELLIPSOID = {
-  center: new THREE.Vector3(0, -0.15, 0),
-  radius: new THREE.Vector3(1.05, 1.15, 0.95),
-  limit: 0.95,
-} as const;
 
-/** Translucent cardiac ovoid — matches the vector-field ellipsoid bounds. */
+/** Translucent thick cardiac shell — outer epi + inner endo, hollow cavity. */
 function createHeartShell(): THREE.Group {
   const group = new THREE.Group();
   group.name = "heartShell";
 
-  const { center, radius, limit } = FIELD_ELLIPSOID;
-  const s = Math.sqrt(limit);
+  const { center, radius, outerLimit, innerLimit } = FIELD_ELLIPSOID;
+  const sOut = Math.sqrt(outerLimit);
+  const sIn = Math.sqrt(innerLimit);
 
-  const ovoid = new THREE.Mesh(
-    new THREE.SphereGeometry(1, 48, 36),
-    new THREE.MeshStandardMaterial({
-      color: 0x5a3038,
-      roughness: 0.65,
-      metalness: 0.0,
-      transparent: true,
-      opacity: 0.28,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    }),
-  );
-  ovoid.name = "heartBody";
-  ovoid.position.copy(center);
-  // Same axes as the field sample ellipsoid (slightly outside via tiny pad)
-  ovoid.scale.set(radius.x * s * 1.02, radius.y * s * 1.02, radius.z * s * 1.02);
-  group.add(ovoid);
+  const matOuter = new THREE.MeshStandardMaterial({
+    color: 0x5a3038,
+    roughness: 0.62,
+    metalness: 0.02,
+    transparent: true,
+    opacity: 0.32,
+    side: THREE.FrontSide,
+    depthWrite: false,
+  });
+  const matInner = new THREE.MeshStandardMaterial({
+    color: 0x3a1820,
+    roughness: 0.7,
+    metalness: 0.0,
+    transparent: true,
+    opacity: 0.45,
+    side: THREE.BackSide,
+    depthWrite: false,
+  });
+
+  const outer = new THREE.Mesh(new THREE.SphereGeometry(1, 48, 36), matOuter);
+  outer.name = "heartBody";
+  outer.position.copy(center);
+  outer.scale.set(radius.x * sOut * 1.02, radius.y * sOut * 1.02, radius.z * sOut * 1.02);
+  group.add(outer);
+
+  const inner = new THREE.Mesh(new THREE.SphereGeometry(1, 40, 28), matInner);
+  inner.name = "heartCavity";
+  inner.position.copy(center);
+  // Slightly inside the field inner bound so Purkinje sit in the wall, not the void
+  inner.scale.set(radius.x * sIn * 0.98, radius.y * sIn * 0.98, radius.z * sIn * 0.98);
+  group.add(inner);
 
   return group;
 }
 
 /** Keep shell locked to the field ellipsoid (pathways are authored inside that volume). */
 function fitHeartShellToPathways(heartShell: THREE.Group, _pathways: THREE.Object3D): void {
-  const ovoid = heartShell.getObjectByName("heartBody") as THREE.Mesh | undefined;
-  if (!ovoid) return;
-  const { center, radius, limit } = FIELD_ELLIPSOID;
-  const s = Math.sqrt(limit);
-  ovoid.position.copy(center);
-  ovoid.scale.set(radius.x * s * 1.02, radius.y * s * 1.02, radius.z * s * 1.02);
+  const { center, radius, outerLimit, innerLimit } = FIELD_ELLIPSOID;
+  const sOut = Math.sqrt(outerLimit);
+  const sIn = Math.sqrt(innerLimit);
+
+  const outer = heartShell.getObjectByName("heartBody") as THREE.Mesh | undefined;
+  if (outer) {
+    outer.position.copy(center);
+    outer.scale.set(radius.x * sOut * 1.02, radius.y * sOut * 1.02, radius.z * sOut * 1.02);
+  }
+  const inner = heartShell.getObjectByName("heartCavity") as THREE.Mesh | undefined;
+  if (inner) {
+    inner.position.copy(center);
+    inner.scale.set(radius.x * sIn * 0.98, radius.y * sIn * 0.98, radius.z * sIn * 0.98);
+  }
 }
 
 /**
@@ -1947,48 +1978,79 @@ export function createConductionSystem(): ConductionSystem {
     const branches = opts.branches ?? branchesForFinding(opts.finding);
     const mark = opts.mark ?? "TP";
     const ventPhase = mark === "QRS" || mark === "ST" || mark === "T";
+    const isAfib = opts.finding === "afib";
     const out: import("./pathwayTiming").ActiveFront[] = [];
 
+    // Prefer the newest live window per (segment, curve) so overlapping wavelets
+    // don't spawn duplicate arrows that fight for the same slot.
+    const best = new Map<
+      string,
+      {
+        b: import("./pathwayTiming").BranchWindow;
+        progress: number;
+        u: number;
+        tipHold: boolean;
+      }
+    >();
+
     for (const b of branches) {
-      // Hold the front at the tip briefly so vectors finish the tract instead of
-      // vanishing the frame they reach u=1 (noticeable on short fascicle windows).
-      const tipHold = 0.04;
+      // Tip-hold only on terminal Purkinje so vectors can finish at the tips.
+      // Intermediate tracts and reentry loops hand off at junctions (no linger).
+      const tipHold =
+        b.id === "purkinjeL" || b.id === "purkinjeR"
+          ? 0.14
+          : b.id === "flutter" || b.id === "avnrtSlow" || b.id === "avnrtFast"
+            ? 0
+            : 0.02;
       if (t < b.t0 || t > b.t1 + tipHold) continue;
+      // AFib: atrial fronts stay live on TP; ventricles only during QRS/ST/T
       if (!ventPhase && isVentricularSeg(b.id)) continue;
+      if (!isAfib && mark === "TP") continue;
       const span = Math.max(1e-4, b.t1 - b.t0);
-      const progress = Math.min(1, (t - b.t0) / span);
+      const progress = Math.min(1, Math.max(0, (t - b.t0) / span));
       const uStart = b.u0 ?? (b.reverse ? 1 : 0);
       const uEnd = b.u1 ?? (b.reverse ? 0 : 1);
-      const u = uStart + (uEnd - uStart) * progress;
+      const u = uStart + (uEnd - uStart) * Math.min(1, progress);
+      const holding = tipHold > 0 && t > b.t1;
       const curves = curvesBySegment.get(b.id);
-      const color = SEGMENT_COLORS[b.id];
-      const isReverse = !!b.reverse || uEnd < uStart;
+      const curveIndices =
+        b.curveIndex != null
+          ? [b.curveIndex]
+          : curves?.length
+            ? curves.map((_, i) => i)
+            : b.id === "sa" || b.id === "av"
+              ? [0]
+              : [];
 
-      const pushFrontAt = (curveIndex: number) => {
-        const pt = pointOnSegment(b.id, u, curveIndex);
-        const dir = travelOnSegment(b.id, u, uEnd, curveIndex);
-        if (!pt || !dir) return;
-        out.push({
-          id: b.id,
-          pos: [pt.x, pt.y, pt.z],
-          dir: [dir.x, dir.y, dir.z],
-          color,
-          progress,
-          reverse: isReverse,
-        });
-      };
-
-      if (!curves?.length) {
-        if (b.id === "sa" || b.id === "av") pushFrontAt(0);
-        continue;
+      for (const ci of curveIndices) {
+        const key = `${b.id}:${ci}`;
+        const prev = best.get(key);
+        // Prefer actively traveling over tip-hold; then later t0 (newer wavelet)
+        const score = (holding ? 0 : 2) + b.t0;
+        const prevScore = prev ? (prev.tipHold ? 0 : 2) + prev.b.t0 : -1;
+        if (score >= prevScore) {
+          best.set(key, { b, progress: holding ? 1 : progress, u: holding ? uEnd : u, tipHold: holding });
+        }
       }
+    }
 
-      // Match impulse pulses: every anatomic curve of this segment gets its own front
-      // (internodals, both His parts, RBB+moderator, fascicles, all Purkinje branches).
-      if (b.curveIndex != null) pushFrontAt(b.curveIndex);
-      else {
-        for (let ci = 0; ci < curves.length; ci++) pushFrontAt(ci);
-      }
+    for (const [key, slot] of best) {
+      const ci = Number(key.split(":")[1] ?? 0);
+      const { b, progress, u, tipHold: holding } = slot;
+      const uEnd = b.u1 ?? (b.reverse ? 0 : 1);
+      const pt = pointOnSegment(b.id, u, ci);
+      const dir = travelOnSegment(b.id, u, uEnd, ci);
+      if (!pt || !dir || dir.lengthSq() < 1e-10) continue;
+      out.push({
+        id: b.id,
+        pos: [pt.x, pt.y, pt.z],
+        dir: [dir.x, dir.y, dir.z],
+        color: SEGMENT_COLORS[b.id],
+        progress,
+        reverse: !!b.reverse || uEnd < (b.u0 ?? 0),
+        curveIndex: ci,
+        tipHold: holding,
+      });
     }
     return out;
   }

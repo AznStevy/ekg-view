@@ -75,37 +75,37 @@ export function describeBundleBlocks(blocks: Iterable<BundleBlockId>): {
       return {
         name: "Right bundle branch block",
         short: "RBBB",
-        detail: `Block in ${parts} · LV first → transseptal RV · rsR′ V1`,
+        detail: `Block in ${parts} · LV first → transseptal RV · late +X/+Z · rsR′ V1 · wide S I/V6`,
       };
     case "lbbb":
       return {
         name: "Left bundle branch block",
         short: "LBBB",
-        detail: `Block in ${parts} · RV first → transseptal LV · broad R I/V6`,
+        detail: `Block in ${parts} · RV first → transseptal LV · leftward mean · broad R I/V6 · QS/rS V1`,
       };
     case "lafb":
       return {
         name: "Left anterior fascicular block",
         short: "LAFB",
-        detail: `Block in ${parts} · left axis · qR I/aVL · rS II/III/aVF`,
+        detail: `Block in ${parts} · inferior→superior force · left axis · qR I/aVL · rS II/III/aVF`,
       };
     case "lpfb":
       return {
         name: "Left posterior fascicular block",
         short: "LPFB",
-        detail: `Block in ${parts} · right axis · rS I/aVL · qR inferior`,
+        detail: `Block in ${parts} · superior→inferior force · right axis · rS I/aVL · qR inferior`,
       };
     case "rbbbLafb":
       return {
         name: "Bifascicular block (RBBB + LAFB)",
         short: "RBBB+LAFB",
-        detail: `Block in ${parts} · RBBB + left axis`,
+        detail: `Block in ${parts} · RBBB vectors + left axis · rsR′ V1 · left axis limb leads`,
       };
     case "rbbbLpfb":
       return {
         name: "Bifascicular block (RBBB + LPFB)",
         short: "RBBB+LPFB",
-        detail: `Block in ${parts} · RBBB + right axis`,
+        detail: `Block in ${parts} · RBBB vectors + right axis · rsR′ V1 · right axis limb leads`,
       };
     case "trifascicular":
       return {

@@ -9,7 +9,7 @@ import {
   type LeadId,
   type WaveSample,
 } from "./ekgWaveforms";
-import { sampleUploaded, type UploadedEkg } from "./ekgUpload";
+import { sampleUploaded, sampleUploadedRhythm, type UploadedEkg } from "./ekgUpload";
 
 const GRID = {
   /** 1 mm small boxes */
@@ -20,6 +20,8 @@ const GRID = {
   wave: "#3db8c8",
   label: "#8aa0ae",
   panelLine: "rgba(94, 160, 180, 0.22)",
+  /** Upload loop seam — where the recording begins / restarts */
+  cycleRestart: "rgba(220, 232, 240, 0.28)",
 };
 
 const MARK_COLORS: Record<CycleMark, { idle: string; active: string; text: string }> = {
@@ -141,15 +143,22 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
   const buffers: Record<LeadId, Float32Array> = Object.fromEntries(
     LEADS.map((l) => [l, new Float32Array(SAMPLES)]),
   ) as Record<LeadId, Float32Array>;
+  /** Full uploaded rhythm strip (may be longer than grid II) */
+  const rhythmBuffer = new Float32Array(SAMPLES);
   /** Absolute time at the right edge of the buffers (newest sample). */
   let bufferEndSec = Number.NaN;
   let bufferWindowSec = 0;
   let buffersDirty = true;
+  /** Cycle length used when painting restart marks (upload grid loop). */
+  let paintCycleSec = 1;
+  /** Longer cycle for the bottom rhythm strip when present */
+  let paintRhythmCycleSec = 1;
 
   function invalidateBuffers() {
     buffersDirty = true;
     bufferEndSec = Number.NaN;
     for (const l of LEADS) buffers[l].fill(0);
+    rhythmBuffer.fill(0);
   }
 
   function sampleAt(tNorm: number, tAbs?: number): WaveSample {
@@ -556,10 +565,19 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
     w: number,
     h: number,
     cursorXLocal: number,
-    opts?: { missing?: boolean; label?: string; fromFrac?: number; toFrac?: number },
+    opts?: {
+      missing?: boolean;
+      label?: string;
+      fromFrac?: number;
+      toFrac?: number;
+      /** Use full uploaded rhythm strip buffer instead of grid II */
+      useRhythmBuffer?: boolean;
+      /** Override loop period for restart marks (defaults to paintCycleSec) */
+      restartCycleSec?: number;
+    },
   ) {
     const c = ctx!;
-    const buf = buffers[lead];
+    const buf = opts?.useRhythmBuffer ? rhythmBuffer : buffers[lead];
     const missing = !!opts?.missing;
     const label = opts?.label ?? lead;
     const fromFrac = Math.max(0, Math.min(1, opts?.fromFrac ?? 0));
@@ -567,6 +585,7 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
     const i0 = Math.round(fromFrac * (SAMPLES - 1));
     const i1 = Math.round(toFrac * (SAMPLES - 1));
     const span = Math.max(1, i1 - i0);
+    const restartCycle = opts?.restartCycleSec ?? paintCycleSec;
 
     // Square paper boxes: 1 mm small, 5 mm large (= 0.2 s horizontally)
     const mm = paperMmPx;
@@ -616,6 +635,28 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
     c.moveTo(x, mid);
     c.lineTo(x + w, mid);
     c.stroke();
+
+    // Faint vertical marks where the uploaded recording loops (all leads)
+    if (upload && Number.isFinite(bufferEndSec) && restartCycle > 0.25) {
+      c.strokeStyle = GRID.cycleRestart;
+      c.lineWidth = 1;
+      c.setLineDash([3, 4]);
+      let prevPhase = Number.NaN;
+      for (let i = i0; i <= i1; i++) {
+        const age = ((SAMPLES - 1 - i) / Math.max(1, SAMPLES - 1)) * viewWindowSec;
+        const tAbs = bufferEndSec - age;
+        const phase = ((tAbs % restartCycle) + restartCycle) % restartCycle;
+        if (Number.isFinite(prevPhase) && prevPhase > phase + restartCycle * 0.5) {
+          const px = x + ((i - i0) / span) * w;
+          c.beginPath();
+          c.moveTo(Math.floor(px) + 0.5, y);
+          c.lineTo(Math.floor(px) + 0.5, y + h);
+          c.stroke();
+        }
+        prevPhase = phase;
+      }
+      c.setLineDash([]);
+    }
 
     if (!missing) {
       const cx = x + cursorXLocal;
@@ -710,14 +751,27 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
   function fillBin(i: number, endSec: number, cycle: number, shown: Set<LeadId>, dtBin: number) {
     const ageCenter = ((SAMPLES - 1 - i) / (SAMPLES - 1)) * viewWindowSec;
     for (const lead of LEADS) buffers[lead][i] = 0;
+    rhythmBuffer[i] = 0;
+    const rhythmCycle =
+      upload?.rhythmSignal && upload.rhythmDurationSec
+        ? upload.rhythmDurationSec
+        : cycle;
     for (let s = 0; s < SUBSAMPLE; s++) {
       const frac = (s + 0.5) / SUBSAMPLE;
       const age = ageCenter + (frac - 0.5) * dtBin;
-      const smp = sampleNormAt(endSec - age, cycle);
+      const tAbs = endSec - age;
+      const smp = sampleNormAt(tAbs, cycle);
       for (const lead of LEADS) {
         if (!shown.has(lead)) continue;
         const v = smp.leads[lead]!;
         if (Math.abs(v) >= Math.abs(buffers[lead][i]!)) buffers[lead][i] = v;
+      }
+      if (upload?.rhythmSignal) {
+        const rt = ((tAbs % rhythmCycle) + rhythmCycle) % rhythmCycle;
+        const rv = sampleUploadedRhythm(upload, rt / rhythmCycle);
+        if (Math.abs(rv) >= Math.abs(rhythmBuffer[i]!)) rhythmBuffer[i] = rv;
+      } else if (shown.has("II")) {
+        rhythmBuffer[i] = buffers.II[i]!;
       }
     }
   }
@@ -765,6 +819,7 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
       const buf = buffers[lead];
       buf.copyWithin(0, n);
     }
+    rhythmBuffer.copyWithin(0, n);
     const newEnd = bufferEndSec + n * dtBin;
     for (let i = SAMPLES - n; i < SAMPLES; i++) fillBin(i, newEnd, cycle, shown, dtBin);
     bufferEndSec = newEnd;
@@ -772,6 +827,11 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
 
   function update(elapsedSec: number) {
     const cycle = effectiveCycle();
+    paintCycleSec = cycle;
+    paintRhythmCycleSec =
+      upload?.rhythmSignal && upload.rhythmDurationSec
+        ? upload.rhythmDurationSec
+        : cycle;
     const tCycle =
       customAbsolute && customTCycleAt
         ? ((customTCycleAt(elapsedSec) % 1) + 1) % 1
@@ -922,6 +982,8 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
       drawLeadCell(rhythmLead, pad, ry, cssW - pad * 2, rhythmH - 2, cssW - pad * 2 - 6, {
         fromFrac: 0,
         toFrac: 1,
+        useRhythmBuffer: !!upload?.rhythmSignal,
+        restartCycleSec: paintRhythmCycleSec,
       });
       c.fillStyle = "#3db8c8";
       c.font = '600 10px "IBM Plex Mono", monospace';

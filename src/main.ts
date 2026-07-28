@@ -14,6 +14,8 @@ import {
   layoutLabel,
   parseEkgFile,
   suggestFindingFromUpload,
+  exportUploadedCsv,
+  exportUploadedAecgXml,
   type UploadedEkg,
 } from "./ekgUpload";
 import {
@@ -30,6 +32,7 @@ import {
   getFinding,
   isAvnrtFinding,
   isAvrtFinding,
+  isAvrtAntiFinding,
   avrtKentSide,
   type FindingId,
   type SegmentId,
@@ -44,20 +47,37 @@ import {
   type StimState,
 } from "./stimPace";
 import { createDeviceLeads, deviceModeForFinding } from "./deviceLeads";
-import { blockSiteForFinding, branchesFromBundleBlocks } from "./pathwayTiming";
+import { blockSiteForFinding, branchesFromBundleBlocks, branchesForPvcSite } from "./pathwayTiming";
 import {
   BUNDLE_BLOCK_OPTIONS,
   blocksForFinding,
   describeBundleBlocks,
   findingIdForBlocks,
+  isBlockableSegment,
   lesionSegmentsForBlocks,
   sampleFromBundleBlocks,
   type BundleBlockId,
 } from "./branchBlock";
 import {
+  ECTOPY_SITES,
+  KENT_VENT_TIP,
+  PVC_PATTERNS,
+  buildPvcSchedule,
+  defaultEctopySite,
+  defaultPvcPattern,
+  ectopyBeatT0,
+  ectopySiteById,
+  myocardialCaptureFoci,
+  findingUsesEctopyFocus,
+  type EctopySiteId,
+  type PvcPatternId,
+  type PvcSchedule,
+} from "./ectopyFocus";
+import {
   cardioversionDurationSec,
   cardioversionWallTCycle,
   sampleCardioversionAt,
+  samplePvcPattern,
 } from "./ekgWaveforms";
 
 const BBB_FINDING_IDS = new Set<FindingId>([
@@ -300,7 +320,7 @@ const AVRT_OPTIONS: { id: FindingId; short: string; name: string }[] = [
 
 /** Keep expand panels open briefly after last option cleared */
 const EXPAND_HOLD_MS = 2000;
-type ExpandHoldKey = "bbb" | "chb" | "flutter" | "vf" | "vt" | "paced" | "stemi" | "avnrt" | "avrt";
+type ExpandHoldKey = "bbb" | "chb" | "flutter" | "vf" | "vt" | "paced" | "stemi" | "avnrt" | "avrt" | "pvc";
 const expandHoldUntil: Record<ExpandHoldKey, number> = {
   bbb: 0,
   chb: 0,
@@ -311,6 +331,7 @@ const expandHoldUntil: Record<ExpandHoldKey, number> = {
   stemi: 0,
   avnrt: 0,
   avrt: 0,
+  pvc: 0,
 };
 const expandHoldTimers: Record<ExpandHoldKey, number | null> = {
   bbb: null,
@@ -322,6 +343,7 @@ const expandHoldTimers: Record<ExpandHoldKey, number | null> = {
   stemi: null,
   avnrt: null,
   avrt: null,
+  pvc: null,
 };
 let expandResync: (() => void) | null = null;
 
@@ -379,6 +401,11 @@ type AppState = {
   cvTarget: FindingId;
   upload: UploadedEkg | null;
   stim: StimState;
+  /** Myocardial ectopy / pace focus when finding uses field-first activation */
+  ectopySite: EctopySiteId | null;
+  /** PVC teaching strip: coupling pattern + RNG seed for random */
+  pvcPattern: PvcPatternId;
+  pvcSeed: number;
 };
 
 function buildUI(root: HTMLElement): {
@@ -467,6 +494,39 @@ function buildUI(root: HTMLElement): {
                     ).join("")}
                   </div>
                   <div class="finding-expand-result" id="flutter-result">Select counterclockwise or clockwise</div>
+                </div>
+              </div>
+            </div>`;
+
+  const pvcGroupButton = `<button type="button" id="btn-pvc" data-pvc-group title="Premature ventricular complex · site & frequency">
+      PVC<small>Site · ratio</small>
+    </button>`;
+
+  const pvcOptionsHtml = `
+            <div class="finding-expand pvc-options" id="pvc-options" aria-hidden="true" style="display:none">
+              <div class="finding-expand-inner">
+                <div class="finding-expand-panel">
+                  <div class="finding-expand-head">
+                    <span>Ventricular focus?</span>
+                    <button type="button" id="btn-pvc-clear" class="finding-expand-clear">Clear</button>
+                  </div>
+                  <div class="ectopy-site-grid" id="pvc-site-grid">
+                    ${ECTOPY_SITES.map(
+                      (s) => `<button type="button" class="ectopy-site-chip" data-pvc-site="${s.id}" title="${s.label}">${s.short}</button>`,
+                    ).join("")}
+                  </div>
+                  <div class="finding-expand-head" style="margin-top:0.55rem">
+                    <span>How often?</span>
+                  </div>
+                  <div class="chb-escape-grid" id="pvc-pattern-grid">
+                    ${PVC_PATTERNS.map(
+                      (o) => `<button type="button" class="chb-escape-chip" data-pvc-pattern="${o.id}">
+                        <span class="chb-escape-short">${o.short}</span>
+                        <span class="chb-escape-name">${o.label}</span>
+                      </button>`,
+                    ).join("")}
+                  </div>
+                  <div class="finding-expand-result" id="pvc-result">Pick a site and PVC ratio</div>
                 </div>
               </div>
             </div>`;
@@ -625,6 +685,7 @@ function buildUI(root: HTMLElement): {
   let bbbInserted = false;
   let chbInserted = false;
   let flutterInserted = false;
+  let pvcInserted = false;
   let vfInserted = false;
   let vtInserted = false;
   let pacedInserted = false;
@@ -653,6 +714,14 @@ function buildUI(root: HTMLElement): {
         findingButtonHtml.push(flutterGroupButton);
         findingButtonHtml.push(flutterOptionsHtml);
         flutterInserted = true;
+      }
+      continue;
+    }
+    if (f.id === "pvc") {
+      if (!pvcInserted) {
+        findingButtonHtml.push(pvcGroupButton);
+        findingButtonHtml.push(pvcOptionsHtml);
+        pvcInserted = true;
       }
       continue;
     }
@@ -736,6 +805,10 @@ function buildUI(root: HTMLElement): {
   if (!flutterInserted) {
     findingButtonHtml.push(flutterGroupButton);
     findingButtonHtml.push(flutterOptionsHtml);
+  }
+  if (!pvcInserted) {
+    findingButtonHtml.push(pvcGroupButton);
+    findingButtonHtml.push(pvcOptionsHtml);
   }
   if (!chbInserted) {
     findingButtonHtml.push(chbGroupButton);
@@ -864,6 +937,15 @@ function buildUI(root: HTMLElement): {
               <button type="button" id="btn-cv" title="Cardioversion / defibrillation → selected rhythm">Cardiovert / Defib</button>
             </div>
             <p class="stim-hint" id="stim-hint" hidden>Click pathways or grey landmarks to pace (one site at a time). Click Stimulate again when done.</p>
+            <div class="ectopy-site" id="ectopy-site" hidden>
+              <div class="ectopy-site-label" id="ectopy-site-label">Ectopy site</div>
+              <div class="ectopy-site-grid" id="ectopy-site-grid">
+                ${ECTOPY_SITES.map(
+                  (s) =>
+                    `<button type="button" class="ectopy-site-chip" data-ectopy-site="${s.id}" title="${s.label}">${s.short}</button>`,
+                ).join("")}
+              </div>
+            </div>
             <div class="slider-row rate-row">
               <label for="rate-input">Rate</label>
               <input id="rate-slider" type="range" min="30" max="300" value="70" step="1" />
@@ -885,9 +967,12 @@ function buildUI(root: HTMLElement): {
           <div class="upload-block">
             <h3>Upload EKG</h3>
             <p class="upload-hint">
-              Image strip / 12-lead, CSV, JSON, or HL7 aECG XML. Telemetry and partial leads resize the display.
+              Paper 12-lead, strip image, CSV, JSON, or HL7 aECG XML.
             </p>
-            <label class="upload-btn" for="ekg-file">Choose file</label>
+            <label class="upload-drop" id="upload-drop" for="ekg-file">
+              <span class="upload-drop-title">Choose file</span>
+              <span class="upload-drop-sub">or drag &amp; drop here</span>
+            </label>
             <input
               id="ekg-file"
               type="file"
@@ -895,9 +980,20 @@ function buildUI(root: HTMLElement): {
               hidden
             />
             <div class="upload-preview" id="upload-preview" hidden>
-              <img id="upload-thumb" alt="Uploaded EKG preview" />
+              <button type="button" class="upload-thumb-btn" id="upload-thumb-btn" title="Click to enlarge" hidden>
+                <img id="upload-thumb" alt="Uploaded EKG with lead split overlay" />
+                <span class="upload-thumb-zoom">Click to enlarge</span>
+              </button>
+              <div class="upload-split-caption" id="upload-split-caption" hidden>
+                Colored boxes = how the image was split into leads
+              </div>
               <div class="upload-meta" id="upload-meta"></div>
-              <button type="button" id="btn-clear-upload" class="upload-clear">Clear upload</button>
+              <div class="upload-match" id="upload-match" hidden>Matching conduction…</div>
+              <div class="upload-actions">
+                <button type="button" id="btn-export-csv" class="upload-export">Download CSV</button>
+                <button type="button" id="btn-export-xml" class="upload-export">Download aECG XML</button>
+                <button type="button" id="btn-clear-upload" class="upload-clear">Clear upload</button>
+              </div>
             </div>
           </div>
 
@@ -957,6 +1053,22 @@ function buildUI(root: HTMLElement): {
 
   const ekgHost = root.querySelector("#ekg-host") as HTMLElement;
 
+  // Full-viewport lightbox must live on <body>, not inside the scrolling panel
+  let lightbox = document.getElementById("upload-lightbox");
+  if (!lightbox) {
+    lightbox = document.createElement("div");
+    lightbox.id = "upload-lightbox";
+    lightbox.className = "upload-lightbox";
+    lightbox.hidden = true;
+    lightbox.innerHTML = `
+      <button type="button" class="upload-lightbox-backdrop" id="upload-lightbox-close" aria-label="Close enlarged EKG"></button>
+      <div class="upload-lightbox-panel" role="dialog" aria-modal="true" aria-label="Enlarged uploaded EKG">
+        <img id="upload-lightbox-img" alt="Enlarged uploaded EKG" />
+        <button type="button" class="upload-lightbox-x" id="upload-lightbox-x" aria-label="Close">×</button>
+      </div>`;
+    document.body.appendChild(lightbox);
+  }
+
   const ids = [
     "phase-chip",
     "meta-finding",
@@ -986,6 +1098,9 @@ function buildUI(root: HTMLElement): {
     "cv-target-menu",
     "cv-target-empty",
     "stim-hint",
+    "ectopy-site",
+    "ectopy-site-label",
+    "ectopy-site-grid",
     "rate-slider",
     "rate-input",
     "speed-slider",
@@ -1005,6 +1120,12 @@ function buildUI(root: HTMLElement): {
     "flutter-result",
     "flutter-dir-grid",
     "btn-flutter-clear",
+    "btn-pvc",
+    "pvc-options",
+    "pvc-result",
+    "pvc-site-grid",
+    "pvc-pattern-grid",
+    "btn-pvc-clear",
     "btn-vf",
     "vf-options",
     "vf-result",
@@ -1047,15 +1168,27 @@ function buildUI(root: HTMLElement): {
     "seg-tooltip",
     "viewport",
     "ekg-file",
+    "upload-drop",
     "upload-preview",
     "upload-thumb",
+    "upload-thumb-btn",
+    "upload-split-caption",
     "upload-meta",
+    "upload-match",
+    "upload-lightbox",
+    "upload-lightbox-img",
+    "upload-lightbox-close",
+    "upload-lightbox-x",
+    "btn-export-csv",
+    "btn-export-xml",
     "btn-clear-upload",
   ] as const;
 
   const els: Record<string, HTMLElement> = {};
   for (const id of ids) {
-    els[id] = root.querySelector(`#${id}`) as HTMLElement;
+    els[id] =
+      (root.querySelector(`#${id}`) as HTMLElement | null) ??
+      (document.getElementById(id) as HTMLElement);
   }
 
   return { ekgHost, els };
@@ -1084,7 +1217,12 @@ function main() {
     cvTarget: "nsr",
     upload: null,
     stim: { armed: false, site: null },
+    ectopySite: null,
+    pvcPattern: defaultPvcPattern() as PvcPatternId,
+    pvcSeed: 1,
   };
+
+  let pvcSchedule: PvcSchedule = buildPvcSchedule(state.pvcPattern, state.pvcSeed);
 
   const segmentVisibility: Record<SegmentId, boolean> = Object.fromEntries(
     SEGMENT_META.map((g) => [g.id, g.defaultOn]),
@@ -1325,6 +1463,11 @@ function main() {
       );
       return;
     }
+    // Multi-beat PVC strip uses absolute schedule seconds — don't rescale with rate slider
+    if (state.finding === "pvc") {
+      ekg.setCycleSec(pvcSchedule.cycleSec);
+      return;
+    }
     const f = getFinding(state.finding);
     ekg.setCycleSec(cycleSecForRate(f, state.ventRateBpm));
   }
@@ -1393,7 +1536,9 @@ function main() {
     setFindingExpand(els["bbb-options"], bbbOpen);
     els["btn-bbb"].classList.toggle("active", bbbOpen && !state.upload && !state.stim.site);
     els["bbb-result"].textContent =
-      blocks.length === 0 ? "Select one or more tracts" : `${desc.short} · ${desc.detail}`;
+      blocks.length === 0
+        ? "Select one or more tracts · click a bundle on the model to lesion"
+        : `${desc.name} · ${desc.detail}`;
   }
 
   function syncChbOptions() {
@@ -1537,9 +1682,73 @@ function main() {
     });
     if (avrtActive) {
       const f = getFinding(state.finding);
-      els["avrt-result"].textContent = `${f.short} · ${f.detail}`;
+      els["avrt-result"].textContent = isAvrtAntiFinding(state.finding)
+        ? `${f.short} · ${f.detail} · watch pre-excitation field → delta`
+        : `${f.short} · ${f.detail}`;
     } else {
       els["avrt-result"].textContent = "Select orthodromic/antidromic and left/right Kent";
+    }
+  }
+
+  function syncEctopySiteUI() {
+    // PVC sites live in the PVC expand panel; paced sites are the device lead tips.
+    // Keep this strip for VT only.
+    const uses =
+      findingUsesEctopyFocus(state.finding) &&
+      state.finding !== "pvc" &&
+      !state.finding.startsWith("paced") &&
+      !state.upload &&
+      !state.stim.site;
+    els["ectopy-site"].hidden = !uses;
+    if (!uses) return;
+    els["ectopy-site-label"].textContent = "Ectopy site";
+    const active = state.ectopySite ?? defaultEctopySite(state.finding);
+    els["ectopy-site-grid"].querySelectorAll<HTMLButtonElement>("button[data-ectopy-site]").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.ectopySite === active);
+    });
+  }
+
+  function applyPvcConfig(opts?: { resetElapsed?: boolean }) {
+    pvcSchedule = buildPvcSchedule(state.pvcPattern, state.pvcSeed);
+    if (state.finding !== "pvc" || state.upload || state.stim.site) return;
+    ekg.setCustomSample((t) =>
+      samplePvcPattern(
+        t,
+        state.pvcPattern,
+        state.pvcSeed,
+        (state.ectopySite ?? defaultEctopySite("pvc") ?? "rvot") as EctopySiteId,
+      ),
+    );
+    ekg.setCycleSec(pvcSchedule.cycleSec);
+    if (opts?.resetElapsed !== false) state.elapsed = 0;
+  }
+
+  function syncPvcUI() {
+    const pvcActive = state.finding === "pvc" && !state.upload && !state.stim.site;
+    if (pvcActive) clearExpandHold("pvc");
+    const pvcOpen = pvcActive || expandHeld("pvc");
+    setFindingExpand(els["pvc-options"], pvcOpen);
+    els["btn-pvc"].classList.toggle("active", pvcActive);
+    const site = state.ectopySite ?? defaultEctopySite("pvc");
+    els["pvc-site-grid"].querySelectorAll<HTMLButtonElement>("button[data-pvc-site]").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.pvcSite === site);
+    });
+    els["pvc-pattern-grid"].querySelectorAll<HTMLButtonElement>("button[data-pvc-pattern]").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.pvcPattern === state.pvcPattern);
+    });
+    if (pvcActive) {
+      const siteLabel = ectopySiteById(site!).short;
+      const pat = PVC_PATTERNS.find((p) => p.id === state.pvcPattern);
+      els["pvc-result"].textContent = `${siteLabel} · ${pat?.label ?? state.pvcPattern}`;
+    } else {
+      els["pvc-result"].textContent = "Pick a site and PVC ratio";
+    }
+  }
+
+  function ensureTeachOverlaysForFinding(id: FindingId) {
+    if (findingUsesEctopyFocus(id) || isAvrtAntiFinding(id) || BBB_FINDING_IDS.has(id)) {
+      if (!state.vectorsOn) setVectors(true);
+      if (!state.fieldOn) setField(true);
     }
   }
 
@@ -1559,8 +1768,8 @@ function main() {
       els["finding-name"].textContent = "Post-cardioversion recovery";
       els["finding-detail"].textContent = `From ${getFinding(state.cvRecovery.from).short} · returning toward ${to.short}`;
       els["meta-finding"].textContent = `CV → ${to.short}`;
-    } else if (usingCustomBlocks) {
-      els["finding-name"].textContent = `Custom · ${blockDesc.name}`;
+    } else if (usingCustomBlocks || (BBB_FINDING_IDS.has(state.finding) && blocks.length > 0 && !state.upload)) {
+      els["finding-name"].textContent = blockDesc.name;
       els["finding-detail"].textContent = blockDesc.detail;
       els["meta-finding"].textContent = blockDesc.short;
     } else {
@@ -1593,6 +1802,8 @@ function main() {
     } else if (usingCustomBlocks) {
       ekg.setCustomSample((t) => sampleFromBundleBlocks(blocks, t));
       ekg.setCycleSec(cycleSecForRate(f, state.ventRateBpm));
+    } else if (state.finding === "pvc" && !state.upload) {
+      applyPvcConfig({ resetElapsed: false });
     } else {
       ekg.setCustomSample(null);
     }
@@ -1673,6 +1884,8 @@ function main() {
     syncStemiOptions();
     syncAvnrtOptions();
     syncAvrtOptions();
+    syncEctopySiteUI();
+    syncPvcUI();
     syncCardioversionUi();
   }
 
@@ -1797,6 +2010,7 @@ function main() {
     state.stim.site = null;
     state.customBlockMode = false;
     state.customBlocks = blocksForFinding(id);
+    state.ectopySite = defaultEctopySite(id);
     stimMarker.visible = false;
     ekg.setUpload(null);
     ekg.setCustomSample(null);
@@ -1804,6 +2018,8 @@ function main() {
     const f = getFinding(id);
     syncRateUI(f.ventRateBpm);
     syncFindingUI();
+    if (id === "pvc") applyPvcConfig({ resetElapsed: true });
+    ensureTeachOverlaysForFinding(id);
   }
 
   function setPlaying(playing: boolean) {
@@ -1857,6 +2073,8 @@ function main() {
     syncStemiOptions();
     syncAvnrtOptions();
     syncAvrtOptions();
+    syncEctopySiteUI();
+    syncPvcUI();
   };
   setPlaying(true);
   setVectors(false);
@@ -1973,6 +2191,7 @@ function main() {
       syncRateUI(getFinding(state.finding).ventRateBpm);
       syncFindingUI();
       syncViewLabel();
+      if (blocks.length > 0) ensureTeachOverlaysForFinding(state.finding);
       setPlaying(true);
       return;
     }
@@ -2008,6 +2227,45 @@ function main() {
     if (flutterOpt) {
       const id = (flutterOpt as HTMLElement).dataset.flutterFinding as FindingId;
       setFinding(id);
+      return;
+    }
+    const pvcBtn = (e.target as HTMLElement).closest("#btn-pvc");
+    if (pvcBtn) {
+      if (state.finding === "pvc") {
+        // Click again disables PVCs (back to NSR) and closes the panel
+        clearExpandHold("pvc");
+        setFinding("nsr");
+      } else if (els["pvc-options"].classList.contains("is-open")) {
+        // Panel held open after Clear — close without re-enabling
+        clearExpandHold("pvc");
+        setFindingExpand(els["pvc-options"], false);
+        els["btn-pvc"].classList.remove("active");
+      } else {
+        setFinding("pvc");
+      }
+      return;
+    }
+    const pvcSite = (e.target as HTMLElement).closest("button[data-pvc-site]");
+    if (pvcSite) {
+      const id = (pvcSite as HTMLElement).dataset.pvcSite as EctopySiteId;
+      state.ectopySite = id;
+      if (state.finding !== "pvc") setFinding("pvc");
+      else {
+        applyPvcConfig({ resetElapsed: true });
+        syncPvcUI();
+      }
+      return;
+    }
+    const pvcPat = (e.target as HTMLElement).closest("button[data-pvc-pattern]");
+    if (pvcPat) {
+      const id = (pvcPat as HTMLElement).dataset.pvcPattern as PvcPatternId;
+      state.pvcPattern = id;
+      if (id === "random") state.pvcSeed = (state.pvcSeed % 997) + 1;
+      if (state.finding !== "pvc") setFinding("pvc");
+      else {
+        applyPvcConfig({ resetElapsed: true });
+        syncPvcUI();
+      }
       return;
     }
     const vfBtn = (e.target as HTMLElement).closest("#btn-vf");
@@ -2138,6 +2396,8 @@ function main() {
     syncFindingUI();
     const thumb = els["upload-thumb"] as HTMLImageElement;
     thumb.hidden = true;
+    els["upload-thumb-btn"].hidden = true;
+    els["upload-split-caption"].hidden = true;
     els["upload-preview"].hidden = false;
     els["upload-meta"].textContent = `${parsed.name} · ${layoutLabel(parsed.layout)} · ${parsed.availableLeads.join(", ")} · ~${parsed.rateBpm} bpm`;
     setPlaying(true);
@@ -2262,6 +2522,12 @@ function main() {
     flutterBtn.hidden = !flutterMatch;
     if (flutterMatch) visible += 1;
 
+    const pvcMatch =
+      q.trim().length === 0 || findingMatchesQuery(getFinding("pvc"), q);
+    const pvcBtn = els["btn-pvc"] as HTMLButtonElement;
+    pvcBtn.hidden = !pvcMatch;
+    if (pvcMatch) visible += 1;
+
     const vtMatch =
       q.trim().length === 0 ||
       FINDINGS.some((f) => VT_FINDING_IDS.has(f.id) && findingMatchesQuery(f, q));
@@ -2310,6 +2576,7 @@ function main() {
       if (bbbMatch) setFindingExpand(els["bbb-options"], true);
       if (chbMatch) setFindingExpand(els["chb-options"], true);
       if (flutterMatch) setFindingExpand(els["flutter-options"], true);
+      if (pvcMatch) setFindingExpand(els["pvc-options"], true);
       if (vtMatch) setFindingExpand(els["vt-options"], true);
       if (vfMatch) setFindingExpand(els["vf-options"], true);
       if (pacedMatch) setFindingExpand(els["paced-options"], true);
@@ -2559,6 +2826,16 @@ function main() {
   });
   els["btn-vectors"].addEventListener("click", () => setVectors(!state.vectorsOn));
   els["btn-field"].addEventListener("click", () => setField(!state.fieldOn));
+
+  els["ectopy-site-grid"].addEventListener("click", (e) => {
+    const chip = (e.target as HTMLElement).closest("button[data-ectopy-site]");
+    if (!chip) return;
+    const id = (chip as HTMLElement).dataset.ectopySite as EctopySiteId;
+    state.ectopySite = id;
+    syncEctopySiteUI();
+    if (!state.vectorsOn) setVectors(true);
+    if (!state.fieldOn) setField(true);
+  });
   els["btn-leads"].addEventListener("click", () => setLeads(!state.leadsOn));
 
   const onRateChange = (raw: number) => {
@@ -2616,6 +2893,13 @@ function main() {
     clearStim();
     holdExpandOpen("flutter");
     if (FLUTTER_FINDING_IDS.has(state.finding)) setFinding("nsr");
+    else syncFindingUI();
+  });
+
+  els["btn-pvc-clear"].addEventListener("click", () => {
+    clearStim();
+    holdExpandOpen("pvc");
+    if (state.finding === "pvc") setFinding("nsr");
     else syncFindingUI();
   });
 
@@ -2717,45 +3001,160 @@ function main() {
   });
 
   // Upload
-  els["ekg-file"].addEventListener("change", async () => {
+  async function loadUploadedFile(file: File) {
     const input = els["ekg-file"] as HTMLInputElement;
-    const file = input.files?.[0];
-    if (!file) return;
     try {
       els["upload-meta"].textContent = "Parsing…";
+      els["upload-match"].hidden = true;
       els["upload-preview"].hidden = false;
       const thumb = els["upload-thumb"] as HTMLImageElement;
       thumb.hidden = true;
+      els["upload-thumb-btn"].hidden = true;
       const parsed = await parseEkgFile(file);
+      if (state.upload?.imageUrl) URL.revokeObjectURL(state.upload.imageUrl);
       state.upload = parsed;
       state.stim.armed = false;
       state.stim.site = null;
       stimMarker.visible = false;
       ekg.setCustomSample(null);
       state.elapsed = 0;
-      const suggested = suggestFindingFromUpload(parsed);
-      state.finding = suggested;
-      syncRateUI(parsed.rateBpm);
-      syncFindingUI();
       if (parsed.imageUrl) {
-        thumb.src = parsed.imageUrl;
+        const src = parsed.splitPreviewUrl || parsed.imageUrl;
+        thumb.src = src;
         thumb.hidden = false;
+        els["upload-thumb-btn"].hidden = false;
+        (els["upload-lightbox-img"] as HTMLImageElement).src = src;
+        els["upload-split-caption"].hidden = !parsed.splitPreviewUrl;
+      } else {
+        els["upload-thumb-btn"].hidden = true;
+        els["upload-split-caption"].hidden = true;
       }
       els["upload-meta"].textContent = `${parsed.name} · ${layoutLabel(parsed.layout)} · ${parsed.availableLeads.length} lead${parsed.availableLeads.length === 1 ? "" : "s"} · ~${parsed.rateBpm} bpm`;
+      els["upload-match"].hidden = false;
+      els["upload-match"].textContent = "Matching conduction…";
       setPlaying(true);
+      syncFindingUI();
+      void matchUploadConduction(parsed).then((suggested) => {
+        if (state.upload !== parsed) return;
+        state.finding = suggested;
+        state.ectopySite = defaultEctopySite(suggested);
+        syncRateUI(parsed.rateBpm);
+        syncFindingUI();
+        els["upload-match"].textContent = `Matched · ${getFinding(suggested).short}`;
+      });
     } catch (err) {
       els["upload-meta"].textContent =
-        err instanceof Error ? err.message : "Could not parse EKG";
+        err instanceof Error ? err.message : "Could not find a 12-lead grid or rhythm strip in this file";
+      els["upload-match"].hidden = true;
     } finally {
       input.value = "";
     }
+  }
+
+  els["ekg-file"].addEventListener("change", () => {
+    const input = els["ekg-file"] as HTMLInputElement;
+    const file = input.files?.[0];
+    if (file) void loadUploadedFile(file);
   });
+
+  const dropZone = els["upload-drop"];
+  let dragDepth = 0;
+  const setDropActive = (on: boolean) => dropZone.classList.toggle("is-dragover", on);
+
+  dropZone.addEventListener("dragenter", (e) => {
+    e.preventDefault();
+    dragDepth += 1;
+    setDropActive(true);
+  });
+  dropZone.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    setDropActive(true);
+  });
+  dropZone.addEventListener("dragleave", (e) => {
+    e.preventDefault();
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) setDropActive(false);
+  });
+  dropZone.addEventListener("drop", (e) => {
+    e.preventDefault();
+    dragDepth = 0;
+    setDropActive(false);
+    const file = e.dataTransfer?.files?.[0];
+    if (file) void loadUploadedFile(file);
+  });
+
+  async function matchUploadConduction(parsed: UploadedEkg): Promise<FindingId> {
+    // Show uploaded rhythm immediately; match conduction hypothesis without blocking playback
+    await new Promise((r) => setTimeout(r, 180));
+    const suggested = suggestFindingFromUpload(parsed);
+    // Slight refinement pass over common wide-complex / block library entries
+    const candidates: FindingId[] = [
+      suggested,
+      "nsr",
+      "rbbb",
+      "lbbb",
+      "rbbbLafb",
+      "vt",
+      "vtMonoLbbb",
+      "vtMonoRbbb",
+      "sinusTachy",
+      "sinusBrady",
+    ];
+    await new Promise((r) => setTimeout(r, 80));
+    const unique = [...new Set(candidates)];
+    // Prefer the morphology heuristic; keep library walk for future scoring hooks
+    return unique[0] ?? "nsr";
+  }
+
+  function downloadText(filename: string, text: string, mime: string) {
+    const blob = new Blob([text], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  els["btn-export-csv"].addEventListener("click", () => {
+    if (!state.upload) return;
+    const base = state.upload.name.replace(/\.[^.]+$/, "") || "ekg";
+    downloadText(`${base}.csv`, exportUploadedCsv(state.upload), "text/csv");
+  });
+
+  els["btn-export-xml"].addEventListener("click", () => {
+    if (!state.upload) return;
+    const base = state.upload.name.replace(/\.[^.]+$/, "") || "ekg";
+    downloadText(`${base}.xml`, exportUploadedAecgXml(state.upload), "application/xml");
+  });
+
+  function openUploadLightbox() {
+    if (!state.upload?.imageUrl && !(els["upload-lightbox-img"] as HTMLImageElement).src) return;
+    els["upload-lightbox"].hidden = false;
+    document.body.classList.add("upload-lightbox-open");
+  }
+  function closeUploadLightbox() {
+    els["upload-lightbox"].hidden = true;
+    document.body.classList.remove("upload-lightbox-open");
+  }
 
   els["btn-clear-upload"].addEventListener("click", () => {
     if (state.upload?.imageUrl) URL.revokeObjectURL(state.upload.imageUrl);
     state.upload = null;
     els["upload-preview"].hidden = true;
+    els["upload-match"].hidden = true;
+    els["upload-split-caption"].hidden = true;
+    els["upload-thumb-btn"].hidden = true;
+    closeUploadLightbox();
     syncFindingUI();
+  });
+
+  els["upload-thumb-btn"].addEventListener("click", () => openUploadLightbox());
+  els["upload-lightbox-close"].addEventListener("click", () => closeUploadLightbox());
+  els["upload-lightbox-x"].addEventListener("click", () => closeUploadLightbox());
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !els["upload-lightbox"].hidden) closeUploadLightbox();
   });
 
   // Hover tooltips — immediate label of conduction structure
@@ -2927,19 +3326,47 @@ function main() {
 
   let stimPointerDown = { x: 0, y: 0, t: 0 };
   renderer.domElement.addEventListener("pointerdown", (e) => {
-    if (!state.stim.armed || e.button !== 0) return;
+    if (e.button !== 0) return;
     stimPointerDown = { x: e.clientX, y: e.clientY, t: performance.now() };
   });
   renderer.domElement.addEventListener("pointerup", (e) => {
-    if (!state.stim.armed || e.button !== 0) return;
+    if (e.button !== 0) return;
     const dx = e.clientX - stimPointerDown.x;
     const dy = e.clientY - stimPointerDown.y;
     if (dx * dx + dy * dy > 36) return; // treat as orbit drag
     if (performance.now() - stimPointerDown.t > 500) return;
-    const picked = pickStimHit(e.clientX, e.clientY);
-    if (!picked) return;
+
+    if (state.stim.armed) {
+      const picked = pickStimHit(e.clientX, e.clientY);
+      if (!picked) return;
+      e.preventDefault();
+      applyStimSite(picked.site, picked.worldPos);
+      return;
+    }
+
+    // Click a bundle/fascicle on the model to toggle BBB lesions
+    const bbbUiOpen =
+      els["bbb-options"].classList.contains("is-open") ||
+      state.customBlockMode ||
+      BBB_FINDING_IDS.has(state.finding);
+    if (!bbbUiOpen || state.upload) return;
+    const mesh = pickSegment(e.clientX, e.clientY);
+    if (!mesh || mesh.userData.isAnatomyGuide) return;
+    const segId = mesh.userData.segmentId as SegmentId | undefined;
+    if (!segId || !isBlockableSegment(segId)) return;
     e.preventDefault();
-    applyStimSite(picked.site, picked.worldPos);
+    const next = new Set(activeBundleBlocks());
+    if (next.has(segId)) next.delete(segId);
+    else next.add(segId);
+    const blocks = [...next];
+    state.customBlocks = blocks;
+    state.customBlockMode = blocks.length > 0;
+    state.finding = findingIdForBlocks(blocks);
+    if (blocks.length === 0) holdExpandOpen("bbb");
+    state.elapsed = 0;
+    syncRateUI(getFinding(state.finding).ventRateBpm);
+    syncFindingUI();
+    if (blocks.length > 0) ensureTeachOverlaysForFinding(state.finding);
   });
 
   renderer.domElement.addEventListener("pointermove", (e) => {
@@ -3152,7 +3579,8 @@ function main() {
     if (state.playing) {
       let pace = 1;
       if (state.upload) {
-        pace = state.ventRateBpm / Math.max(30, state.upload.rateBpm);
+        // Paper speed is fixed by durationSec / sampleRate — don't time-warp via rate estimate
+        pace = 1;
       }
       // Recovery arc runs in real time; after settle, normal pacing applies
       const cvLive = !!(state.cvRecovery && !state.cvRecovery.settled);
@@ -3168,11 +3596,28 @@ function main() {
     }
 
     const { phase, active, mark, tCycle, leads } = ekg.update(state.elapsed);
-    els["phase-chip"].textContent = phase;
-    const footerKey = `${mark}|${phase}|${state.fieldOn}|${state.leadsOn}`;
+    const preExPhase =
+      isAvrtAntiFinding(state.finding) &&
+      !state.upload &&
+      (mark === "PR" || (mark === "QRS" && tCycle < 0.38));
+    const pvcPhase =
+      state.finding === "pvc" &&
+      !state.upload &&
+      mark === "QRS" &&
+      phase.includes("PVC");
+    els["phase-chip"].textContent = preExPhase
+      ? "Pre-excitation · delta"
+      : pvcPhase
+        ? "PVC · wall → Purkinje"
+        : phase;
+    const footerKey = `${mark}|${phase}|${preExPhase}|${pvcPhase}|${state.fieldOn}|${state.leadsOn}`;
     if (footerKey !== lastFooterKey) {
       lastFooterKey = footerKey;
-      els["ekg-footer"].innerHTML = `<strong>${mark}</strong> · ${phase} — impulse travels the pathways${state.fieldOn ? " · field on" : ""}${state.leadsOn ? " · leads on" : ""}.`;
+      els["ekg-footer"].innerHTML = preExPhase
+        ? `<strong>PR→QRS</strong> · Pre-excitation · delta — Kent → eccentric myocardial field, then His–Purkinje.`
+        : pvcPhase
+          ? `<strong>QRS</strong> · PVC — myocardial wave from the wall focus, then nearest Purkinje/bundle lights.`
+          : `<strong>${mark}</strong> · ${phase} — impulse travels the pathways${state.fieldOn ? " · field on" : ""}${state.leadsOn ? " · leads on" : ""}.`;
     }
 
     const lit = active.filter((id) => segmentVisibility[id] !== false);
@@ -3181,7 +3626,26 @@ function main() {
       !stimBranches && state.customBlockMode && state.customBlocks.length > 0
         ? branchesFromBundleBlocks(state.customBlocks)
         : undefined;
-    const pathBranches = stimBranches ?? blockBranches;
+    // BBB preset findings also need the lesion→transseptal branch schedule
+    const bbbPresetBranches =
+      !stimBranches &&
+      !blockBranches &&
+      BBB_FINDING_IDS.has(state.finding) &&
+      !state.upload
+        ? branchesFromBundleBlocks(activeBundleBlocks())
+        : undefined;
+    const ectopyIdForBranches =
+      !state.upload && !state.stim.site
+        ? (state.ectopySite ?? defaultEctopySite(state.finding))
+        : null;
+    const pvcBranches =
+      !stimBranches &&
+      !blockBranches &&
+      state.finding === "pvc" &&
+      ectopyIdForBranches
+        ? branchesForPvcSite(ectopySiteById(ectopyIdForBranches).chamber, pvcSchedule)
+        : undefined;
+    const pathBranches = stimBranches ?? blockBranches ?? bbbPresetBranches ?? pvcBranches;
     conduction.setSegmentActive({
       active: lit,
       tCycle,
@@ -3199,6 +3663,30 @@ function main() {
     });
     conduction.updateBlockSitePulse(now / 1000);
 
+    const ectopyId =
+      !state.upload && !state.stim.site
+        ? (state.ectopySite ?? defaultEctopySite(state.finding))
+        : null;
+    let ectopyFoci = !state.upload && !state.stim.site
+      ? myocardialCaptureFoci(state.finding, ectopyId)
+      : [];
+    // Multi-beat PVC strip: lock wave onset to the current PVC on the schedule
+    if (state.finding === "pvc" && ectopyFoci.length > 0) {
+      const t0 = ectopyBeatT0(state.finding, tCycle, pvcSchedule);
+      ectopyFoci = ectopyFoci.map((f) => ({ ...f, t0 }));
+    }
+    const ectopy = ectopyFoci.length > 0 ? ectopyFoci : null;
+    const side = avrtKentSide(state.finding);
+    const preExcitation =
+      isAvrtAntiFinding(state.finding) && side && !state.upload
+        ? {
+            pos: KENT_VENT_TIP[side],
+            color: 0xc070ff,
+            t0: 0,
+            t1: 0.36,
+          }
+        : null;
+
     vectors.update({
       mark,
       active: lit,
@@ -3212,6 +3700,9 @@ function main() {
         mark,
         branches: pathBranches,
       }),
+      ectopyFocus: ectopy,
+      preExcitation,
+      lesionIds: lesionSegmentsForBlocks(activeBundleBlocks()),
     });
 
     if (conduction.pulse.visible) {

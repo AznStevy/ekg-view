@@ -1,5 +1,10 @@
 import type { FindingId, SegmentId } from "./findings";
-import { leadsFromHintWeights, projectCardiacVector, vectorFromAxis } from "./leadAxes";
+import {
+  buildPvcSchedule,
+  type EctopySiteId,
+  type PvcPatternId,
+} from "./ectopyFocus";
+import { leadsFromHintWeights, projectCardiacVector, vectorFromAxis, type CardiacVector } from "./leadAxes";
 
 export type LeadId =
   | "I"
@@ -402,8 +407,20 @@ function sampleAfib(t: number): WaveSample {
     }
     if (inQrs) {
       meta = {
-        phase: "Irregular QRS · no preceding P · SA still silent",
-        active: ["av", "his", "rbb", "lbb", "lbba", "lbbp", "purkinjeR", "purkinjeL", "myocardiumV", "internodal", "myocardiumA"],
+        phase: "Irregular QRS · no preceding P · atria still fibrillating",
+        active: [
+          "av",
+          "his",
+          "rbb",
+          "lbb",
+          "lbba",
+          "lbbp",
+          "purkinjeR",
+          "purkinjeL",
+          "myocardiumV",
+          "internodal",
+          "myocardiumA",
+        ],
         mark: "QRS",
       };
     } else if (inT) {
@@ -413,6 +430,14 @@ function sampleAfib(t: number): WaveSample {
         mark: "T",
       };
     }
+  }
+
+  // Between ventricular events, keep atrial tissue marked active for the field
+  if (meta.mark === "TP") {
+    meta = {
+      ...meta,
+      active: ["myocardiumA", "internodal"],
+    };
   }
 
   return pack(leads, meta);
@@ -426,6 +451,7 @@ function sampleAflutter(t: number, dir: "ccw" | "cw"): WaveSample {
    * Typical CTI flutter on paper time:
    * Atrial F–F 0.20 s (300/min). 2:1 conduction → vent 150 bpm (R–R 0.40 s).
    * Pattern window = 2 R–R = 0.80 s (exactly 4 F waves + 2 QRS).
+   * Pathway schedule in pathwayTiming.flutterCircuitBranches must stay in sync.
    */
   const CYCLE = 0.8;
   const s = paperScale(CYCLE);
@@ -451,16 +477,22 @@ function sampleAflutter(t: number, dir: "ccw" | "cw"): WaveSample {
       scaleLeads(v1, projectCardiacVector(1, { x: -0.15, y: 0.1, z: 0.85 })),
     );
   } else {
+    // Reverse typical (CW): broader notched *positive* inferior F; often negative V1
     const inf =
-      u < 0.45
-        ? 0.16 * Math.sin((u / 0.45) * Math.PI)
-        : -0.06 * Math.sin(((u - 0.45) / 0.55) * Math.PI);
+      u < 0.22
+        ? -0.02 + (u / 0.22) * 0.1
+        : u < 0.48
+          ? 0.08 + ((u - 0.22) / 0.26) * 0.1
+          : u < 0.62
+            ? 0.18 - ((u - 0.48) / 0.14) * 0.06
+            : 0.12 - ((u - 0.62) / 0.38) * 0.16;
     leads = addLeads(
       leads,
-      scaleLeads(inf, projectCardiacVector(1, { x: -0.15, y: 0.95, z: 0.05 })),
+      scaleLeads(inf, projectCardiacVector(1, { x: -0.12, y: 0.95, z: 0.08 })),
     );
     const mu = f0 + fIndex * period;
-    const v1 = gauss(tt, mu + 0.055 * s, 0.03 * s, -0.14) + gauss(tt, mu + 0.13 * s, 0.02 * s, 0.04);
+    const v1 =
+      gauss(tt, mu + 0.05 * s, 0.028 * s, -0.16) + gauss(tt, mu + 0.12 * s, 0.022 * s, 0.035);
     leads = addLeads(
       leads,
       scaleLeads(v1, projectCardiacVector(1, { x: -0.1, y: 0.08, z: 0.9 })),
@@ -468,7 +500,9 @@ function sampleAflutter(t: number, dir: "ccw" | "cw"): WaveSample {
   }
 
   const qrsTimes = [nrm(0.16, CYCLE), nrm(0.56, CYCLE)];
-  const limbs = ["CTI", "septal ascending", "RA roof", "crista descending"] as const;
+  // Limb names follow travel direction (CW reverses each tract)
+  const limbsCcw = ["CTI (lat→med)", "septal ascending", "RA roof", "crista descending"] as const;
+  const limbsCw = ["crista ascending", "RA roof (→septum)", "septal descending", "CTI (med→lat)"] as const;
   let meta: Pick<WaveSample, "phase" | "active" | "mark"> = {
     phase: dir === "ccw" ? "Flutter circuit · CCW" : "Flutter circuit · CW",
     active: ["flutter", "myocardiumA"],
@@ -480,12 +514,12 @@ function sampleAflutter(t: number, dir: "ccw" | "cw"): WaveSample {
     if (tt >= base && tt < base + period) {
       const frac = (tt - base) / period;
       const limb = Math.min(3, Math.floor(frac * 4));
-      const order = dir === "ccw" ? limb : 3 - limb;
+      const name = dir === "ccw" ? limbsCcw[limb] : limbsCw[limb];
       meta = {
         phase:
           dir === "ccw"
-            ? `CCW typical · ${limbs[order]} · inferior − sawtooth`
-            : `CW reverse · ${limbs[order]} · inferior + F waves`,
+            ? `CCW typical · ${name} · inferior − sawtooth`
+            : `CW reverse · ${name} · inferior + F waves`,
         active: ["flutter", "myocardiumA"],
         mark: "P",
       };
@@ -1015,10 +1049,83 @@ function addNarrowBeat(
   return out;
 }
 
-function addPvcBeat(leads: Record<LeadId, number>, tt: number, cycle: number, qSec: number): Record<LeadId, number> {
+/** Teaching QRS axis / BBB-like morphology by myocardial focus. */
+function pvcSiteVector(site: EctopySiteId): { qrs: CardiacVector; lbbbLike: boolean } {
+  switch (site) {
+    case "rvot":
+      // LBBB-like · inferior axis (outflow)
+      return { qrs: { x: 0.65, y: 0.9, z: -0.7 }, lbbbLike: true };
+    case "rvApex":
+      // LBBB-like · superior / leftward
+      return { qrs: { x: 0.9, y: -0.55, z: -0.95 }, lbbbLike: true };
+    case "rvFreeWall":
+      return { qrs: { x: 0.95, y: 0.12, z: -0.85 }, lbbbLike: true };
+    case "lvApex":
+      // RBBB-like · northwest / superior
+      return { qrs: { x: -0.55, y: -0.8, z: 0.75 }, lbbbLike: false };
+    case "lvInfero":
+      return { qrs: { x: -0.4, y: -0.9, z: 0.7 }, lbbbLike: false };
+    case "lvLateral":
+    case "lvFreeWall":
+      return { qrs: { x: -0.75, y: -0.15, z: 0.95 }, lbbbLike: false };
+    case "lvSeptal":
+      return { qrs: { x: -0.35, y: -0.2, z: 1.0 }, lbbbLike: false };
+    default:
+      return { qrs: { x: -0.55, y: -0.85, z: 0.95 }, lbbbLike: false };
+  }
+}
+
+function pvcMorphQrs(
+  t: number,
+  mu: number,
+  site: EctopySiteId,
+  amp = 1.15,
+  cycleSec = 0.86,
+): Record<LeadId, number> {
+  const { qrs, lbbbLike } = pvcSiteVector(site);
+  const zx = qrs.z ?? 0;
+  const unit = Math.hypot(qrs.x, qrs.y, zx) || 1;
+  const weights = projectCardiacVector(1, {
+    x: qrs.x / unit,
+    y: qrs.y / unit,
+    z: zx / unit,
+  });
+  // Blend site axis with BBB template so precordials still read LBBB- vs RBBB-like
+  const template = lbbbLike
+    ? projectCardiacVector(1, { x: 0.9, y: 0.15, z: -0.85 })
+    : projectCardiacVector(1, { x: -0.4, y: -0.45, z: 1.05 });
+  const blended: Partial<Record<LeadId, number>> = {};
+  for (const lead of LEADS) {
+    blended[lead] = (weights[lead] ?? 0) * 0.7 + (template[lead] ?? 0) * 0.3;
+  }
+  const abs = (sec: number) => sec / Math.max(0.25, cycleSec);
+  const envelope =
+    gauss(t, mu - abs(0.02), abs(0.022), -0.1) +
+    gauss(t, mu + abs(0.015), abs(0.04), amp * 0.55) +
+    gauss(t, mu + abs(0.06), abs(0.048), amp) +
+    gauss(t, mu + abs(0.11), abs(0.032), -0.25);
+  return scaleLeads(envelope, blended);
+}
+
+function addPvcBeat(
+  leads: Record<LeadId, number>,
+  tt: number,
+  cycle: number,
+  qSec: number,
+  site: EctopySiteId,
+): Record<LeadId, number> {
   const abs = (sec: number) => sec / cycle;
-  let out = addLeads(leads, wideQrsLeads(tt, abs(qSec), 1.15, cycle));
-  out = addLeads(out, scaleLeads(gauss(tt, abs(qSec + 0.24), abs(0.055), -0.38), VT_DISCORDANT_T));
+  const { qrs } = pvcSiteVector(site);
+  const zx = qrs.z ?? 0;
+  const unit = Math.hypot(qrs.x, qrs.y, zx) || 1;
+  // Discordant T: opposite the PVC QRS vector
+  const tVec = projectCardiacVector(1, {
+    x: -qrs.x / unit,
+    y: -qrs.y / unit,
+    z: -zx / unit,
+  });
+  let out = addLeads(leads, pvcMorphQrs(tt, abs(qSec), site, 1.15, cycle));
+  out = addLeads(out, scaleLeads(gauss(tt, abs(qSec + 0.24), abs(0.055), -0.38), tVec));
   return out;
 }
 
@@ -1070,71 +1177,52 @@ function samplePac(t: number): WaveSample {
 }
 
 function samplePvc(t: number): WaveSample {
+  return samplePvcPattern(t, "trigeminy", 1, "rvot");
+}
+
+/** Parameterized PVC strip: site shapes QRS morphology; pattern shapes beat timing. */
+export function samplePvcPattern(
+  t: number,
+  pattern: PvcPatternId,
+  seed = 1,
+  site: EctopySiteId = "rvot",
+): WaveSample {
   const tt = clamp01(t);
-  /** Multi-beat strip: sinus beats + PVCs only (no PACs), every QRS has a T. */
-  const CYCLE = 7.0;
+  const schedule = buildPvcSchedule(pattern, seed);
+  const CYCLE = schedule.cycleSec;
   const abs = (sec: number) => sec / CYCLE;
   const RR = 0.86;
 
-  // Sinus anchors and PVCs at slightly different couplings; compensatory pause after each PVC
-  type Beat =
-    | { kind: "sinus"; p: number }
-    | { kind: "pvc"; q: number; afterSinusQ: number };
-  const beats: Beat[] = [];
-  // Sinus 1
-  beats.push({ kind: "sinus", p: 0.14 });
-  // Sinus 2
-  beats.push({ kind: "sinus", p: 1.0 });
-  const q2 = 1.16;
-  // PVC A — coupling ~0.56 s
-  beats.push({ kind: "pvc", q: q2 + 0.56, afterSinusQ: q2 });
-  // Next sinus after full compensatory (from q2)
-  const pAfterA = q2 + 2 * RR - 0.16;
-  beats.push({ kind: "sinus", p: pAfterA });
-  const q3 = pAfterA + 0.16;
-  // Sinus 4 (slight RR jitter)
-  beats.push({ kind: "sinus", p: q3 + 0.9 - 0.16 });
-  const q4 = q3 + 0.9;
-  // PVC B — different coupling ~0.48 s
-  beats.push({ kind: "pvc", q: q4 + 0.48, afterSinusQ: q4 });
-  const pAfterB = q4 + 2 * RR - 0.16;
-  if (pAfterB + 0.5 < CYCLE - 0.05) {
-    beats.push({ kind: "sinus", p: pAfterB });
-  }
-
   let leads = emptyLeads();
-  for (const b of beats) {
-    if (b.kind === "sinus") leads = addNarrowBeat(leads, tt, CYCLE, b.p);
-    else leads = addPvcBeat(leads, tt, CYCLE, b.q);
-  }
+  for (const p of schedule.sinusP) leads = addNarrowBeat(leads, tt, CYCLE, p);
+  for (const e of schedule.pvcEvents) leads = addPvcBeat(leads, tt, CYCLE, e.q, site);
 
   let meta: Pick<WaveSample, "phase" | "active" | "mark"> = { phase: "Diastole", active: [], mark: "TP" };
-  for (const b of beats) {
-    if (b.kind === "sinus") {
-      const p = abs(b.p);
-      const q = abs(b.p + 0.16);
-      const tw = abs(b.p + 0.44);
-      if (tt >= p - abs(0.02) && tt < q - abs(0.02)) {
-        meta = { phase: "Sinus P", active: ["sa", "internodal", "myocardiumA"], mark: "P" };
-      } else if (tt >= q - abs(0.02) && tt < q + abs(0.1)) {
-        meta = {
-          phase: "Sinus QRS",
-          active: ["his", "rbb", "lbb", "purkinjeR", "purkinjeL", "myocardiumV"],
-          mark: "QRS",
-        };
-      } else if (tt >= tw - abs(0.08) && tt < tw + abs(0.1)) {
-        meta = { phase: "T wave", active: ["myocardiumV"], mark: "T" };
-      }
-    } else {
-      const q = abs(b.q);
-      const tw = abs(b.q + 0.24);
-      if (tt >= q - abs(0.04) && tt < q + abs(0.16)) {
-        meta = { phase: "PVC · wide QRS · no preceding P", active: ["myocardiumV", "purkinjeL"], mark: "QRS" };
-      } else if (tt >= tw - abs(0.06) && tt < tw + abs(0.1)) {
-        meta = { phase: "Discordant T after PVC", active: ["myocardiumV"], mark: "T" };
-      } else if (tt > tw + abs(0.1) && tt < abs(b.afterSinusQ + 2 * RR - 0.2)) {
-        meta = { phase: "Full compensatory pause", active: [], mark: "TP" };
-      }
+  for (const pSec of schedule.sinusP) {
+    const p = abs(pSec);
+    const q = abs(pSec + 0.16);
+    const tw = abs(pSec + 0.44);
+    if (tt >= p - abs(0.02) && tt < q - abs(0.02)) {
+      meta = { phase: "Sinus P", active: ["sa", "internodal", "myocardiumA"], mark: "P" };
+    } else if (tt >= q - abs(0.02) && tt < q + abs(0.1)) {
+      meta = {
+        phase: "Sinus QRS",
+        active: ["his", "rbb", "lbb", "purkinjeR", "purkinjeL", "myocardiumV"],
+        mark: "QRS",
+      };
+    } else if (tt >= tw - abs(0.08) && tt < tw + abs(0.1)) {
+      meta = { phase: "T wave", active: ["myocardiumV"], mark: "T" };
+    }
+  }
+  for (const e of schedule.pvcEvents) {
+    const q = abs(e.q);
+    const tw = abs(e.q + 0.24);
+    if (tt >= q - abs(0.04) && tt < q + abs(0.16)) {
+      meta = { phase: "PVC · wall focus → Purkinje", active: ["myocardiumV", "purkinjeL", "purkinjeR"], mark: "QRS" };
+    } else if (tt >= tw - abs(0.06) && tt < tw + abs(0.1)) {
+      meta = { phase: "Discordant T after PVC", active: ["myocardiumV"], mark: "T" };
+    } else if (tt > tw + abs(0.1) && tt < abs(e.afterSinusQ + 2 * RR - 0.2)) {
+      meta = { phase: "Full compensatory pause", active: [], mark: "TP" };
     }
   }
   return pack(leads, meta);

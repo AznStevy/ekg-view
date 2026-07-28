@@ -395,7 +395,7 @@ export const FINDINGS: Finding[] = [
     id: "pvc",
     name: "Premature ventricular complex",
     short: "PVC",
-    detail: "Early wide QRS · no preceding P · full compensatory pause",
+    detail: "Wall focus · myocardial wave → Purkinje · wide QRS · full compensatory pause",
     category: "ectopy",
     tags: ["ectopy", "ventricular"],
     aliases: ["vpc", "ventricular ectopic"],

@@ -59,22 +59,98 @@ function atrialAt(p: number): BranchWindow[] {
 }
 
 /**
+ * PVC teaching schedule: clear myocardial-only gap after QRS onset, then
+ * nearest Purkinje → reverse into bundle → contralateral tracts.
+ * `side` = chamber of the wall focus.
+ * Pass `schedule` so pathway windows match the EKG strip pattern.
+ */
+export function pvcBranches(
+  side: "left" | "right",
+  schedule?: { cycleSec: number; sinusP: number[]; pvcEvents: { q: number }[] },
+): BranchWindow[] {
+  const nearPurk: SegmentId = side === "left" ? "purkinjeL" : "purkinjeR";
+  const nearBundle: SegmentId = side === "left" ? "lbb" : "rbb";
+  const farPurk: SegmentId = side === "left" ? "purkinjeR" : "purkinjeL";
+  const farBundle: SegmentId = side === "left" ? "rbb" : "lbb";
+  const cycle = schedule?.cycleSec ?? 7;
+  const sinusP = schedule?.sinusP ?? [0.14, 1.0, 2.72, 3.62, 5.4];
+  const pvcQ = schedule?.pvcEvents?.map((e) => e.q) ?? [1.72, 4.62];
+  const abs = (sec: number) => sec / cycle;
+  const out: BranchWindow[] = [];
+
+  for (const pSec of sinusP) {
+    const p = abs(pSec);
+    out.push(
+      { id: "sa", t0: p, t1: p + abs(0.05), group: "pacemaker" },
+      { id: "internodal", t0: p + abs(0.015), t1: p + abs(0.09), group: "atrial" },
+    );
+    const q = p + abs(0.16);
+    out.push(
+      { id: "av", t0: q - abs(0.05), t1: q - abs(0.015), group: "av-delay" },
+      { id: "his", t0: q - abs(0.015), t1: q + abs(0.025), group: "his" },
+      { id: "rbb", t0: q, t1: q + abs(0.07), group: "bundles" },
+      { id: "lbb", t0: q, t1: q + abs(0.06), group: "bundles" },
+      { id: "lbba", t0: q + abs(0.02), t1: q + abs(0.12), group: "fascicles" },
+      { id: "lbbp", t0: q + abs(0.02), t1: q + abs(0.12), group: "fascicles" },
+      { id: "purkinjeR", t0: q + abs(0.03), t1: q + abs(0.14), group: "purkinje" },
+      { id: "purkinjeL", t0: q + abs(0.03), t1: q + abs(0.14), group: "purkinje" },
+    );
+  }
+  for (const qSec of pvcQ) {
+    const q = abs(qSec);
+    // Brief myocardial-only gap, then Purkinje engage — times in absolute seconds
+    const engage = q + abs(0.055);
+    out.push(
+      { id: nearPurk, t0: engage, t1: engage + abs(0.1), group: "ectopy" },
+      { id: nearBundle, t0: engage + abs(0.02), t1: engage + abs(0.09), group: "ectopy", reverse: true },
+      { id: farPurk, t0: engage + abs(0.05), t1: engage + abs(0.12), group: "ectopy" },
+      {
+        id: farBundle,
+        t0: engage + abs(0.06),
+        t1: engage + abs(0.11),
+        group: "ectopy",
+        reverse: true,
+        u0: 0.45,
+      },
+    );
+  }
+  return out;
+}
+
+/** Site-aware PVC pathway windows (wall focus → nearest Purkinje). */
+export function branchesForPvcSite(
+  chamber: "leftVent" | "rightVent",
+  schedule?: { cycleSec: number; sinusP: number[]; pvcEvents: { q: number }[] },
+): BranchWindow[] {
+  return pvcBranches(chamber === "leftVent" ? "left" : "right", schedule);
+}
+
+/**
  * CTI flutter ring curveIndex order (see conductionAnatomy PATHS):
  * 0 CTI (lateral→medial) · 1 septal ascending · 2 RA roof · 3 crista descending
- * Typical CCW: 0 → 1 → 2 → 3 → 0
- * CW: reverse each segment and reverse order
+ * Typical CCW: 0 → 1 → 2 → 3 → 0 (no reverse)
+ * CW reverse: 3rev → 2rev → 1rev → 0rev
+ *   = ↑crista → roof medial → ↓septum → CTI med→lat
+ *
+ * Timing must match sampleAflutter: cycle 0.8 s, F–F 0.20 s (4 F / window),
+ * 2:1 QRS at 0.16 s and 0.56 s.
  */
 const FLUTTER_RING_CCW = [0, 1, 2, 3] as const;
 const FLUTTER_RING_CW = [3, 2, 1, 0] as const;
+const FLUTTER_CYCLE_SEC = 0.8;
+const FLUTTER_F_SEC = 0.2;
+const FLUTTER_F0_SEC = 0.04;
+const FLUTTER_QRS_SEC = [0.16, 0.56] as const;
 
 function flutterCircuitBranches(dir: "ccw" | "cw"): BranchWindow[] {
-  const lap = 0.2; // 5 F waves / cycle · ~300/min
-  const f0 = 0.04;
+  const lap = FLUTTER_F_SEC / FLUTTER_CYCLE_SEC;
+  const f0 = FLUTTER_F0_SEC / FLUTTER_CYCLE_SEC;
+  const nLaps = Math.round(FLUTTER_CYCLE_SEC / FLUTTER_F_SEC); // 4
   const ring = dir === "ccw" ? FLUTTER_RING_CCW : FLUTTER_RING_CW;
   const reverse = dir === "cw";
   const out: BranchWindow[] = [];
 
-  for (let lapI = 0; lapI < 5; lapI++) {
+  for (let lapI = 0; lapI < nLaps; lapI++) {
     const base = f0 + lapI * lap;
     const segDur = lap / ring.length;
     for (let s = 0; s < ring.length; s++) {
@@ -89,9 +165,9 @@ function flutterCircuitBranches(dir: "ccw" | "cw"): BranchWindow[] {
     }
   }
 
-  // 2:1 AV conduction — windows match EKG QRS mark [q−0.02, q+0.11]
-  for (const q of [0.18, 0.58]) {
-    out.push(...ventCascade(q));
+  // 2:1 AV conduction — same absolute times as the EKG QRS marks
+  for (const qSec of FLUTTER_QRS_SEC) {
+    out.push(...ventCascade(qSec / FLUTTER_CYCLE_SEC));
   }
 
   return out;
@@ -100,37 +176,52 @@ function flutterCircuitBranches(dir: "ccw" | "cw"): BranchWindow[] {
 /** Chaotic multi-wavelet atrial activation (AFib) — no SA pacemaker activity */
 function afibBranches(): BranchWindow[] {
   const out: BranchWindow[] = [];
-  // Wavelets on atrial pathways only (never "sa")
+  // Overlapping wavelets on atrial pathways (never "sa"). Long, staggered windows so
+  // pathway arrows and field shells glide continuously instead of blinking.
   const seeds = [
-    { ci: 0, t0: 0.0, dur: 0.22 },
-    { ci: 1, t0: 0.08, dur: 0.2 },
-    { ci: 2, t0: 0.15, dur: 0.25 },
-    { ci: 3, t0: 0.28, dur: 0.22 },
-    { ci: 0, t0: 0.4, dur: 0.2 },
-    { ci: 4, t0: 0.48, dur: 0.18 },
-    { ci: 1, t0: 0.55, dur: 0.22 },
-    { ci: 3, t0: 0.7, dur: 0.2 },
-    { ci: 2, t0: 0.82, dur: 0.2 },
+    { ci: 0, t0: 0.0, dur: 0.4 },
+    { ci: 1, t0: 0.08, dur: 0.4 },
+    { ci: 2, t0: 0.16, dur: 0.42 },
+    { ci: 3, t0: 0.24, dur: 0.4 },
+    { ci: 4, t0: 0.32, dur: 0.4 },
+    { ci: 0, t0: 0.38, dur: 0.4 },
+    { ci: 1, t0: 0.46, dur: 0.4 },
+    { ci: 2, t0: 0.54, dur: 0.42 },
+    { ci: 3, t0: 0.62, dur: 0.4 },
+    { ci: 4, t0: 0.7, dur: 0.4 },
+    { ci: 0, t0: 0.76, dur: 0.38 },
+    { ci: 1, t0: 0.84, dur: 0.36 },
+    { ci: 2, t0: 0.9, dur: 0.34 },
   ];
   for (const s of seeds) {
+    const t1 = s.t0 + s.dur;
     out.push({
       id: "internodal",
       curveIndex: s.ci,
       t0: s.t0,
-      t1: Math.min(1, s.t0 + s.dur),
+      t1: Math.min(1, t1),
       group: "atrial",
     });
+    if (t1 > 1) {
+      out.push({
+        id: "internodal",
+        curveIndex: s.ci,
+        t0: 0,
+        t1: t1 - 1,
+        group: "atrial",
+      });
+    }
   }
   for (const q of [0.18, 0.72, 1.15, 1.95, 2.7].map((sec) => sec / 3.33)) {
-    // AV→His→ventricles only — no SA/atrialAt
-    out.push({ id: "av", t0: q - 0.03, t1: q - 0.01, group: "av-delay" });
-    out.push({ id: "his", t0: q - 0.01, t1: q + 0.02, group: "his" });
-    out.push({ id: "rbb", t0: q, t1: q + 0.04, group: "bundles" });
-    out.push({ id: "lbb", t0: q, t1: q + 0.04, group: "bundles" });
-    out.push({ id: "lbba", t0: q + 0.01, t1: q + 0.05, group: "fascicles" });
-    out.push({ id: "lbbp", t0: q + 0.01, t1: q + 0.05, group: "fascicles" });
-    out.push({ id: "purkinjeR", t0: q + 0.015, t1: q + 0.06, group: "purkinje" });
-    out.push({ id: "purkinjeL", t0: q + 0.015, t1: q + 0.06, group: "purkinje" });
+    // AV→His→ventricles only — no SA/atrialAt. Slightly longer so vent arrows finish.
+    out.push({ id: "av", t0: q - 0.04, t1: q - 0.005, group: "av-delay" });
+    out.push({ id: "his", t0: q - 0.01, t1: q + 0.05, group: "his" });
+    out.push({ id: "rbb", t0: q, t1: q + 0.09, group: "bundles" });
+    out.push({ id: "lbb", t0: q, t1: q + 0.09, group: "bundles" });
+    out.push({ id: "lbba", t0: q + 0.015, t1: q + 0.11, group: "fascicles" });
+    out.push({ id: "lbbp", t0: q + 0.015, t1: q + 0.11, group: "fascicles" });
+    out.push({ id: "purkinjeR", t0: q + 0.03, t1: q + 0.14, group: "purkinje" });
+    out.push({ id: "purkinjeL", t0: q + 0.03, t1: q + 0.14, group: "purkinje" });
   }
   return out;
 }
@@ -424,47 +515,54 @@ function buildBranchesForFinding(finding: FindingId | string | undefined): Branc
   if (finding === "rbbbLpfb") return branchesFromBundleBlocks(["rbb", "lbbp"]);
 
   if (finding === "pacedVentricular") {
-    // Spike @ 0.22 — capture after spike only
+    // Spike @ 0.22 — myocardial wall capture first, then Purkinje/bundle engagement
     return [
-      { id: "purkinjeR", t0: 0.24, t1: 0.48, group: "ectopy" },
-      { id: "rbb", t0: 0.26, t1: 0.44, group: "ectopy", reverse: true },
-      { id: "purkinjeL", t0: 0.34, t1: 0.52, group: "ectopy" },
-      { id: "lbb", t0: 0.36, t1: 0.5, group: "ectopy", reverse: true, u0: 0.4 },
+      { id: "purkinjeR", t0: 0.3, t1: 0.48, group: "ectopy" },
+      { id: "rbb", t0: 0.32, t1: 0.46, group: "ectopy", reverse: true },
+      { id: "purkinjeL", t0: 0.38, t1: 0.54, group: "ectopy" },
+      { id: "lbb", t0: 0.4, t1: 0.52, group: "ectopy", reverse: true, u0: 0.4 },
     ];
   }
   if (finding === "pacedDual") {
-    // A spike 0.08 · V spike 0.28 — ventricular tracts after V spike
+    // A spike 0.08 · V spike 0.28 — RA wall field then RV apical wall → tracts
     return [
-      ...atrialAt(0.08),
+      { id: "internodal", t0: 0.08, t1: 0.2, group: "atrial" },
       { id: "av", t0: 0.18, t1: 0.28, group: "av-delay" },
-      { id: "purkinjeR", t0: 0.3, t1: 0.52, group: "ectopy" },
-      { id: "rbb", t0: 0.32, t1: 0.48, group: "ectopy", reverse: true },
-      { id: "purkinjeL", t0: 0.36, t1: 0.54, group: "ectopy" },
+      { id: "purkinjeR", t0: 0.36, t1: 0.54, group: "ectopy" },
+      { id: "rbb", t0: 0.38, t1: 0.5, group: "ectopy", reverse: true },
+      { id: "purkinjeL", t0: 0.42, t1: 0.56, group: "ectopy" },
     ];
   }
   if (finding === "pacedLbap") {
-    // LBAP spike @ 0.26
+    // LBAP tip fires myocardium first (PVC-like), then engages left bundle
     return [
-      ...atrialAt(0.08),
+      { id: "internodal", t0: 0.08, t1: 0.2, group: "atrial" },
       { id: "av", t0: 0.18, t1: 0.26, group: "av-delay" },
-      { id: "lbb", t0: 0.28, t1: 0.42, group: "ectopy", u0: 0.35 },
-      { id: "lbba", t0: 0.3, t1: 0.44, group: "fascicles" },
-      { id: "lbbp", t0: 0.3, t1: 0.44, group: "fascicles" },
-      { id: "purkinjeL", t0: 0.32, t1: 0.48, group: "purkinje" },
-      { id: "his", t0: 0.3, t1: 0.38, group: "his", reverse: true },
-      { id: "rbb", t0: 0.34, t1: 0.46, group: "bundles" },
-      { id: "purkinjeR", t0: 0.36, t1: 0.5, group: "purkinje" },
+      { id: "lbb", t0: 0.32, t1: 0.46, group: "ectopy", u0: 0.35 },
+      { id: "lbba", t0: 0.34, t1: 0.48, group: "fascicles" },
+      { id: "lbbp", t0: 0.34, t1: 0.48, group: "fascicles" },
+      { id: "purkinjeL", t0: 0.36, t1: 0.5, group: "purkinje" },
+      { id: "his", t0: 0.34, t1: 0.42, group: "his", reverse: true },
+      { id: "rbb", t0: 0.38, t1: 0.5, group: "bundles" },
+      { id: "purkinjeR", t0: 0.4, t1: 0.52, group: "purkinje" },
     ];
   }
   if (finding === "pacedBiv") {
-    // BiV spike @ 0.27
+    // BiV spike @ 0.27 — RV + LV wall fields fuse, then tracts
     return [
-      ...atrialAt(0.08),
+      { id: "internodal", t0: 0.08, t1: 0.2, group: "atrial" },
       { id: "av", t0: 0.18, t1: 0.27, group: "av-delay" },
-      { id: "purkinjeR", t0: 0.3, t1: 0.5, group: "ectopy" },
-      { id: "purkinjeL", t0: 0.3, t1: 0.5, group: "ectopy" },
-      { id: "rbb", t0: 0.32, t1: 0.46, group: "ectopy", reverse: true },
-      { id: "lbb", t0: 0.32, t1: 0.46, group: "ectopy", reverse: true },
+      { id: "purkinjeR", t0: 0.34, t1: 0.52, group: "ectopy" },
+      { id: "purkinjeL", t0: 0.34, t1: 0.52, group: "ectopy" },
+      { id: "rbb", t0: 0.36, t1: 0.48, group: "ectopy", reverse: true },
+      { id: "lbb", t0: 0.36, t1: 0.48, group: "ectopy", reverse: true },
+    ];
+  }
+  if (finding === "pacedAtrial") {
+    // RA appendage wall capture → AV → His–Purkinje (narrow QRS)
+    return [
+      { id: "internodal", t0: 0.08, t1: 0.2, group: "atrial" },
+      ...ventCascade(0.34),
     ];
   }
   if (finding === "av1") {
@@ -503,21 +601,6 @@ function buildBranchesForFinding(finding: FindingId | string | undefined): Branc
       out.push({ id: "purkinjeR", t0: q - 0.01, t1: q + 0.09, group: "ectopy" });
     }
     return out;
-  }
-  if (finding === "pacedAtrial") {
-    // Spike @ 0.08 — atrial capture afterward
-    return [
-      { id: "sa", t0: 0.1, t1: 0.18, group: "pacemaker" },
-      { id: "internodal", t0: 0.12, t1: 0.22, group: "atrial" },
-      { id: "av", t0: 0.2, t1: 0.32, group: "av-delay" },
-      { id: "his", t0: 0.32, t1: 0.36, group: "his" },
-      { id: "rbb", t0: 0.34, t1: 0.44, group: "bundles" },
-      { id: "lbb", t0: 0.34, t1: 0.42, group: "bundles" },
-      { id: "lbba", t0: 0.36, t1: 0.46, group: "fascicles" },
-      { id: "lbbp", t0: 0.36, t1: 0.46, group: "fascicles" },
-      { id: "purkinjeR", t0: 0.4, t1: 0.52, group: "purkinje" },
-      { id: "purkinjeL", t0: 0.39, t1: 0.52, group: "purkinje" },
-    ];
   }
   if (finding === "vt" || finding === "vfCoarse" || finding === "vfFine") {
     return [
@@ -589,22 +672,9 @@ function buildBranchesForFinding(finding: FindingId | string | undefined): Branc
     ];
   }
   if (finding === "pvc") {
-    return [
-      ...atrialAt(0.02),
-      ...ventCascade(0.04),
-      ...atrialAt(0.14),
-      ...ventCascade(0.16),
-      { id: "purkinjeL", t0: 0.24, t1: 0.32, group: "ectopy" },
-      { id: "purkinjeR", t0: 0.25, t1: 0.32, group: "ectopy" },
-      ...atrialAt(0.4),
-      ...ventCascade(0.42),
-      ...atrialAt(0.52),
-      ...ventCascade(0.54),
-      { id: "purkinjeL", t0: 0.62, t1: 0.7, group: "ectopy" },
-      { id: "purkinjeR", t0: 0.63, t1: 0.7, group: "ectopy" },
-      ...atrialAt(0.78),
-      ...ventCascade(0.8),
-    ];
+    // Myocardial wall field first; Purkinje/bundles engage after the front reaches them.
+    // Site-specific nearest tract is applied in main via branchesForPvcSite when available.
+    return pvcBranches("right");
   }
   if (finding === "failureToSense") {
     return [
@@ -683,6 +753,10 @@ export type ActiveFront = {
   progress: number;
   /** True when this limb is traversed retrograde (u decreasing) */
   reverse?: boolean;
+  /** Which parallel curve of this segment (stable arrow-slot key) */
+  curveIndex?: number;
+  /** True while holding at the distal tip after t1 (junction linger) */
+  tipHold?: boolean;
 };
 
 /** Map EKG cycle mark → expected conduction groups */
@@ -715,7 +789,7 @@ export function refractoryFrac(id: SegmentId): number {
     case "myocardiumA":
       return 0.22;
     case "flutter":
-      // Short — circuit reenters each F wave (~0.2 cycle)
+      // Short — circuit reenters each F wave (~0.25 of the 0.8 s pattern)
       return 0.09;
     case "avnrtSlow":
     case "avnrtFast":

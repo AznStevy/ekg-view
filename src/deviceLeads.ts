@@ -129,6 +129,23 @@ const MODE_LEADS: Record<DeviceLeadMode, DeviceLeadId[]> = {
   biv: ["ra", "rvApex", "lvCs"],
 };
 
+export function deviceLeadTip(id: DeviceLeadId): [number, number, number] {
+  const t = LEADS[id].tip;
+  return [t[0], t[1], t[2]];
+}
+
+export function deviceLeadColor(id: DeviceLeadId): number {
+  return LEADS[id].color;
+}
+
+export function deviceLeadsForMode(mode: DeviceLeadMode): DeviceLeadId[] {
+  return MODE_LEADS[mode];
+}
+
+export function deviceLeadTissue(id: DeviceLeadId): "atrial" | "ventricular" {
+  return id === "ra" ? "atrial" : "ventricular";
+}
+
 function tagDeviceLeadMesh(mesh: THREE.Mesh, id: DeviceLeadId, spec: LeadSpec): void {
   mesh.userData.isDeviceLead = true;
   mesh.userData.deviceLeadId = id;
