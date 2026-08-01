@@ -1,6 +1,13 @@
-import { projectOntoMyocardialShell } from "./heartEllipsoid";
+import {
+  projectOntoMyocardialShell,
+  projectOntoSeptum,
+  projectOntoVentricularMyocardium,
+  inSeptum,
+  AV_JUNCTION,
+} from "./heartEllipsoid";
 import type { FindingId } from "./findings";
 import {
+  deviceLeadCapture,
   deviceLeadColor,
   deviceLeadTip,
   deviceLeadTissue,
@@ -8,8 +15,9 @@ import {
   deviceModeForFinding,
   type DeviceLeadId,
 } from "./deviceLeads";
+import { PULMONARY_VEIN_OSTIA } from "./conductionAnatomy";
 
-/** Myocardial focus for PVC / VT / paced capture (not a conduction tract). */
+/** Myocardial focus for PVC / VT / PAC / paced capture (not a conduction tract). */
 export type EctopySiteId =
   | "rvFreeWall"
   | "rvot"
@@ -18,7 +26,12 @@ export type EctopySiteId =
   | "lvApex"
   | "lvInfero"
   | "lvLateral"
-  | "lvSeptal";
+  | "lvSeptal"
+  | "raHigh"
+  | "raLateral"
+  | "raLow"
+  | "csOstium"
+  | "la";
 
 export type EctopySite = {
   id: EctopySiteId;
@@ -26,7 +39,7 @@ export type EctopySite = {
   short: string;
   /** Heart-local position (mid-myocardial shell) */
   pos: [number, number, number];
-  chamber: "rightVent" | "leftVent";
+  chamber: "rightVent" | "leftVent" | "rightAtrium" | "leftAtrium";
 };
 
 /** How often a PVC follows sinus beats in the teaching strip. */
@@ -58,33 +71,99 @@ function shell(pos: [number, number, number]): [number, number, number] {
   return projectOntoMyocardialShell(pos);
 }
 
+/** Ventricular free-wall focus — always below the AV fibrous plane on the new shell lattice. */
+function ventShell(pos: [number, number, number]): [number, number, number] {
+  let p = projectOntoMyocardialShell(pos);
+  if (p[1]! > AV_JUNCTION.planeY - 0.05) {
+    p = projectOntoMyocardialShell([p[0]!, AV_JUNCTION.planeY - 0.12, p[2]!]);
+  }
+  return p;
+}
+
+function septal(pos: [number, number, number], face: -1 | 1): [number, number, number] {
+  const p = projectOntoSeptum(pos, face);
+  // Keep ventricular septal foci on the IVS (below AV plane)
+  if (p[1]! > AV_JUNCTION.planeY - 0.02) {
+    return projectOntoSeptum([p[0]!, AV_JUNCTION.planeY - 0.1, p[2]!], face);
+  }
+  return p;
+}
+
 export const ECTOPY_SITES: EctopySite[] = [
   {
     id: "rvFreeWall",
     label: "RV free wall",
     short: "RV wall",
-    pos: shell([-0.52, -0.58, 0.38]),
+    pos: ventShell([-0.52, -0.58, 0.38]),
     chamber: "rightVent",
   },
-  { id: "rvot", label: "RVOT", short: "RVOT", pos: shell([-0.22, 0.05, 0.42]), chamber: "rightVent" },
-  { id: "rvApex", label: "RV apex", short: "RV apex", pos: shell([-0.28, -0.95, 0.35]), chamber: "rightVent" },
+  // Basal RVOT must stay on the ventricular side of the AV plane (not atrial shell)
+  { id: "rvot", label: "RVOT", short: "RVOT", pos: ventShell([-0.28, -0.18, 0.32]), chamber: "rightVent" },
+  { id: "rvApex", label: "RV apex", short: "RV apex", pos: ventShell([-0.28, -0.95, 0.35]), chamber: "rightVent" },
   {
     id: "lvFreeWall",
     label: "LV free wall",
     short: "LV wall",
-    pos: shell([0.58, -0.52, 0.18]),
+    pos: ventShell([0.58, -0.52, 0.18]),
     chamber: "leftVent",
   },
-  { id: "lvApex", label: "LV apex", short: "LV apex", pos: shell([0.22, -1.0, 0.05]), chamber: "leftVent" },
-  { id: "lvInfero", label: "LV inferobasal", short: "LV inf", pos: shell([0.28, -0.55, -0.28]), chamber: "leftVent" },
-  { id: "lvLateral", label: "LV lateral", short: "LV lat", pos: shell([0.55, -0.45, 0.12]), chamber: "leftVent" },
-  { id: "lvSeptal", label: "LV septal", short: "LV sep", pos: shell([0.08, -0.55, 0.02]), chamber: "leftVent" },
+  { id: "lvApex", label: "LV apex", short: "LV apex", pos: ventShell([0.22, -1.0, 0.05]), chamber: "leftVent" },
+  { id: "lvInfero", label: "LV inferobasal", short: "LV inf", pos: ventShell([0.28, -0.55, -0.28]), chamber: "leftVent" },
+  { id: "lvLateral", label: "LV lateral", short: "LV lat", pos: ventShell([0.55, -0.45, 0.12]), chamber: "leftVent" },
+  { id: "lvSeptal", label: "LV septal", short: "LV sep", pos: septal([0.08, -0.55, 0.02], 1), chamber: "leftVent" },
+  // Atrial PAC foci — keep y high enough to stay in the atrial field shell (y ≳ planeY)
+  {
+    id: "raHigh",
+    label: "High RA (near SA)",
+    short: "High RA",
+    pos: shell([-0.42, 0.62, 0.38]),
+    chamber: "rightAtrium",
+  },
+  {
+    id: "raLateral",
+    label: "RA free wall",
+    short: "RA wall",
+    pos: shell([-0.58, 0.38, 0.45]),
+    chamber: "rightAtrium",
+  },
+  {
+    id: "raLow",
+    label: "Low RA / CTI",
+    short: "Low RA",
+    pos: shell([-0.32, 0.22, 0.12]),
+    chamber: "rightAtrium",
+  },
+  {
+    id: "csOstium",
+    label: "CS ostium",
+    short: "CS os",
+    pos: shell([-0.08, 0.18, -0.2]),
+    chamber: "rightAtrium",
+  },
+  {
+    id: "la",
+    label: "Left atrium",
+    short: "LA",
+    pos: shell([0.48, 0.4, -0.18]),
+    chamber: "leftAtrium",
+  },
 ];
+
+export const VENTRICULAR_ECTOPY_SITES = ECTOPY_SITES.filter(
+  (s) => s.chamber === "rightVent" || s.chamber === "leftVent",
+);
+export const ATRIAL_ECTOPY_SITES = ECTOPY_SITES.filter(
+  (s) => s.chamber === "rightAtrium" || s.chamber === "leftAtrium",
+);
+
+export function isAtrialEctopySite(id: EctopySiteId): boolean {
+  return ATRIAL_ECTOPY_SITES.some((s) => s.id === id);
+}
 
 /** Kent ventricular insertion tips (match conductionAnatomy Purkinje–Kent junctions). */
 export const KENT_VENT_TIP = {
-  left: shell([0.7, -0.41, 0.14]) as [number, number, number],
-  right: shell([-0.7, -0.31, 0.22]) as [number, number, number],
+  left: ventShell([0.76, -0.4, 0.14]) as [number, number, number],
+  right: ventShell([-0.7, -0.31, 0.22]) as [number, number, number],
 };
 
 export function ectopySiteById(id: EctopySiteId): EctopySite {
@@ -94,6 +173,8 @@ export function ectopySiteById(id: EctopySiteId): EctopySite {
 /** Default focus for a finding (teaching presets). */
 export function defaultEctopySite(finding: FindingId): EctopySiteId | null {
   switch (finding) {
+    case "pac":
+      return "raLow";
     case "pvc":
       return "rvFreeWall";
     case "vt":
@@ -101,13 +182,26 @@ export function defaultEctopySite(finding: FindingId): EctopySiteId | null {
       return "rvFreeWall";
     case "vtMonoRbbb":
       return "lvFreeWall";
+    case "vtPoly":
+    case "torsades":
+      return "lvApex";
+    case "vfCoarse":
+    case "vfFine":
+      return "lvApex";
+    case "av3":
+      return "rvApex";
     case "pacedVentricular":
     case "pacedDual":
       return "rvApex";
-    case "pacedBiv":
-      return "lvLateral";
+    case "pacedRvSeptal":
+      return "rvot"; // nearest teaching site; capture uses device tip
+    case "pacedRvot":
+      return "rvot";
+    case "pacedHis":
     case "pacedLbap":
       return "lvSeptal";
+    case "pacedBiv":
+      return "lvLateral";
     default:
       return null;
   }
@@ -182,7 +276,7 @@ export function defaultPvcPattern(): PvcPatternId {
   return "trigeminy";
 }
 
-/** Cycle time when myocardial capture starts (spike / PVC onset). */
+/** Cycle time when myocardial capture starts (spike / PVC / PAC onset). */
 export function ectopyCaptureT0(finding: FindingId): number {
   switch (finding) {
     case "pacedVentricular":
@@ -190,10 +284,16 @@ export function ectopyCaptureT0(finding: FindingId): number {
     case "pacedDual":
     case "pacedBiv":
       return 0.28;
+    case "pacedRvSeptal":
+    case "pacedRvot":
+      return 0.27;
+    case "pacedHis":
     case "pacedLbap":
       return 0.26;
     case "pvc":
       return 0.245;
+    case "pac":
+      return 1.72 / 7; // first PAC in the teaching strip
     case "vt":
     case "vtMonoLbbb":
     case "vtMonoRbbb":
@@ -203,12 +303,25 @@ export function ectopyCaptureT0(finding: FindingId): number {
   }
 }
 
-/** Nearest PVC onset for the current scrub position (multi-beat strip). */
+/** PAC P′ onsets in the multi-beat teaching strip (absolute seconds). */
+export const PAC_STRIP_EVENTS = [1.72, 3.82] as const;
+export const PAC_STRIP_CYCLE_SEC = 7.0;
+
+/** Nearest ectopy onset for the current scrub position (multi-beat strip). */
 export function ectopyBeatT0(
   finding: FindingId,
   tCycle: number,
   schedule?: PvcSchedule | null,
 ): number {
+  if (finding === "pac") {
+    const beats = PAC_STRIP_EVENTS.map((p) => p / PAC_STRIP_CYCLE_SEC);
+    const t = ((tCycle % 1) + 1) % 1;
+    let best = beats[0]!;
+    for (const b of beats) {
+      if (t + 0.02 >= b) best = b;
+    }
+    return best;
+  }
   if (finding !== "pvc") return ectopyCaptureT0(finding);
   const beats =
     schedule?.pvcEvents.map((e) => e.q / (schedule.cycleSec || 7)) ??
@@ -225,8 +338,9 @@ export function ectopyBeatT0(
 export function ectopyFieldSpeed(finding: FindingId, cycleSec = 1): number {
   switch (finding) {
     case "pvc":
-      // Absolute ~55 ms/unit so the wave finishes with the wide QRS on the 7 s strip
-      return 0.055 / Math.max(0.25, cycleSec);
+    case "pac":
+      // ~180 ms/unit — visibly expands from the focus before dissipating
+      return 0.18 / Math.max(0.25, cycleSec);
     case "vt":
     case "vtMonoLbbb":
     case "vtMonoRbbb":
@@ -240,8 +354,11 @@ export function ectopyFieldSpeed(finding: FindingId, cycleSec = 1): number {
 export function ectopyWaveDuration(finding: FindingId, cycleSec = 1): number {
   switch (finding) {
     case "pvc":
-      // QRS + early discordant T (~0.28 s on the strip)
-      return 0.28 / Math.max(0.25, cycleSec);
+      // Wide QRS + soft dissipate (~0.7 s absolute)
+      return 0.7 / Math.max(0.25, cycleSec);
+    case "pac":
+      // P′ + atrial activation (~0.35 s)
+      return 0.35 / Math.max(0.25, cycleSec);
     case "vt":
     case "vtMonoLbbb":
     case "vtMonoRbbb":
@@ -255,7 +372,8 @@ export function ectopyWaveDuration(finding: FindingId, cycleSec = 1): number {
 export function ectopyFireDuration(finding: FindingId, cycleSec = 1): number {
   switch (finding) {
     case "pvc":
-      return 0.12 / Math.max(0.25, cycleSec);
+    case "pac":
+      return 0.1 / Math.max(0.25, cycleSec);
     default:
       return 0.14;
   }
@@ -272,6 +390,8 @@ export type CaptureFocus = {
   waveDur: number;
   fireDur: number;
   tissue: "atrial" | "ventricular";
+  /** Myocardium vs His/LBAP conduction-tissue capture */
+  capture?: "myocardium" | "conduction";
   label?: string;
 };
 
@@ -285,6 +405,18 @@ function pacedSpikeT0(finding: FindingId, lead: DeviceLeadId): number | null {
     case "pacedDual":
       if (lead === "ra") return 0.08;
       if (lead === "rvApex") return 0.28;
+      return null;
+    case "pacedRvSeptal":
+      if (lead === "ra") return 0.08;
+      if (lead === "rvSeptal") return 0.27;
+      return null;
+    case "pacedRvot":
+      if (lead === "ra") return 0.08;
+      if (lead === "rvOt") return 0.27;
+      return null;
+    case "pacedHis":
+      if (lead === "ra") return 0.08;
+      if (lead === "his") return 0.26;
       return null;
     case "pacedLbap":
       if (lead === "ra") return 0.08;
@@ -300,8 +432,8 @@ function pacedSpikeT0(finding: FindingId, lead: DeviceLeadId): number | null {
 }
 
 /**
- * One myocardial capture focus per active pace lead — wall stim first,
- * then pathways engage after the field arrives (PVC-like).
+ * One capture focus per active pace lead.
+ * Myocardial tips seed the wall first; His/LBAP seed conduction tissue.
  */
 export function pacedCaptureFoci(finding: FindingId): CaptureFocus[] {
   const mode = deviceModeForFinding(finding);
@@ -311,43 +443,102 @@ export function pacedCaptureFoci(finding: FindingId): CaptureFocus[] {
     const t0 = pacedSpikeT0(finding, lead);
     if (t0 == null) continue;
     const tissue = deviceLeadTissue(lead);
+    const capture = deviceLeadCapture(lead);
     const tip = deviceLeadTip(lead);
-    // Sit on the myocardial shell so the field spreads along the wall
-    const pos = projectOntoMyocardialShell(tip);
+    // Conduction tips stay near the lead (His/LBAP); septal myocardium stays on the septum;
+    // free-wall myocardium projects to the ovoid shell — ventricular tips stay below AV plane.
+    let pos: [number, number, number];
+    if (capture === "conduction") {
+      pos = tip;
+    } else if (lead === "rvSeptal" || lead === "rvOt" || inSeptum(tip)) {
+      pos = projectOntoVentricularMyocardium(tip, lead === "rvSeptal" || lead === "rvOt" ? -1 : undefined);
+      if (tissue === "ventricular" && pos[1]! > AV_JUNCTION.planeY - 0.04) {
+        pos = ventShell([pos[0]!, AV_JUNCTION.planeY - 0.12, pos[2]!]);
+      }
+    } else if (tissue === "ventricular") {
+      pos = ventShell(tip);
+    } else {
+      pos = projectOntoMyocardialShell(tip);
+    }
     out.push({
       pos,
       color: deviceLeadColor(lead),
       t0,
-      // Atrial shell is smaller; ventricular matches PVC-like cell-to-cell
-      speed: tissue === "atrial" ? 0.28 : 0.38,
-      waveDur: tissue === "atrial" ? 0.22 : 0.42,
+      speed: capture === "conduction" ? 0.22 : tissue === "atrial" ? 0.28 : 0.38,
+      waveDur: capture === "conduction" ? 0.28 : tissue === "atrial" ? 0.22 : 0.42,
       fireDur: 0.1,
       tissue,
+      capture,
       label: lead,
     });
   }
   return out;
 }
 
-/** PVC / VT / paced capture foci for the vector field. */
+/** PVC / VT / PAC / paced capture foci for the vector field. */
 export function myocardialCaptureFoci(
   finding: FindingId,
   ectopySite: EctopySiteId | null,
 ): CaptureFocus[] {
   if (finding.startsWith("paced")) return pacedCaptureFoci(finding);
+
+  // AFib: one pulmonary-vein ostium drives fibrillatory atria (Haissaguerre).
+  // Teaching default = LSPV — pink field must visibly travel across the atria.
+  if (finding === "afib") {
+    const pv =
+      PULMONARY_VEIN_OSTIA.find((p) => p.id === "lspv") ?? PULMONARY_VEIN_OSTIA[2]!;
+    return [
+      {
+        pos: projectOntoMyocardialShell([...pv.pos]),
+        color: 0xe040fb,
+        t0: 0,
+        /** Cycle fraction per shell-arc unit — fast enough to cross LA each burst */
+        speed: 0.4,
+        waveDur: 0.55,
+        fireDur: 0.06,
+        tissue: "atrial",
+        label: pv.id,
+      },
+    ];
+  }
+
   const siteId = ectopySite ?? defaultEctopySite(finding);
   if (!siteId || !findingUsesEctopyFocus(finding)) return [];
   const site = ectopySiteById(siteId);
-  const cycleSec = finding === "pvc" ? 7 : 1;
+  const atrial = isAtrialEctopySite(siteId);
+  const cycleSec = finding === "pvc" || finding === "pac" ? 7 : 1;
+
+  // Polymorphic / VF: several myocardial foci so the field isn't Purkinje-only
+  if (finding === "vtPoly" || finding === "torsades" || finding === "vfCoarse" || finding === "vfFine") {
+    const ids: EctopySiteId[] =
+      finding === "vfFine"
+        ? ["lvApex", "rvApex", "lvLateral", "rvFreeWall"]
+        : ["lvApex", "rvFreeWall", "lvLateral"];
+    return ids.map((id, i) => {
+      const s = ectopySiteById(id);
+      return {
+        pos: s.pos,
+        color: 0xff8844,
+        t0: 0.08 + i * 0.07,
+        speed: finding.startsWith("vf") ? 0.62 : 0.48,
+        waveDur: finding.startsWith("vf") ? 0.7 : 0.55,
+        fireDur: 0.1,
+        tissue: "ventricular" as const,
+        label: s.id,
+      };
+    });
+  }
+
   return [
     {
       pos: site.pos,
-      color: 0xff8844,
+      // Magenta atrial focus vs orange ventricular — distinct from SA gold / bundle cyan
+      color: atrial ? 0xe040fb : 0xff8844,
       t0: ectopyCaptureT0(finding),
       speed: ectopyFieldSpeed(finding, cycleSec),
       waveDur: ectopyWaveDuration(finding, cycleSec),
       fireDur: ectopyFireDuration(finding, cycleSec),
-      tissue: "ventricular",
+      tissue: atrial ? "atrial" : "ventricular",
       label: site.id,
     },
   ];

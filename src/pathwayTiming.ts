@@ -317,74 +317,76 @@ export function branchesFromBundleBlocks(blocks: Iterable<BundleBlockId>): Branc
   }
 
   if (pattern === "lbbb") {
+    // Intact RBB / right Purkinje only — LV fills by myocardial spread (no left HPS ball)
     return [
       ...atrialHisBase(),
-      { id: "rbb", t0: 0.31, t1: 0.4, group: "bundles" },
-      { id: "purkinjeR", t0: 0.35, t1: 0.46, group: "purkinje" },
-      { id: "lbb", t0: 0.42, t1: 0.54, group: "transseptal", u0: 0.5 },
-      { id: "lbba", t0: 0.44, t1: 0.56, group: "fascicles" },
-      { id: "lbbp", t0: 0.44, t1: 0.56, group: "fascicles" },
-      { id: "purkinjeL", t0: 0.46, t1: 0.58, group: "purkinje" },
+      { id: "rbb", t0: 0.3, t1: 0.4, group: "bundles" },
+      { id: "purkinjeR", t0: 0.34, t1: 0.46, group: "purkinje" },
     ];
   }
 
   if (pattern === "rbbb") {
+    // Intact left HPS only — RV fills by myocardial spread (no right HPS ball)
     return [
       ...atrialHisBase(),
-      { id: "lbb", t0: 0.31, t1: 0.38, group: "bundles" },
-      { id: "lbba", t0: 0.33, t1: 0.42, group: "fascicles" },
-      { id: "lbbp", t0: 0.33, t1: 0.42, group: "fascicles" },
-      { id: "purkinjeL", t0: 0.35, t1: 0.46, group: "purkinje" },
-      { id: "rbb", t0: 0.4, t1: 0.52, group: "transseptal", u0: 0.45 },
-      { id: "purkinjeR", t0: 0.44, t1: 0.56, group: "purkinje" },
+      { id: "lbb", t0: 0.3, t1: 0.38, group: "bundles" },
+      { id: "lbba", t0: 0.32, t1: 0.42, group: "fascicles" },
+      { id: "lbbp", t0: 0.32, t1: 0.42, group: "fascicles" },
+      { id: "purkinjeL", t0: 0.34, t1: 0.46, group: "purkinje" },
     ];
   }
 
   if (pattern === "lafb") {
+    // LAF silent — LPF + RBB conduct; anterior LV via myocardium from intact seeds
     return [
       ...atrialHisBase(),
       { id: "rbb", t0: 0.31, t1: 0.4, group: "bundles" },
       { id: "lbb", t0: 0.31, t1: 0.36, group: "bundles" },
       { id: "lbbp", t0: 0.33, t1: 0.42, group: "fascicles" },
       { id: "purkinjeR", t0: 0.36, t1: 0.46, group: "purkinje" },
-      { id: "purkinjeL", t0: 0.35, t1: 0.46, group: "purkinje" },
-      { id: "lbba", t0: 0.4, t1: 0.5, group: "transseptal", u0: 0.4 },
+      // Posterior LV Purkinje only (curveIndex 4–5); anterior rays stay dark
+      { id: "purkinjeL", t0: 0.35, t1: 0.46, group: "purkinje", curveIndex: 4 },
+      { id: "purkinjeL", t0: 0.35, t1: 0.46, group: "purkinje", curveIndex: 5 },
     ];
   }
 
   if (pattern === "lpfb") {
+    // LPF silent — LAF + RBB conduct; posterior LV via myocardium
     return [
       ...atrialHisBase(),
       { id: "rbb", t0: 0.31, t1: 0.4, group: "bundles" },
       { id: "lbb", t0: 0.31, t1: 0.36, group: "bundles" },
       { id: "lbba", t0: 0.33, t1: 0.42, group: "fascicles" },
       { id: "purkinjeR", t0: 0.36, t1: 0.46, group: "purkinje" },
-      { id: "purkinjeL", t0: 0.35, t1: 0.46, group: "purkinje" },
-      { id: "lbbp", t0: 0.4, t1: 0.5, group: "transseptal", u0: 0.4 },
+      { id: "purkinjeL", t0: 0.35, t1: 0.46, group: "purkinje", curveIndex: 0 },
+      { id: "purkinjeL", t0: 0.35, t1: 0.46, group: "purkinje", curveIndex: 1 },
+      { id: "purkinjeL", t0: 0.35, t1: 0.46, group: "purkinje", curveIndex: 2 },
+      { id: "purkinjeL", t0: 0.35, t1: 0.46, group: "purkinje", curveIndex: 3 },
+      { id: "purkinjeL", t0: 0.35, t1: 0.46, group: "purkinje", curveIndex: 6 },
     ];
   }
 
   if (pattern === "rbbbLafb") {
+    // Only LPF conducts; RBB + LAF silent
     return [
       ...atrialHisBase(),
-      { id: "lbb", t0: 0.31, t1: 0.36, group: "bundles" },
-      { id: "lbbp", t0: 0.33, t1: 0.42, group: "fascicles" },
-      { id: "purkinjeL", t0: 0.35, t1: 0.46, group: "purkinje" },
-      { id: "lbba", t0: 0.42, t1: 0.52, group: "transseptal", u0: 0.4 },
-      { id: "rbb", t0: 0.42, t1: 0.54, group: "transseptal", u0: 0.45 },
-      { id: "purkinjeR", t0: 0.46, t1: 0.58, group: "purkinje" },
+      { id: "lbb", t0: 0.3, t1: 0.36, group: "bundles" },
+      { id: "lbbp", t0: 0.32, t1: 0.42, group: "fascicles" },
+      { id: "purkinjeL", t0: 0.34, t1: 0.46, group: "purkinje", curveIndex: 4 },
+      { id: "purkinjeL", t0: 0.34, t1: 0.46, group: "purkinje", curveIndex: 5 },
     ];
   }
 
-  // rbbbLpfb
+  // rbbbLpfb — only LAF conducts; RBB + LPF silent
   return [
     ...atrialHisBase(),
-    { id: "lbb", t0: 0.31, t1: 0.36, group: "bundles" },
-    { id: "lbba", t0: 0.33, t1: 0.42, group: "fascicles" },
-    { id: "purkinjeL", t0: 0.35, t1: 0.46, group: "purkinje" },
-    { id: "lbbp", t0: 0.42, t1: 0.52, group: "transseptal", u0: 0.4 },
-    { id: "rbb", t0: 0.42, t1: 0.54, group: "transseptal", u0: 0.45 },
-    { id: "purkinjeR", t0: 0.46, t1: 0.58, group: "purkinje" },
+    { id: "lbb", t0: 0.3, t1: 0.36, group: "bundles" },
+    { id: "lbba", t0: 0.32, t1: 0.42, group: "fascicles" },
+    { id: "purkinjeL", t0: 0.34, t1: 0.46, group: "purkinje", curveIndex: 0 },
+    { id: "purkinjeL", t0: 0.34, t1: 0.46, group: "purkinje", curveIndex: 1 },
+    { id: "purkinjeL", t0: 0.34, t1: 0.46, group: "purkinje", curveIndex: 2 },
+    { id: "purkinjeL", t0: 0.34, t1: 0.46, group: "purkinje", curveIndex: 3 },
+    { id: "purkinjeL", t0: 0.34, t1: 0.46, group: "purkinje", curveIndex: 6 },
   ];
 }
 
@@ -477,7 +479,7 @@ function buildBranchesForFinding(finding: FindingId | string | undefined): Branc
       { id: "purkinjeL", t0: 0.24, t1: 0.5, group: "purkinje" },
       { id: ap, t0: 0.42, t1: 0.8, group: "accessory", reverse: true },
       { id: purk, t0: 0.38, t1: 0.55, group: "purkinje", curveIndex: purkCi },
-      { id: "internodal", t0: 0.68, t1: 0.9, group: "atrial", reverse: true },
+      // Retrograde atrium from Kent — accessory fronts only (no Bachmann / SA)
       { id: "av", t0: 0.74, t1: 0.95, group: "av-delay" },
     ];
   }
@@ -499,7 +501,6 @@ function buildBranchesForFinding(finding: FindingId | string | undefined): Branc
       { id: "his", t0: 0.5, t1: 0.7, group: "his", reverse: true },
       { id: "av", t0: 0.6, t1: 0.78, group: "av-delay", reverse: true },
       { id: ap, t0: 0.7, t1: 0.92, group: "accessory", u0: 0, u1: 0.42 },
-      { id: "internodal", t0: 0.74, t1: 0.95, group: "atrial", reverse: true },
     ];
   }
 
@@ -533,8 +534,44 @@ function buildBranchesForFinding(finding: FindingId | string | undefined): Branc
       { id: "purkinjeL", t0: 0.42, t1: 0.56, group: "ectopy" },
     ];
   }
+  if (finding === "pacedRvSeptal") {
+    // Mid-septal myocardial capture — earlier left engagement than apical
+    return [
+      { id: "internodal", t0: 0.08, t1: 0.2, group: "atrial" },
+      { id: "av", t0: 0.18, t1: 0.27, group: "av-delay" },
+      { id: "purkinjeR", t0: 0.34, t1: 0.5, group: "ectopy" },
+      { id: "rbb", t0: 0.35, t1: 0.48, group: "ectopy", reverse: true, u0: 0.35 },
+      { id: "purkinjeL", t0: 0.38, t1: 0.52, group: "ectopy" },
+      { id: "lbb", t0: 0.4, t1: 0.52, group: "ectopy", reverse: true, u0: 0.45 },
+    ];
+  }
+  if (finding === "pacedRvot") {
+    // RVOT myocardial capture — superior exit, late apical/left
+    return [
+      { id: "internodal", t0: 0.08, t1: 0.2, group: "atrial" },
+      { id: "av", t0: 0.18, t1: 0.27, group: "av-delay" },
+      { id: "rbb", t0: 0.34, t1: 0.48, group: "ectopy", reverse: true, u0: 0.15 },
+      { id: "purkinjeR", t0: 0.36, t1: 0.52, group: "ectopy" },
+      { id: "purkinjeL", t0: 0.42, t1: 0.58, group: "ectopy" },
+      { id: "lbb", t0: 0.44, t1: 0.56, group: "ectopy", reverse: true, u0: 0.5 },
+    ];
+  }
+  if (finding === "pacedHis") {
+    // His conduction capture → both bundles nearly physiologic
+    return [
+      { id: "internodal", t0: 0.08, t1: 0.2, group: "atrial" },
+      { id: "av", t0: 0.18, t1: 0.26, group: "av-delay" },
+      { id: "his", t0: 0.26, t1: 0.36, group: "his" },
+      { id: "rbb", t0: 0.32, t1: 0.46, group: "bundles" },
+      { id: "lbb", t0: 0.32, t1: 0.46, group: "bundles" },
+      { id: "lbba", t0: 0.34, t1: 0.48, group: "fascicles" },
+      { id: "lbbp", t0: 0.34, t1: 0.48, group: "fascicles" },
+      { id: "purkinjeR", t0: 0.36, t1: 0.5, group: "purkinje" },
+      { id: "purkinjeL", t0: 0.36, t1: 0.5, group: "purkinje" },
+    ];
+  }
   if (finding === "pacedLbap") {
-    // LBAP tip fires myocardium first (PVC-like), then engages left bundle
+    // LBAP tip fires conduction tissue, then engages left bundle
     return [
       { id: "internodal", t0: 0.08, t1: 0.2, group: "atrial" },
       { id: "av", t0: 0.18, t1: 0.26, group: "av-delay" },
@@ -652,24 +689,48 @@ function buildBranchesForFinding(finding: FindingId | string | undefined): Branc
     ];
   }
   if (finding === "pac") {
-    return [
-      ...atrialAt(0.02),
-      ...ventCascade(0.04),
-      ...atrialAt(0.14),
-      ...ventCascade(0.16),
-      { id: "internodal", t0: 0.22, t1: 0.28, group: "atrial" },
-      ...ventCascade(0.25),
-      ...atrialAt(0.35),
-      ...ventCascade(0.37),
-      ...atrialAt(0.47),
-      ...ventCascade(0.49),
-      { id: "internodal", t0: 0.54, t1: 0.6, group: "atrial" },
-      ...ventCascade(0.57),
-      ...atrialAt(0.67),
-      ...ventCascade(0.69),
-      ...atrialAt(0.8),
-      ...ventCascade(0.82),
+    // Multi-beat strip (7 s): sinus + two PACs — atrial myocardium first, then AV cascade
+    const CYCLE = 7;
+    const abs = (sec: number) => sec / CYCLE;
+    const beats: { kind: "sinus" | "pac"; p: number }[] = [
+      { kind: "sinus", p: 0.14 },
+      { kind: "sinus", p: 0.98 },
+      { kind: "pac", p: 1.72 },
+      { kind: "sinus", p: 2.55 },
+      { kind: "sinus", p: 3.4 },
+      { kind: "pac", p: 3.82 },
+      { kind: "sinus", p: 4.7 },
+      { kind: "sinus", p: 5.58 },
     ];
+    const out: BranchWindow[] = [];
+    for (const b of beats) {
+      const p = abs(b.p);
+      const pr = b.kind === "pac" ? 0.14 : 0.16;
+      if (b.kind === "sinus") {
+        out.push({ id: "sa", t0: p, t1: p + abs(0.05), group: "pacemaker" });
+        out.push({ id: "internodal", t0: p + abs(0.015), t1: p + abs(0.1), group: "atrial" });
+      } else {
+        // PAC: myocardial atrial field first; internodal engages after the wall wave
+        out.push({
+          id: "internodal",
+          t0: p + abs(0.05),
+          t1: p + abs(0.14),
+          group: "ectopy",
+        });
+      }
+      const q = p + abs(pr);
+      out.push(
+        { id: "av", t0: q - abs(0.05), t1: q - abs(0.015), group: "av-delay" },
+        { id: "his", t0: q - abs(0.015), t1: q + abs(0.025), group: "his" },
+        { id: "rbb", t0: q, t1: q + abs(0.07), group: "bundles" },
+        { id: "lbb", t0: q, t1: q + abs(0.06), group: "bundles" },
+        { id: "lbba", t0: q + abs(0.02), t1: q + abs(0.12), group: "fascicles" },
+        { id: "lbbp", t0: q + abs(0.02), t1: q + abs(0.12), group: "fascicles" },
+        { id: "purkinjeR", t0: q + abs(0.03), t1: q + abs(0.14), group: "purkinje" },
+        { id: "purkinjeL", t0: q + abs(0.03), t1: q + abs(0.14), group: "purkinje" },
+      );
+    }
+    return out;
   }
   if (finding === "pvc") {
     // Myocardial wall field first; Purkinje/bundles engage after the front reaches them.
@@ -740,7 +801,16 @@ export type PathwayProbePoint = {
   pathU: number;
   enterT: number;
   exitT: number;
+  /** Index among parallel curves of this segment (e.g. LAF vs LPF Purkinje rays) */
+  curveIndex?: number;
 };
+
+/** LV Purkinje curve indices fed by the left anterior fascicle (see PATHS order).
+ *  0 apex · 1 free wall · 2 mid wall · 3 anterolateral base · 6 septal base
+ */
+export const PURKINJE_L_LAF_CURVES = new Set([0, 1, 2, 3, 6]);
+/** LV Purkinje curve indices fed by the left posterior fascicle (4–5). */
+export const PURKINJE_L_LPF_CURVES = new Set([4, 5]);
 
 /** Instantaneous impulse front on one anatomic tract (travel direction included) */
 export type ActiveFront = {

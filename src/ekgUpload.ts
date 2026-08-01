@@ -1,4 +1,4 @@
-import type { FindingId, SegmentId } from "./findings";
+import type { SegmentId } from "./findings";
 import type { CycleMark, LeadId, WaveSample } from "./ekgWaveforms";
 import { LEADS } from "./ekgWaveforms";
 
@@ -22,6 +22,8 @@ export type UploadedEkg = {
   splitPreviewUrl?: string | null;
   /** Crop boxes used for extraction (image coordinates at parse resolution) */
   splitRegions?: UploadSplitRegion[];
+  /** Pixel size of the canvas used when `splitRegions` were measured */
+  splitImageSize?: { w: number; h: number };
   /** Primary / rhythm channel (prefer II) — same length as leadSignals for grid */
   signal: Float32Array;
   /** Per-lead samples when available (same length as signal or resampled) */
@@ -160,6 +162,7 @@ function finalizeUpload(opts: {
   leadLabels?: Partial<Record<LeadId, string>>;
   splitPreviewUrl?: string | null;
   splitRegions?: UploadSplitRegion[];
+  splitImageSize?: { w: number; h: number };
   /** Full bottom rhythm strip (Lead II), longer than one grid column */
   rhythmSignal?: Float32Array;
   /**
@@ -241,6 +244,7 @@ function finalizeUpload(opts: {
     imageUrl: opts.imageUrl,
     splitPreviewUrl: opts.splitPreviewUrl ?? null,
     splitRegions: opts.splitRegions,
+    splitImageSize: opts.splitImageSize,
     signal,
     leadSignals,
     rhythmSignal,
@@ -359,6 +363,7 @@ export async function parseEkgImage(file: File): Promise<UploadedEkg> {
         const sig = extractBandMv(ink, w, band.y0, band.y1, rx0, rx1, mvPerPx);
         shortLeads[id] = sig;
         shortest = Math.min(shortest, sig.length);
+        await yieldToUi();
       }
     }
     shortest = Math.max(64, Number.isFinite(shortest) ? shortest : 64);
@@ -385,6 +390,7 @@ export async function parseEkgImage(file: File): Promise<UploadedEkg> {
       if (rhythmSignal.length > gridLen) {
         shortLeads.II = rhythmSignal.slice(0, Math.min(rhythmSignal.length, Math.round(rhythmSignal.length / 4)));
       }
+      await yieldToUi();
     }
 
     Object.assign(leadSignals, shortLeads);
@@ -405,6 +411,7 @@ export async function parseEkgImage(file: File): Promise<UploadedEkg> {
       sampleRateHz,
       splitPreviewUrl,
       splitRegions,
+      splitImageSize: { w, h },
       snapshotExact: true,
       rhythmSignal,
     });
@@ -422,6 +429,7 @@ export async function parseEkgImage(file: File): Promise<UploadedEkg> {
       const id = order[i]!;
       splitRegions.push({ lead: id, x0: 0, y0: b.y0, x1: w, y1: b.y1 });
       leadSignals[id] = extractBandMv(ink, w, b.y0, b.y1, 0, w, mvPerPx);
+      await yieldToUi();
     }
   }
 
@@ -441,11 +449,12 @@ export async function parseEkgImage(file: File): Promise<UploadedEkg> {
     sampleRateHz,
     splitPreviewUrl,
     splitRegions,
+    splitImageSize: { w, h },
     snapshotExact: classic12,
   });
 }
 
-const SPLIT_COLORS = [
+export const UPLOAD_SPLIT_COLORS = [
   "#3db8c8",
   "#f0c040",
   "#7ec87a",
@@ -460,6 +469,99 @@ const SPLIT_COLORS = [
   "#a080e0",
   "#ff6b6b",
 ];
+
+/**
+ * Re-extract lead traces from an uploaded image using adjusted crop boxes
+ * (same resolution / calibration as the original parse).
+ */
+export async function reprocessUploadFromRegions(
+  upload: UploadedEkg,
+  regions: UploadSplitRegion[],
+): Promise<UploadedEkg> {
+  if (!upload.imageUrl) throw new Error("No image to reprocess");
+  if (!regions.length) throw new Error("No lead boxes to extract");
+
+  const img = await loadImage(upload.imageUrl);
+  const w = upload.splitImageSize?.w ?? Math.min(1600, img.naturalWidth);
+  const h =
+    upload.splitImageSize?.h ??
+    Math.round((img.naturalHeight / Math.max(1, img.naturalWidth)) * w);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) throw new Error("Could not read EKG image");
+  ctx.drawImage(img, 0, 0, w, h);
+  const { data } = ctx.getImageData(0, 0, w, h);
+
+  const ink = buildInkMask(data, w, h);
+  const boxPx = detectLargeBoxPitch(data, w, h) || Math.max(8, Math.round(w / 50));
+  const secPerPx = 0.2 / boxPx;
+  const mvPerPx = estimateMvPerPx(ink, w, h, boxPx) || 1 / (2 * boxPx);
+
+  const clamped = regions.map((r) => ({
+    lead: r.lead,
+    x0: Math.max(0, Math.min(w - 2, Math.round(r.x0))),
+    y0: Math.max(0, Math.min(h - 2, Math.round(r.y0))),
+    x1: Math.max(1, Math.min(w, Math.round(r.x1))),
+    y1: Math.max(1, Math.min(h, Math.round(r.y1))),
+  }));
+  for (const r of clamped) {
+    if (r.x1 <= r.x0 + 4) r.x1 = Math.min(w, r.x0 + 8);
+    if (r.y1 <= r.y0 + 4) r.y1 = Math.min(h, r.y0 + 8);
+  }
+
+  const leadSignals: Partial<Record<LeadId, Float32Array>> = {};
+  let rhythmSignal: Float32Array | undefined;
+  let gridLenHint = Infinity;
+
+  for (const r of clamped) {
+    const sig = extractBandMv(ink, w, r.y0, r.y1, r.x0, r.x1, mvPerPx);
+    if (r.lead === "rhythm") {
+      rhythmSignal = sig;
+    } else {
+      leadSignals[r.lead] = sig;
+      gridLenHint = Math.min(gridLenHint, sig.length);
+    }
+    await yieldToUi();
+  }
+
+  if (rhythmSignal && !leadSignals.II) {
+    const gridLen = Math.max(64, Number.isFinite(gridLenHint) ? gridLenHint : 64);
+    if (rhythmSignal.length > gridLen) {
+      leadSignals.II = rhythmSignal.slice(
+        0,
+        Math.min(rhythmSignal.length, Math.round(rhythmSignal.length / 4)),
+      );
+    } else {
+      leadSignals.II = rhythmSignal.slice();
+    }
+  }
+
+  if (!Object.keys(leadSignals).length) {
+    throw new Error("Adjusted boxes did not yield usable lead traces");
+  }
+
+  const splitPreviewUrl = renderSplitPreview(canvas, clamped);
+  const sampleRateHz = upload.sampleRateHz ?? Math.max(50, Math.round(1 / secPerPx));
+  const nLeads = Object.keys(leadSignals).length;
+  const snapshotExact = Boolean(rhythmSignal) || nLeads >= 6;
+
+  return finalizeUpload({
+    name: upload.name,
+    imageUrl: upload.imageUrl,
+    leadSignals,
+    sourceKind: "image",
+    sampleRateHz,
+    leadLabels: upload.leadLabels,
+    splitPreviewUrl,
+    splitRegions: clamped,
+    splitImageSize: { w, h },
+    snapshotExact,
+    rhythmSignal,
+  });
+}
 
 /** Draw labeled crop boxes on a copy of the parsed image for the upload preview. */
 function renderSplitPreview(
@@ -478,7 +580,7 @@ function renderSplitPreview(
   ctx.textBaseline = "top";
 
   regions.forEach((r, i) => {
-    const color = SPLIT_COLORS[i % SPLIT_COLORS.length]!;
+    const color = UPLOAD_SPLIT_COLORS[i % UPLOAD_SPLIT_COLORS.length]!;
     const x = r.x0;
     const y = r.y0;
     const rw = Math.max(1, r.x1 - r.x0);
@@ -762,105 +864,97 @@ function extractBandMv(
 ): Float32Array {
   const xStart = Math.max(0, Math.min(w - 1, x0));
   const xEnd = Math.max(xStart + 1, Math.min(w, x1));
+  const width = Math.max(1, xEnd - xStart);
   const hImg = Math.floor(ink.length / w);
   const hCell = Math.max(1, y1 - y0);
-  // Core of the labeled cell — baseline only (skip lead-name strip)
   const yCore0 = y0 + Math.max(2, Math.floor(hCell * 0.12));
   const yCore1 = y1 - Math.max(1, Math.floor(hCell * 0.03));
-  const edgePad = Math.max(2, Math.floor(hCell * 0.04));
-  // Hard limit on per-column jumps so we never leap to a neighboring lead's ink
-  // (same-column V5/V6 under V4, etc.). Overflow still allowed — just continuous.
-  const maxStep = Math.max(18, Math.floor(hCell * 0.55));
+  // Wide lane: overflow QRS (V2 into V1, V3 into rhythm, etc.) must stay searchable
+  const lanePad = Math.max(64, Math.floor(hCell * 2.4));
+  const lane0 = Math.max(0, y0 - lanePad);
+  const lane1 = Math.min(hImg, y1 + lanePad);
+  const H = Math.max(1, lane1 - lane0);
+  // Steep VT upstrokes can move most of a cell height in one pixel column
+  const maxStep = Math.max(48, Math.floor(hCell * 2.2));
 
-  const ys = new Float32Array(xEnd - xStart);
-  let prevY = (yCore0 + yCore1) * 0.5;
-  let velY = 0;
-  // Grow search while the stroke is outside / on the edge; shrink once back in-core.
-  let searchR = Math.max(14, Math.floor(hCell * 0.4));
+  // Viterbi path: follow continuous ink even when it leaves the labeled crop box.
+  // Emission favors dark ink; transition favors continuity; soft band keeps the
+  // path on THIS lead when multiple stacked traces share a column (V1/V2/V3).
+  const INF = 1e12;
+  let prevCost = new Float32Array(H);
+  let currCost = new Float32Array(H);
+  const back = new Int32Array(width * H);
 
-  for (let x = xStart; x < xEnd; x++) {
-    const i = x - xStart;
-    const hitTop = prevY <= y0 + edgePad;
-    const hitBot = prevY >= y1 - edgePad;
-    const outsideBox = prevY < y0 || prevY >= y1;
+  for (let yi = 0; yi < H; yi++) {
+    const y = lane0 + yi;
+    const v = ink[y * w + xStart]!;
+    const band =
+      y < yCore0 ? (yCore0 - y) * 0.55 : y >= yCore1 ? (y - (yCore1 - 1)) * 0.55 : 0;
+    prevCost[yi] = (v < 8 ? 90 : -v * 1.35) + band;
+  }
 
-    if (hitTop || hitBot || outsideBox) {
-      // Keep opening the window in the travel direction — no amplitude ceiling
-      searchR = Math.min(
-        hImg,
-        Math.max(searchR + Math.abs(velY) + 6, Math.abs(velY) * 2 + hCell * 0.35, maxStep),
-      );
-    } else if (prevY >= yCore0 && prevY < yCore1) {
-      searchR = Math.max(14, Math.floor(hCell * 0.4));
-    }
-
-    const expectY = prevY + velY * 0.85;
-    // Window always centered on the predicted stroke — never a full-column scan
-    // (that was stealing V4 onto V5/V6 deep waves).
-    let yA = Math.max(0, Math.floor(Math.min(prevY, expectY) - searchR));
-    let yB = Math.min(hImg, Math.ceil(Math.max(prevY, expectY) + searchR));
-    // When pinned to a box edge, bias the window past that edge only
-    if (hitTop || prevY < y0) {
-      yA = Math.max(0, Math.floor(prevY - searchR));
-      yB = Math.min(hImg, Math.ceil(Math.max(y1, prevY) + Math.min(searchR, hCell * 0.4)));
-    } else if (hitBot || prevY >= y1) {
-      yA = Math.max(0, Math.floor(Math.min(y0, prevY) - Math.min(searchR, hCell * 0.4)));
-      yB = Math.min(hImg, Math.ceil(prevY + searchR));
-    }
-
-    let bestY = -1;
-    let bestScore = -Infinity;
-    for (let y = yA; y < yB; y++) {
+  for (let xi = 1; xi < width; xi++) {
+    const x = xStart + xi;
+    currCost.fill(INF);
+    for (let yi = 0; yi < H; yi++) {
+      const y = lane0 + yi;
       const v = ink[y * w + x]!;
-      if (v < 12) continue;
-      const jump = Math.abs(y - expectY);
-      if (jump > maxStep && jump > Math.abs(velY) * 2.5 + 10) continue;
-      // Continuity-first: prefer the same stroke over stronger distant ink
-      const score = v * 0.35 - jump * 1.15;
-      if (score > bestScore) {
-        bestScore = score;
-        bestY = y;
-      }
-    }
+      // Soft preference for the labeled cell — never a hard wall (overflow tips live outside)
+      const band =
+        y < y0 ? (y0 - y) * 0.12 : y >= y1 ? (y - (y1 - 1)) * 0.12 : 0;
+      const emit = (v < 8 ? 55 : -v * 1.35) + band;
 
-    // Widen once around the predicted point if the local window missed
-    if (bestY < 0) {
-      const widen = Math.min(hImg, Math.max(searchR * 2, maxStep * 2));
-      yA = Math.max(0, Math.floor(expectY - widen));
-      yB = Math.min(hImg, Math.ceil(expectY + widen));
-      for (let y = yA; y < yB; y++) {
-        const v = ink[y * w + x]!;
-        if (v < 12) continue;
-        const jump = Math.abs(y - expectY);
-        if (jump > maxStep * 1.5) continue;
-        const score = v * 0.35 - jump * 1.15;
-        if (score > bestScore) {
-          bestScore = score;
-          bestY = y;
+      const j0 = Math.max(0, yi - maxStep);
+      const j1 = Math.min(H - 1, yi + maxStep);
+      let best = INF;
+      let bestJ = yi;
+      for (let j = j0; j <= j1; j++) {
+        const step = Math.abs(yi - j);
+        const trans = step * 0.22 + (step > hCell ? (step - hCell) * 0.15 : 0);
+        const c = prevCost[j]! + trans;
+        if (c < best) {
+          best = c;
+          bestJ = j;
         }
       }
+      currCost[yi] = best + emit;
+      back[xi * H + yi] = bestJ;
     }
+    const tmp = prevCost;
+    prevCost = currCost;
+    currCost = tmp;
+  }
 
-    if (bestY >= 0) {
-      let sumY = 0;
-      let sumW = 0;
-      for (let y = Math.max(0, bestY - 2); y <= Math.min(hImg - 1, bestY + 2); y++) {
-        const v = ink[y * w + x]!;
-        if (v < 12) continue;
-        // Don't blend in ink that's far from the chosen stroke
-        if (Math.abs(y - bestY) > 2) continue;
-        sumY += y * v;
-        sumW += v;
-      }
-      const yTrace = sumW > 0 ? sumY / sumW : bestY;
-      ys[i] = yTrace;
-      velY = 0.65 * (yTrace - prevY) + 0.35 * velY;
-      prevY = yTrace;
-    } else {
-      ys[i] = Number.NaN;
-      prevY = Math.max(0, Math.min(hImg - 1, prevY + velY * 0.5));
-      velY *= 0.7;
+  // Prefer an ending on ink near the row core (baseline after the last beat)
+  let endYi = 0;
+  let endBest = INF;
+  for (let yi = 0; yi < H; yi++) {
+    const y = lane0 + yi;
+    const corePen =
+      y < yCore0 ? (yCore0 - y) * 0.4 : y >= yCore1 ? (y - (yCore1 - 1)) * 0.4 : 0;
+    const c = prevCost[yi]! + corePen;
+    if (c < endBest) {
+      endBest = c;
+      endYi = yi;
     }
+  }
+
+  const ys = new Float32Array(width);
+  let yi = endYi;
+  for (let xi = width - 1; xi >= 0; xi--) {
+    const y = lane0 + yi;
+    // Local ink centroid for sub-pixel stroke position
+    let sumY = 0;
+    let sumW = 0;
+    const x = xStart + xi;
+    for (let yy = Math.max(lane0, y - 2); yy <= Math.min(lane1 - 1, y + 2); yy++) {
+      const v = ink[yy * w + x]!;
+      if (v < 8) continue;
+      sumY += yy * v;
+      sumW += v;
+    }
+    ys[xi] = sumW > 0 ? sumY / sumW : y;
+    if (xi > 0) yi = back[xi * H + yi]!;
   }
 
   fillGaps(ys);
@@ -1242,6 +1336,12 @@ function estimateRate(peaks: number[], durationSec: number, width: number): numb
   return Math.round(60 / med);
 }
 
+function yieldToUi(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => setTimeout(resolve, 0));
+  });
+}
+
 function loadImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -1372,36 +1472,6 @@ export function createUploadedFromLeads(opts: {
     sampleRateHz: opts.sampleRateHz,
     leadLabels: opts.leadLabels,
   });
-}
-
-export function suggestFindingFromUpload(upload: UploadedEkg): FindingId {
-  // Coarse morphology match against uploaded lead voltages (inverse teaching stub)
-  const n = upload.signal.length;
-  const mid = Math.floor(n * 0.35);
-  const win = Math.max(8, Math.floor(n * 0.08));
-  let peakI = 0;
-  let peakV1 = 0;
-  let peakIi = 0;
-  let wide = 0;
-  let peakSig = 0;
-  for (let i = Math.max(0, mid - win); i < Math.min(n, mid + win); i++) {
-    peakI = Math.max(peakI, Math.abs(upload.leadSignals.I?.[i] ?? 0));
-    peakV1 = Math.max(peakV1, upload.leadSignals.V1?.[i] ?? 0);
-    peakIi = Math.max(peakIi, Math.abs(upload.leadSignals.II?.[i] ?? upload.signal[i]!));
-    peakSig = Math.max(peakSig, Math.abs(upload.signal[i] ?? 0));
-    const dv =
-      Math.abs((upload.signal[i] ?? 0) - (upload.signal[Math.max(0, i - 2)] ?? 0));
-    if (dv > Math.max(0.06, peakSig * 0.1)) wide++;
-  }
-  const wideFrac = wide / Math.max(1, win * 2);
-  if (upload.rateBpm > 150 && wideFrac > 0.35) return "vt";
-  if (upload.rateBpm > 110 && wideFrac < 0.25) return "sinusTachy";
-  if (upload.rateBpm < 50) return "sinusBrady";
-  // Late positive V1 with modest I → RBBB-ish
-  if (peakV1 > Math.max(0.25, peakSig * 0.35) && peakI < peakV1 * 0.85) return "rbbb";
-  // Broad QRS without tall V1 R′ → LBBB-ish
-  if (wideFrac > 0.4 && peakV1 < Math.max(0.15, peakSig * 0.25)) return "lbbb";
-  return "nsr";
 }
 
 export function layoutLabel(layout: UploadLayout): string {

@@ -1,8 +1,17 @@
 import * as THREE from "three";
 
-export type DeviceLeadId = "ra" | "rvApex" | "lbap" | "lvCs";
+export type DeviceLeadId = "ra" | "rvApex" | "rvSeptal" | "rvOt" | "his" | "lbap" | "lvCs";
 
-export type DeviceLeadMode = "none" | "aai" | "vvi" | "ddd" | "lbap" | "biv";
+export type DeviceLeadMode =
+  | "none"
+  | "aai"
+  | "vvi"
+  | "ddd"
+  | "rvSeptal"
+  | "rvOt"
+  | "his"
+  | "lbap"
+  | "biv";
 
 export type DeviceLeadsView = {
   root: THREE.Group;
@@ -23,7 +32,7 @@ const SVC_SUP: [number, number, number] = [-0.44, 1.05, 0.08];
 /** Orifice lumen biased anterior-medial — same ring as SVC–RA guide, away from SA. */
 const SVC_RA_LUMEN: [number, number, number] = [-0.42, 0.66, 0.22];
 /** Through tricuspid orifice toward RV (matches TA guide center). */
-const TV_ORIFICE: [number, number, number] = [-0.2, -0.02, 0.05];
+const TV_ORIFICE: [number, number, number] = [-0.3, -0.03, 0.08];
 const CS_OST: [number, number, number] = [-0.06, -0.01, -0.16];
 
 type LeadSpec = {
@@ -39,12 +48,12 @@ type LeadSpec = {
 };
 
 const LEADS: Record<DeviceLeadId, LeadSpec> = {
-  // RA appendage via SVC–RA junction lumen, then anterior free wall (miss SA / internodals)
+  // RA appendage — amber-orange, not SA gold (#f0c040)
   ra: {
     label: "RA",
     name: "RA lead · appendage",
     detail: "Atrial pace/sense · SVC → SVC–RA junction → appendage",
-    color: 0xf0c040,
+    color: 0xff8a1a,
     tip: [-0.36, 0.4, 0.52],
     path: [
       SVC_SUP,
@@ -56,12 +65,12 @@ const LEADS: Record<DeviceLeadId, LeadSpec> = {
       [-0.36, 0.4, 0.52],
     ],
   },
-  // RV apical endocardium — SVC–RA lumen → RA cavity (miss internodals) → TV → apex
+  // RV apical — indigo, not RBB cyan (#5ec8ff)
   rvApex: {
     label: "RV",
     name: "RV lead · apex",
     detail: "Ventricular pace/sense · SVC → RA → TV → RV apex",
-    color: 0x5ec8ff,
+    color: 0x4361ee,
     tip: [-0.28, -1.06, 0.26],
     path: [
       SVC_SUP,
@@ -77,13 +86,67 @@ const LEADS: Record<DeviceLeadId, LeadSpec> = {
       [-0.28, -1.06, 0.26],
     ],
   },
-  // Left-bundle-area / deep septal — at LBB_ORIGIN
+  // Mid-RV septum — myocardial capture on right septal face
+  rvSeptal: {
+    label: "RVs",
+    name: "RV lead · mid septum",
+    detail: "Septal RV pace · myocardial capture near right septal face",
+    color: 0x4895ef,
+    tip: [-0.06, -0.42, 0.02],
+    path: [
+      SVC_SUP,
+      [-0.45, 0.82, 0.14],
+      SVC_RA_LUMEN,
+      [-0.3, 0.38, 0.16],
+      [-0.24, 0.1, 0.1],
+      TV_ORIFICE,
+      [-0.14, -0.28, 0.06],
+      [-0.06, -0.42, 0.02],
+    ],
+  },
+  // RVOT — outflow tract
+  rvOt: {
+    label: "RVOT",
+    name: "RV lead · outflow tract",
+    detail: "RVOT pace · superior septal / free-wall outflow",
+    color: 0x4cc9f0,
+    // Tip on ventricular side of AV plane (field lattice splits at planeY)
+    tip: [-0.2, -0.12, 0.38],
+    path: [
+      SVC_SUP,
+      [-0.45, 0.82, 0.14],
+      SVC_RA_LUMEN,
+      [-0.3, 0.38, 0.18],
+      [-0.24, 0.12, 0.22],
+      TV_ORIFICE,
+      [-0.2, -0.08, 0.28],
+      [-0.2, -0.12, 0.38],
+    ],
+  },
+  // His-bundle pacing — conduction tissue capture
+  his: {
+    label: "His",
+    name: "His-bundle lead",
+    detail: "Selective / nonselective His capture · penetrating His",
+    color: 0x9b5de5,
+    tip: [0.04, -0.12, -0.06],
+    path: [
+      SVC_SUP,
+      [-0.45, 0.82, 0.14],
+      SVC_RA_LUMEN,
+      [-0.3, 0.38, 0.14],
+      [-0.18, 0.12, 0.04],
+      [-0.06, 0.04, -0.06],
+      [0.04, -0.12, -0.06],
+    ],
+  },
+  // LBAP — violet, not LBB green (#6ae0a8)
   lbap: {
     label: "LBAP",
     name: "LBAP lead · left bundle area",
     detail: "Conduction-system pace · deep septal / LBB capture",
-    color: 0x6ae0a8,
-    tip: [0.14, -0.34, 0.0],
+    color: 0xb517ff,
+    tip: [0.2, -0.42, 0.0],
     path: [
       SVC_SUP,
       [-0.45, 0.82, 0.14],
@@ -93,15 +156,15 @@ const LEADS: Record<DeviceLeadId, LeadSpec> = {
       TV_ORIFICE,
       [-0.04, -0.22, 0.02],
       [0.05, -0.28, -0.04],
-      [0.14, -0.34, 0.0],
+      [0.2, -0.42, 0.0],
     ],
   },
-  // CS → posterolateral LV — approach CS from RA cavity, not through AV / Thorel
+  // CS LV — hot pink, not AV orange (#ff7a4a)
   lvCs: {
     label: "LV",
     name: "LV lead · CS posterolateral",
     detail: "CRT LV pace · coronary sinus to posterolateral LV",
-    color: 0xff7a9a,
+    color: 0xff006e,
     tip: [0.58, -0.48, -0.22],
     path: [
       SVC_SUP,
@@ -125,6 +188,9 @@ const MODE_LEADS: Record<DeviceLeadMode, DeviceLeadId[]> = {
   aai: ["ra"],
   vvi: ["rvApex"],
   ddd: ["ra", "rvApex"],
+  rvSeptal: ["ra", "rvSeptal"],
+  rvOt: ["ra", "rvOt"],
+  his: ["ra", "his"],
   lbap: ["ra", "lbap"],
   biv: ["ra", "rvApex", "lvCs"],
 };
@@ -144,6 +210,11 @@ export function deviceLeadsForMode(mode: DeviceLeadMode): DeviceLeadId[] {
 
 export function deviceLeadTissue(id: DeviceLeadId): "atrial" | "ventricular" {
   return id === "ra" ? "atrial" : "ventricular";
+}
+
+/** Whether the tip primarily captures conduction tissue (His/LBAP) vs myocardium. */
+export function deviceLeadCapture(id: DeviceLeadId): "myocardium" | "conduction" {
+  return id === "his" || id === "lbap" ? "conduction" : "myocardium";
 }
 
 function tagDeviceLeadMesh(mesh: THREE.Mesh, id: DeviceLeadId, spec: LeadSpec): void {
@@ -263,6 +334,12 @@ export function deviceModeForFinding(finding: string): DeviceLeadMode {
       return "vvi";
     case "pacedDual":
       return "ddd";
+    case "pacedRvSeptal":
+      return "rvSeptal";
+    case "pacedRvot":
+      return "rvOt";
+    case "pacedHis":
+      return "his";
     case "pacedLbap":
       return "lbap";
     case "pacedBiv":

@@ -3,18 +3,28 @@ import type { SegmentId } from "./findings";
 import {
   branchesForFinding,
   refractoryGlow,
+  PURKINJE_L_LAF_CURVES,
+  PURKINJE_L_LPF_CURVES,
   type PathwayProbePoint,
 } from "./pathwayTiming";
 import {
   FIELD_ELLIPSOID,
+  buildSeptumWallGeometry,
 } from "./heartEllipsoid";
 
 export {
   FIELD_ELLIPSOID,
+  SEPTUM_WALL,
+  SEPTUM_OVAL,
+  SEPTUM_SHAPE,
   ellipsoidNorm2,
   ellipsoidNormal,
   inMyocardialShell,
+  inSeptum,
+  inVentricularMyocardium,
   projectOntoMyocardialShell,
+  projectOntoSeptum,
+  projectOntoVentricularMyocardium,
   projectOntoShellTangent,
 } from "./heartEllipsoid";
 
@@ -127,6 +137,38 @@ const CS_OST_CENTER: [number, number, number] = [-0.06, -0.01, -0.16];
 /** Mid interatrial septum, between AV (Koch) and superior septal flutter limb. */
 const FOSSA_CENTER: [number, number, number] = [0.01, 0.26, -0.14];
 
+/** Pulmonary vein ostia · posterior LA — primary AF trigger sites (Haissaguerre). */
+export const PULMONARY_VEIN_OSTIA = [
+  {
+    id: "rspv",
+    label: "Right superior PV",
+    pos: [0.28, 0.55, -0.34] as [number, number, number],
+    normal: [0.15, 0.2, -0.97] as [number, number, number],
+    radius: 0.055,
+  },
+  {
+    id: "ripv",
+    label: "Right inferior PV",
+    pos: [0.32, 0.34, -0.36] as [number, number, number],
+    normal: [0.12, -0.05, -0.99] as [number, number, number],
+    radius: 0.05,
+  },
+  {
+    id: "lspv",
+    label: "Left superior PV",
+    pos: [0.58, 0.52, -0.3] as [number, number, number],
+    normal: [-0.1, 0.15, -0.98] as [number, number, number],
+    radius: 0.055,
+  },
+  {
+    id: "lipv",
+    label: "Left inferior PV",
+    pos: [0.6, 0.32, -0.32] as [number, number, number],
+    normal: [-0.12, -0.08, -0.99] as [number, number, number],
+    radius: 0.05,
+  },
+] as const;
+
 /** Thin grey anatomic landmarks (context only — not impulse pathways).
  *  AV valve rings lie in a shared plane ≈ perpendicular to the long axis (−Y),
  *  so they stay “en face” relative to the heart after anatomic orientation.
@@ -138,21 +180,21 @@ const ANATOMY_GUIDES: GuideSpec[] = [
     detail: "RA–RV junction · flutter circuit boundary · more apical than mitral",
     radius: 0.007,
     tubularSegments: 72,
-    // Ellipse in AV plane (normal ≈ apex); right-sided, slightly anterior
+    // Shifted toward RV (−X, slight +Z) so triangle-of-Koch / AV node sits septal to the ring
     points: [
-      [0.136, 0.02, 0.082],
-      [0.079, 0.03, 0.195],
-      [-0.042, 0.033, 0.265],
-      [-0.195, 0.027, 0.276],
-      [-0.339, 0.013, 0.223],
-      [-0.434, -0.004, 0.121],
-      [-0.456, -0.02, -0.002],
-      [-0.399, -0.03, -0.115],
-      [-0.278, -0.033, -0.185],
-      [-0.125, -0.027, -0.196],
-      [0.019, -0.013, -0.143],
-      [0.114, 0.004, -0.041],
-      [0.136, 0.02, 0.082],
+      [0.016, 0.01, 0.122],
+      [-0.041, 0.02, 0.235],
+      [-0.162, 0.023, 0.305],
+      [-0.315, 0.017, 0.316],
+      [-0.459, 0.003, 0.263],
+      [-0.554, -0.014, 0.161],
+      [-0.576, -0.03, 0.038],
+      [-0.519, -0.04, -0.075],
+      [-0.398, -0.043, -0.145],
+      [-0.245, -0.037, -0.156],
+      [-0.101, -0.023, -0.103],
+      [-0.006, -0.006, -0.001],
+      [0.016, 0.01, 0.122],
     ],
   },
   {
@@ -232,6 +274,18 @@ const ANATOMY_GUIDES: GuideSpec[] = [
       [0.598, 0.096, 0.004],
     ],
   },
+  // Pulmonary vein ostia · posterior LA (common AF trigger sites)
+  ...PULMONARY_VEIN_OSTIA.map(
+    (pv): GuideRingSpec => ({
+      kind: "ring",
+      name: pv.label,
+      detail: `${pv.label} ostium · posterior LA · common AF trigger`,
+      center: [...pv.pos],
+      normal: [...pv.normal],
+      radius: pv.radius,
+      tubeRadius: 0.0055,
+    }),
+  ),
 ];
 
 function createGuideMaterial(): THREE.MeshStandardMaterial {
@@ -339,15 +393,18 @@ const AV_HALO_R = AV_R * 1.55;
 /** AVNRT loop radius — sits on the translucent halo surface. */
 const AVN_LOOP_R = AV_HALO_R * 1.02;
 const HIS_BRANCH: [number, number, number] = [0.05, -0.28, -0.04];
-const LBB_ORIGIN: [number, number, number] = [0.14, -0.34, 0.0];
+/** Broad LBB cascade on left septal endocardium (under aortic cusp → trifurcation). */
+const LBB_ORIGIN: [number, number, number] = [0.2, -0.42, 0.02];
 /** Fascicle tips — Purkinje arborizations must start here so tubes visibly join.
  *  Kept inside FIELD_ELLIPSOID with margin for tube radius / Catmull-Rom overshoot. */
-const LAF_TIP: [number, number, number] = [0.5, -0.82, 0.24];
-const LPF_TIP: [number, number, number] = [0.28, -1.08, 0.0];
-/** Mid-septal end of left septal fascicle (Purkinje continues toward apex). */
-const SEPTAL_TIP: [number, number, number] = [0.1, -0.78, 0.02];
+/** LAF tip · thick fascicle down left septum (slight anterior) toward apex. */
+const LAF_TIP: [number, number, number] = [0.2, -0.96, 0.12];
+/** Mid-septal takeoff along LAF for apical/basal septal Purkinje. */
+const SEPTAL_TIP: [number, number, number] = [0.16, -0.68, 0.06];
+/** LPF tip · thinner fascicle on posterior LV free wall (PM papillary territory). */
+const LPF_TIP: [number, number, number] = [0.62, -0.74, -0.4];
 /** Distal tip of LV anterolateral Purkinje · base (left Kent ventricular insertion). */
-const PURK_L_ANT_BASE_TIP: [number, number, number] = [0.7, -0.41, 0.14];
+const PURK_L_ANT_BASE_TIP: [number, number, number] = [0.76, -0.4, 0.14];
 /** Distal tip of RV free-wall Purkinje · superior (right Kent ventricular insertion). */
 const PURK_R_FW_SUP_TIP: [number, number, number] = [-0.7, -0.31, 0.22];
 /** RBB mid-septal point — stays in the cavity / endocardial plane (not wall-nudged). */
@@ -654,14 +711,14 @@ const PATHS: PathSpec[] = [
     points: [HIS_PEN, HIS_BRANCH],
   },
 
-  // —— Right bundle ——
+  // —— Right bundle (slender, discrete, singular) ——
   // RV is patient's right (−X) and more anterior (+Z) than LV
   {
     id: "rbb",
     name: "Right bundle branch",
-    detail: "Right septal subendocardium",
-    radiusStart: 0.028,
-    radiusEnd: 0.014,
+    detail: "Slender cord on right septal subendocardium",
+    radiusStart: 0.012,
+    radiusEnd: 0.006,
     tubularSegments: 72,
     points: [
       HIS_BRANCH,
@@ -675,8 +732,8 @@ const PATHS: PathSpec[] = [
     id: "rbb",
     name: "Moderator band",
     detail: "Septomarginal trabecula → ant. papillary",
-    radiusStart: 0.018,
-    radiusEnd: 0.012,
+    radiusStart: 0.008,
+    radiusEnd: 0.005,
     tubularSegments: 40,
     points: [
       RBB_APEX,
@@ -687,69 +744,55 @@ const PATHS: PathSpec[] = [
   },
 
   // —— Left bundle / fascicles ——
-  // LV is patient's left (+X). LAF = anterosuperior; LPF = posteroinferior; septal hugs septum.
+  // LAF: thicker cord down the left septal endocardium (slight anterior).
+  // LPF: thinner cord swinging onto the posterior LV free wall.
   {
     id: "lbb",
     name: "Left bundle (cascade)",
-    detail: "Left septal surface under aortic cusp",
-    radiusStart: 0.028,
-    radiusEnd: 0.028,
-    points: [HIS_BRANCH, [0.1, -0.3, -0.02], LBB_ORIGIN],
+    detail: "Broad left septal fan under aortic cusp",
+    radiusStart: 0.048,
+    radiusEnd: 0.042,
+    tubularSegments: 40,
+    points: [HIS_BRANCH, [0.1, -0.32, -0.02], [0.15, -0.37, 0.0], LBB_ORIGIN],
   },
   {
     id: "lbba",
     name: "Left anterior fascicle",
-    detail: "Thin · anterosuperior LV / AL papillary",
-    radiusStart: 0.026,
-    radiusEnd: 0.01,
-    tubularSegments: 56,
+    detail: "Thick fascicle · left septal endocardium toward apex",
+    radiusStart: 0.046,
+    radiusEnd: 0.018,
+    tubularSegments: 64,
     points: [
       LBB_ORIGIN,
-      [0.22, -0.28, 0.16],
-      [0.35, -0.32, 0.32],
-      [0.45, -0.48, 0.38],
-      [0.52, -0.65, 0.34],
+      [0.18, -0.52, 0.04],
+      SEPTAL_TIP,
+      [0.18, -0.82, 0.09],
       LAF_TIP,
     ],
   },
   {
     id: "lbbp",
     name: "Left posterior fascicle",
-    detail: "Broad · inferior–posterior LV / PM papillary",
-    radiusStart: 0.028,
-    radiusEnd: 0.012,
+    detail: "Thinner fascicle · posterior LV free wall · PM papillary",
+    radiusStart: 0.022,
+    radiusEnd: 0.009,
     tubularSegments: 56,
     points: [
       LBB_ORIGIN,
-      [0.18, -0.48, -0.14],
-      [0.26, -0.68, -0.22],
-      [0.32, -0.88, -0.16],
-      [0.3, -1.0, -0.06],
+      [0.32, -0.5, -0.14],
+      [0.44, -0.6, -0.28],
+      [0.54, -0.68, -0.36],
       LPF_TIP,
     ],
   },
-  {
-    id: "lbb",
-    name: "Left septal fascicle",
-    detail: "Mid-septal fibers (variable) · stays on left septum",
-    radiusStart: 0.022,
-    radiusEnd: 0.008,
-    tubularSegments: 40,
-    points: [
-      LBB_ORIGIN,
-      [0.12, -0.48, 0.02],
-      [0.11, -0.62, 0.03],
-      SEPTAL_TIP,
-    ],
-  },
 
-  // —— RV Purkinje (stay right of septum: X ≲ 0, more anterior +Z) ——
+  // —— RV Purkinje (few fine twigs — not a mirror of LV) ——
   {
     id: "purkinjeR",
     name: "RV free wall Purkinje · superior",
     detail: "From anterior papillary region",
-    radiusStart: 0.012,
-    radiusEnd: 0.005,
+    radiusStart: 0.007,
+    radiusEnd: 0.0035,
     tubularSegments: 40,
     points: [
       MOD_BAND_END,
@@ -762,8 +805,8 @@ const PATHS: PathSpec[] = [
     id: "purkinjeR",
     name: "RV free wall Purkinje · mid",
     detail: "Lateral RV endocardium",
-    radiusStart: 0.011,
-    radiusEnd: 0.004,
+    radiusStart: 0.0065,
+    radiusEnd: 0.003,
     points: [
       MOD_BAND_END,
       [-0.62, -0.72, 0.4],
@@ -775,8 +818,8 @@ const PATHS: PathSpec[] = [
     id: "purkinjeR",
     name: "RV free wall Purkinje · inferior",
     detail: "Inferior RV",
-    radiusStart: 0.01,
-    radiusEnd: 0.004,
+    radiusStart: 0.006,
+    radiusEnd: 0.003,
     points: [
       RBB_APEX,
       [-0.35, -1.05, 0.28],
@@ -788,8 +831,8 @@ const PATHS: PathSpec[] = [
     id: "purkinjeR",
     name: "RV apical Purkinje",
     detail: "RV apex network",
-    radiusStart: 0.01,
-    radiusEnd: 0.004,
+    radiusStart: 0.006,
+    radiusEnd: 0.003,
     points: [
       RBB_APEX,
       [-0.22, -1.12, 0.28],
@@ -800,9 +843,9 @@ const PATHS: PathSpec[] = [
   {
     id: "purkinjeR",
     name: "RV septal Purkinje",
-    detail: "Right septal arborization",
-    radiusStart: 0.01,
-    radiusEnd: 0.004,
+    detail: "Sparse right septal twigs",
+    radiusStart: 0.006,
+    radiusEnd: 0.003,
     points: [
       RBB_MID,
       [-0.1, -0.68, 0.14],
@@ -811,114 +854,99 @@ const PATHS: PathSpec[] = [
     ],
   },
 
-  // —— LV Purkinje · each branch starts at a fascicle tip; territories stay apart ——
-  // Kept well inside FIELD_ELLIPSOID so tubes don't poke through the ovoid shell.
-  // LAF territory: anterolateral free wall / base (high +X, +Z)
+  // —— LV Purkinje · sparse rays from each fascicle tip (territories stay apart) ——
+  // LAF territory: from septal tip → apex / anterior wall / lateral base (Kent)
   {
     id: "purkinjeL",
-    name: "LV anterolateral Purkinje",
-    detail: "From LAF tip · lateral free wall",
+    name: "LV anterior Purkinje · apex",
+    detail: "From LAF tip · apical septum / anterior wall",
     radiusStart: 0.012,
     radiusEnd: 0.004,
     tubularSegments: 40,
     points: [
       LAF_TIP,
-      [0.56, -0.86, 0.16],
-      [0.56, -0.9, 0.04],
-      [0.5, -0.92, -0.04],
+      [0.26, -1.06, 0.08],
+      [0.34, -1.1, 0.02],
+      [0.28, -1.12, -0.04],
     ],
   },
   {
     id: "purkinjeL",
-    name: "LV anterolateral Purkinje · apex",
-    detail: "From LAF tip · apical free wall",
+    name: "LV anterior Purkinje · free wall",
+    detail: "From LAF tip · anterior LV toward free wall",
     radiusStart: 0.011,
     radiusEnd: 0.004,
     points: [
       LAF_TIP,
-      [0.48, -0.92, 0.14],
-      [0.44, -1.0, 0.04],
-      [0.42, -1.04, -0.04],
+      [0.34, -0.9, 0.2],
+      [0.48, -0.82, 0.22],
+      [0.58, -0.72, 0.16],
+    ],
+  },
+  {
+    id: "purkinjeL",
+    name: "LV anterior Purkinje · mid wall",
+    detail: "From LAF tip · mid-anterior LV toward lateral wall",
+    radiusStart: 0.011,
+    radiusEnd: 0.004,
+    points: [
+      LAF_TIP,
+      [0.4, -0.98, 0.14],
+      [0.52, -0.92, 0.08],
+      [0.64, -0.82, 0.02],
     ],
   },
   {
     id: "purkinjeL",
     name: "LV anterolateral Purkinje · base",
-    detail: "From LAF tip · toward LV base / LVOT",
+    detail: "From mid-septal LAF · toward LV base / Kent insertion",
     radiusStart: 0.01,
     radiusEnd: 0.004,
     points: [
-      LAF_TIP,
-      [0.58, -0.68, 0.28],
-      [0.6, -0.5, 0.22],
+      SEPTAL_TIP,
+      [0.36, -0.55, 0.14],
+      [0.58, -0.46, 0.16],
       PURK_L_ANT_BASE_TIP,
     ],
   },
-  // LPF territory: inferior–posterior (lower +X, −Z)
+  // LPF territory: posterior LV free wall
   {
     id: "purkinjeL",
-    name: "LV inferior Purkinje",
-    detail: "From LPF tip · inferior wall",
-    radiusStart: 0.012,
+    name: "LV posterior Purkinje",
+    detail: "From LPF tip · posterior wall",
+    radiusStart: 0.01,
     radiusEnd: 0.004,
     points: [
       LPF_TIP,
-      [0.26, -1.1, -0.08],
-      [0.22, -1.06, -0.2],
-      [0.26, -0.96, -0.26],
+      [0.58, -0.88, -0.36],
+      [0.5, -0.98, -0.32],
+      [0.42, -1.02, -0.28],
     ],
   },
   {
     id: "purkinjeL",
     name: "LV posterolateral Purkinje",
     detail: "From LPF tip · posterolateral free wall",
-    radiusStart: 0.011,
-    radiusEnd: 0.004,
-    points: [
-      LPF_TIP,
-      [0.4, -1.05, -0.12],
-      [0.5, -0.95, -0.22],
-      [0.52, -0.82, -0.26],
-    ],
-  },
-  {
-    id: "purkinjeL",
-    name: "LV inferior Purkinje · basal",
-    detail: "From LPF tip · toward posterior base",
     radiusStart: 0.01,
     radiusEnd: 0.004,
     points: [
       LPF_TIP,
-      [0.34, -0.95, -0.14],
-      [0.38, -0.78, -0.24],
-      [0.36, -0.6, -0.22],
-    ],
-  },
-  // Septal territory: hugs left septum (X ≈ 0.1–0.2)
-  {
-    id: "purkinjeL",
-    name: "LV septal Purkinje · superior",
-    detail: "From septal tip · mid-septum toward base",
-    radiusStart: 0.01,
-    radiusEnd: 0.004,
-    points: [
-      SEPTAL_TIP,
-      [0.12, -0.62, 0.01],
-      [0.14, -0.48, -0.02],
-      [0.13, -0.36, -0.04],
+      [0.7, -0.7, -0.34],
+      [0.74, -0.58, -0.26],
+      [0.7, -0.48, -0.2],
     ],
   },
   {
     id: "purkinjeL",
-    name: "LV septal Purkinje · apex",
-    detail: "From septal tip · apical septum",
-    radiusStart: 0.01,
-    radiusEnd: 0.004,
+    name: "LV septal Purkinje · base",
+    detail: "From mid-septal LAF · toward LVOT / basal septum",
+    radiusStart: 0.009,
+    radiusEnd: 0.0035,
     points: [
       SEPTAL_TIP,
-      [0.11, -0.92, 0.0],
-      [0.14, -1.08, -0.04],
-      [0.18, -1.12, -0.06],
+      [0.15, -0.55, 0.02],
+      [0.16, -0.44, -0.02],
+      [0.18, -0.34, -0.04],
     ],
   },
 
@@ -934,16 +962,14 @@ const PATHS: PathSpec[] = [
     tubularSegments: 96,
     points: [
       AV,
-      [0.08, 0.12, -0.12],
-      [0.2, 0.22, -0.16],
-      [0.36, 0.26, -0.1],
-      [0.5, 0.22, -0.02],
+      [0.12, 0.14, -0.1],
+      [0.28, 0.2, -0.08],
+      [0.44, 0.2, -0.02],
       ACC_L_LA,
       ACC_L_EPIC,
-      [0.7, -0.02, 0.12],
-      [0.66, -0.12, 0.16],
-      [0.6, -0.22, 0.14],
-      [0.56, -0.28, 0.12],
+      [0.74, -0.06, 0.11],
+      [0.76, -0.18, 0.12],
+      [0.76, -0.3, 0.13],
       PURK_L_ANT_BASE_TIP,
     ],
   },
@@ -956,15 +982,14 @@ const PATHS: PathSpec[] = [
     tubularSegments: 96,
     points: [
       AV,
-      [-0.08, 0.1, -0.06],
-      [-0.22, 0.14, 0.06],
-      [-0.38, 0.12, 0.14],
+      [-0.12, 0.1, -0.02],
+      [-0.28, 0.12, 0.08],
+      [-0.42, 0.1, 0.16],
       ACC_R_LA,
       ACC_R_EPIC,
-      [-0.7, -0.08, 0.34],
-      [-0.68, -0.14, 0.3],
-      [-0.64, -0.2, 0.24],
-      [-0.6, -0.24, 0.2],
+      [-0.7, -0.08, 0.3],
+      [-0.71, -0.16, 0.26],
+      [-0.71, -0.24, 0.24],
       PURK_R_FW_SUP_TIP,
     ],
   },
@@ -1204,7 +1229,7 @@ function createMultiColorJunction(
  * Samples and pathways live in the thick wall between endo and epi.
  */
 
-/** Translucent thick cardiac shell — outer epi + inner endo, hollow cavity. */
+/** Translucent thick cardiac shell — outer epi + inner endo, hollow cavity + flat septal wall. */
 function createHeartShell(): THREE.Group {
   const group = new THREE.Group();
   group.name = "heartShell";
@@ -1245,7 +1270,28 @@ function createHeartShell(): THREE.Group {
   inner.scale.set(radius.x * sIn * 0.98, radius.y * sIn * 0.98, radius.z * sIn * 0.98);
   group.add(inner);
 
+  // Septal endo/myocardium — hourglass flush with endocardial cavity
+  group.add(createSeptumWallMesh());
+
   return group;
+}
+
+/** His-aligned septal endo/myocardium — rim on cavity; not a hover target. */
+function createSeptumWallMesh(): THREE.Mesh {
+  const matSeptum = new THREE.MeshStandardMaterial({
+    color: 0x3a1820,
+    roughness: 0.72,
+    metalness: 0.0,
+    transparent: true,
+    opacity: 0.45,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const septum = new THREE.Mesh(buildSeptumWallGeometry(), matSeptum);
+  septum.name = "ivSeptum";
+  // Part of the heart shell visually — do not steal hover from His–Purkinje tracts
+  septum.raycast = () => {};
+  return septum;
 }
 
 /** Keep shell locked to the field ellipsoid (pathways are authored inside that volume). */
@@ -1302,6 +1348,8 @@ export type ConductionSystem = {
     mark?: string;
     branches?: import("./pathwayTiming").BranchWindow[];
     intensity?: number;
+    lesionIds?: SegmentId[];
+    passiveEngage?: { left: number; right: number; laf: number; lpf: number };
   }) => void;
   updateImpulse: (opts: {
     tCycle: number;
@@ -1309,6 +1357,7 @@ export type ConductionSystem = {
     finding?: string;
     mark?: string;
     branches?: import("./pathwayTiming").BranchWindow[];
+    lesionIds?: SegmentId[];
   }) => void;
   getPathwayProbes: () => PathwayProbePoint[];
   /** World-space anchor for a nodal landmark (after model centering). */
@@ -1318,6 +1367,7 @@ export type ConductionSystem = {
     finding?: string;
     mark?: string;
     branches?: import("./pathwayTiming").BranchWindow[];
+    lesionIds?: SegmentId[];
   }) => import("./pathwayTiming").ActiveFront[];
   setSegmentVisibility: (id: SegmentId, visible: boolean) => void;
   setAccessoryVisible: (visible: boolean, side?: "left" | "right" | "both") => void;
@@ -1454,37 +1504,37 @@ export function createConductionSystem(): ConductionSystem {
         { color: SEGMENT_COLORS.lbbp, id: "lbbp" },
       ],
       "Left bundle fan",
-      "LBB cascade → anterior / posterior / septal fascicles",
+      "LBB cascade → anterior (septal) / posterior fascicles",
     ),
     createMultiColorJunction(
       LAF_TIP,
-      0.02,
+      0.024,
       [
         { color: SEGMENT_COLORS.lbba, id: "lbba" },
         { color: SEGMENT_COLORS.purkinjeL, id: "purkinjeL" },
       ],
       "LAF–Purkinje junction",
-      "Left anterior fascicle → LV anterolateral Purkinje",
+      "Left anterior fascicle → apical / anterior LV Purkinje",
     ),
     createMultiColorJunction(
       LPF_TIP,
-      0.02,
+      0.018,
       [
         { color: SEGMENT_COLORS.lbbp, id: "lbbp" },
         { color: SEGMENT_COLORS.purkinjeL, id: "purkinjeL" },
       ],
       "LPF–Purkinje junction",
-      "Left posterior fascicle → LV inferior Purkinje",
+      "Left posterior fascicle → posterior LV Purkinje",
     ),
     createMultiColorJunction(
       SEPTAL_TIP,
-      0.018,
+      0.02,
       [
-        { color: SEGMENT_COLORS.lbb, id: "lbb" },
+        { color: SEGMENT_COLORS.lbba, id: "lbba" },
         { color: SEGMENT_COLORS.purkinjeL, id: "purkinjeL" },
       ],
-      "Septal–Purkinje junction",
-      "Left septal fascicle → LV septal Purkinje",
+      "Mid-septal Purkinje takeoff",
+      "LAF mid-septum → basal / anterolateral Purkinje",
     ),
     createMultiColorJunction(
       RBB_APEX,
@@ -1786,8 +1836,8 @@ export function createConductionSystem(): ConductionSystem {
         mat.color.setHex(SEGMENT_COLORS[id] ?? 0xffffff);
         mat.emissive.setHex(SEGMENT_COLORS[id] ?? 0xffffff);
         mat.emissiveIntensity = Number(obj.userData.baseEmissive ?? 0.12);
-        mat.opacity = id === "accessory" || id === "accessoryR" || id === "avnrtSlow" || id === "avnrtFast" ? 0.55 : id === "flutter" ? 0.45 : 1;
-        mat.transparent = id === "accessory" || id === "accessoryR" || id === "flutter" || id === "avnrtSlow" || id === "avnrtFast";
+        mat.opacity = id === "accessory" || id === "accessoryR" || id === "avnrtSlow" || id === "avnrtFast" ? 0.55 : id === "flutter" ? 0.45 : 0.95;
+        mat.transparent = true;
       }
     });
     branchLesionGroup.visible = unique.length > 0;
@@ -1864,12 +1914,72 @@ export function createConductionSystem(): ConductionSystem {
     mark?: string;
     branches?: import("./pathwayTiming").BranchWindow[];
     intensity?: number;
+    /** Blocked tracts stay dim — never peak-light from EKG active set */
+    lesionIds?: SegmentId[];
+    /**
+     * Passive myocardial capture of blocked HPS (0–1). After the intact side
+     * finishes, tubes become less transparent without carrying the impulse ball.
+     */
+    passiveEngage?: { left: number; right: number; laf: number; lpf: number };
   }) {
     const peak = opts.intensity ?? 0.95;
     const branches = opts.branches ?? branchesForFinding(opts.finding);
     const ekgActive = new Set(opts.active);
+    const lesions = new Set(opts.lesionIds ?? []);
+    const engage = opts.passiveEngage ?? { left: 0, right: 0, laf: 0, lpf: 0 };
     const mark = opts.mark ?? "TP";
     const ventPhase = mark === "QRS" || mark === "ST" || mark === "T";
+
+    const passiveFor = (id: SegmentId, ci?: number): number => {
+      if (id === "rbb" || id === "purkinjeR") return engage.right;
+      if (id === "lbb") return engage.left;
+      if (id === "lbba") return Math.max(engage.laf, engage.left);
+      if (id === "lbbp") return Math.max(engage.lpf, engage.left);
+      if (id === "purkinjeL") {
+        if (ci != null && PURKINJE_L_LAF_CURVES.has(ci)) return Math.max(engage.laf, engage.left);
+        if (ci != null && PURKINJE_L_LPF_CURVES.has(ci)) return Math.max(engage.lpf, engage.left);
+        return Math.max(engage.left, engage.laf, engage.lpf);
+      }
+      return 0;
+    };
+
+    const applyPassiveBlock = (mat: THREE.MeshStandardMaterial, id: SegmentId, amount: number) => {
+      // Dimmed “no anterograde” look — still readable, then fills in as myocardium engages
+      const a = Math.min(1, Math.max(0, amount));
+      const tint = SEGMENT_COLORS[id] ?? 0x889098;
+      mat.color.setHex(0x3a4048).lerp(new THREE.Color(tint), 0.2 + 0.5 * a);
+      mat.emissive.setHex(0x1a1218).lerp(new THREE.Color(tint), 0.4 * a);
+      mat.emissiveIntensity = 0.08 + 0.35 * a;
+      mat.opacity = 0.48 + 0.42 * a;
+      mat.transparent = true;
+    };
+
+    const restoreTractAppearance = (
+      mat: THREE.MeshStandardMaterial,
+      id: SegmentId,
+      obj: THREE.Mesh,
+    ) => {
+      if (id === "accessory" || id === "accessoryR") {
+        mat.opacity = 0.55;
+        mat.transparent = true;
+        return;
+      }
+      if (id === "flutter") {
+        mat.opacity = 0.45;
+        mat.transparent = true;
+        return;
+      }
+      if (id === "avnrtSlow" || id === "avnrtFast") {
+        // Handled in the AVNRT branch below
+        return;
+      }
+      const col = SEGMENT_COLORS[id] ?? 0xffffff;
+      mat.color.setHex(col);
+      mat.emissive.setHex(col);
+      mat.emissiveIntensity = Number(obj.userData.baseEmissive ?? 0.12);
+      mat.opacity = 0.95;
+      mat.transparent = true;
+    };
 
     pathways.traverse((obj) => {
       if (!(obj instanceof THREE.Mesh)) return;
@@ -1879,9 +1989,27 @@ export function createConductionSystem(): ConductionSystem {
       const id = obj.userData.segmentId as SegmentId | undefined;
       if (!id) return;
 
-      const base = Number(obj.userData.baseEmissive ?? 0.12);
       const ci =
         typeof obj.userData.curveIndex === "number" ? obj.userData.curveIndex : undefined;
+
+      // Lesioned fascicles/bundles — quenched until myocardium engages them mildly
+      if (lesions.has(id) || obj.userData.lesioned) {
+        applyPassiveBlock(mat, id, ventPhase ? passiveFor(id, ci) : 0);
+        return;
+      }
+
+      // Distal Purkinje of a blocked fascicle stays dark even though segment id ≠ fascicle
+      if (
+        id === "purkinjeL" &&
+        ci != null &&
+        ((lesions.has("lbba") && !lesions.has("lbbp") && PURKINJE_L_LAF_CURVES.has(ci)) ||
+          (lesions.has("lbbp") && !lesions.has("lbba") && PURKINJE_L_LPF_CURVES.has(ci)))
+      ) {
+        applyPassiveBlock(mat, id, ventPhase ? passiveFor(id, ci) : 0);
+        return;
+      }
+
+      const base = Number(obj.userData.baseEmissive ?? 0.12);
       let glow = refractoryGlow(opts.tCycle, branches, id, ci);
 
       // AFib: SA node is not the pacemaker — keep it visually quenched
@@ -1889,30 +2017,41 @@ export function createConductionSystem(): ConductionSystem {
         if (opts.finding === "afib") {
           mat.emissiveIntensity = 0.03;
           mat.opacity = 0.32;
+          mat.transparent = true;
           return;
         }
-        mat.opacity = 0.95;
+      }
+
+      // Intact tracts: always restore solid appearance (clears leftover passive-block opacity)
+      if (id !== "avnrtSlow" && id !== "avnrtFast") {
+        restoreTractAppearance(mat, id, obj);
       }
 
       // Schedule alone must not light ventricles during atrial / idle marks
       if (isVentricularSeg(id) && !ventPhase && !ekgActive.has(id)) glow = 0;
 
+      // EKG active only lights curves that are actually on the pathway schedule
+      const curveOnSchedule = branches.some(
+        (b) => b.id === id && (b.curveIndex == null || ci == null || b.curveIndex === ci),
+      );
+      const ekgLights = ekgActive.has(id) && curveOnSchedule;
+
       let intensity = base;
-      if (glow >= 0.95 || ekgActive.has(id)) {
+      if (glow >= 0.95 || ekgLights) {
         intensity = peak;
       } else if (glow > 0) {
         intensity = base + (0.48 - base) * (glow / 0.55);
       }
 
       if (id === "accessory" || id === "accessoryR") {
-        mat.opacity = glow > 0 || ekgActive.has(id) ? 0.95 : 0.55;
+        mat.opacity = glow > 0 || ekgLights ? 0.95 : 0.55;
       }
       if (id === "flutter") {
-        mat.opacity = glow > 0 || ekgActive.has(id) ? 0.7 : 0.45;
+        mat.opacity = glow > 0 || ekgLights ? 0.7 : 0.45;
       }
       if ((id === "avnrtSlow" || id === "avnrtFast") && !obj.userData.isJunctionWedge) {
         // Conducting vs refractory (inhibited) vs resting — pulse the limb itself
-        if (glow >= 0.95 || ekgActive.has(id)) {
+        if (glow >= 0.95 || ekgLights) {
           mat.color.setHex(0xe8eef4);
           mat.emissive.setHex(0xc8d4e0);
           mat.opacity = 0.95;
@@ -1973,9 +2112,11 @@ export function createConductionSystem(): ConductionSystem {
     finding?: string;
     mark?: string;
     branches?: import("./pathwayTiming").BranchWindow[];
+    lesionIds?: SegmentId[];
   }): import("./pathwayTiming").ActiveFront[] {
     const t = ((opts.tCycle % 1) + 1) % 1;
     const branches = opts.branches ?? branchesForFinding(opts.finding);
+    const lesions = new Set(opts.lesionIds ?? []);
     const mark = opts.mark ?? "TP";
     const ventPhase = mark === "QRS" || mark === "ST" || mark === "T";
     const isAfib = opts.finding === "afib";
@@ -1994,6 +2135,7 @@ export function createConductionSystem(): ConductionSystem {
     >();
 
     for (const b of branches) {
+      if (lesions.has(b.id)) continue;
       // Tip-hold only on terminal Purkinje so vectors can finish at the tips.
       // Intermediate tracts and reentry loops hand off at junctions (no linger).
       const tipHold =
@@ -2023,6 +2165,13 @@ export function createConductionSystem(): ConductionSystem {
               : [];
 
       for (const ci of curveIndices) {
+        if (
+          b.id === "purkinjeL" &&
+          ((lesions.has("lbba") && !lesions.has("lbbp") && PURKINJE_L_LAF_CURVES.has(ci)) ||
+            (lesions.has("lbbp") && !lesions.has("lbba") && PURKINJE_L_LPF_CURVES.has(ci)))
+        ) {
+          continue;
+        }
         const key = `${b.id}:${ci}`;
         const prev = best.get(key);
         // Prefer actively traveling over tip-hold; then later t0 (newer wavelet)
@@ -2066,8 +2215,11 @@ export function createConductionSystem(): ConductionSystem {
 
     const probes: PathwayProbePoint[] = [];
     const samplesPerCurve = 24;
+    const segCurveCount = new Map<SegmentId, number>();
 
     for (const entry of curveEntries) {
+      const ci = segCurveCount.get(entry.id) ?? 0;
+      segCurveCount.set(entry.id, ci + 1);
       const win = timing.get(entry.id) ?? { t0: 0.3, t1: 0.5 };
       for (let i = 0; i <= samplesPerCurve; i++) {
         const u = i / samplesPerCurve;
@@ -2081,6 +2233,7 @@ export function createConductionSystem(): ConductionSystem {
           pathU: u,
           enterT: win.t0,
           exitT: win.t1,
+          curveIndex: ci,
         });
       }
     }
@@ -2114,9 +2267,11 @@ export function createConductionSystem(): ConductionSystem {
     finding?: string;
     mark?: string;
     branches?: import("./pathwayTiming").BranchWindow[];
+    lesionIds?: SegmentId[];
   }) {
     const t = ((opts.tCycle % 1) + 1) % 1;
     const branches = opts.branches ?? branchesForFinding(opts.finding);
+    const lesions = new Set(opts.lesionIds ?? []);
     const activeSet = new Set(opts.active);
     const mark = opts.mark ?? "TP";
     const ventPhase = mark === "QRS" || mark === "ST" || mark === "T";
@@ -2130,6 +2285,7 @@ export function createConductionSystem(): ConductionSystem {
     const fronts: Front[] = [];
 
     for (const b of branches) {
+      if (lesions.has(b.id)) continue;
       if (t < b.t0 || t > b.t1) continue;
       if (!ventPhase && isVentricularSeg(b.id)) continue;
       const uRaw = (t - b.t0) / Math.max(1e-4, b.t1 - b.t0);
@@ -2150,23 +2306,27 @@ export function createConductionSystem(): ConductionSystem {
         continue;
       }
 
-      if (b.curveIndex != null) {
+      const pushFront = (ci: number) => {
+        if (
+          b.id === "purkinjeL" &&
+          ((lesions.has("lbba") && !lesions.has("lbbp") && PURKINJE_L_LAF_CURVES.has(ci)) ||
+            (lesions.has("lbbp") && !lesions.has("lbba") && PURKINJE_L_LPF_CURVES.has(ci)))
+        ) {
+          return;
+        }
         fronts.push({
           id: b.id,
-          curveIndex: b.curveIndex,
+          curveIndex: ci,
           u,
           color: SEGMENT_COLORS[b.id],
         });
+      };
+
+      if (b.curveIndex != null) {
+        pushFront(b.curveIndex);
       } else {
         // All parallel tracts of this segment (e.g. three internodal + Bachmann)
-        for (let ci = 0; ci < curves.length; ci++) {
-          fronts.push({
-            id: b.id,
-            curveIndex: ci,
-            u,
-            color: SEGMENT_COLORS[b.id],
-          });
-        }
+        for (let ci = 0; ci < curves.length; ci++) pushFront(ci);
       }
     }
 

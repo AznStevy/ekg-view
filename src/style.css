@@ -1098,6 +1098,49 @@ body.cv-active .cv-label {
   color: var(--text);
 }
 
+.upload-busy {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-top: 0.55rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid rgba(61, 184, 200, 0.35);
+  background: rgba(61, 184, 200, 0.08);
+}
+
+.upload-busy[hidden] {
+  display: none;
+}
+
+.upload-busy-spinner {
+  width: 1.05rem;
+  height: 1.05rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 2px solid rgba(61, 184, 200, 0.25);
+  border-top-color: var(--accent, #3db8c8);
+  animation: upload-spin 0.7s linear infinite;
+}
+
+.upload-busy-text {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--text);
+  line-height: 1.35;
+}
+
+@keyframes upload-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.upload-drop.is-busy {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
 .upload-preview {
   margin-top: 0.55rem;
 }
@@ -1189,13 +1232,64 @@ body.cv-active .cv-label {
   z-index: 1;
   max-width: min(1280px, 96vw);
   max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.55rem;
   pointer-events: none;
 }
 
-.upload-lightbox-panel img {
+.upload-lightbox-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  align-self: stretch;
+  pointer-events: auto;
+  z-index: 2;
+}
+
+.upload-lightbox-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.55rem 0.85rem;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.45rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid rgba(160, 200, 210, 0.35);
+  background: rgba(12, 18, 24, 0.92);
+  pointer-events: auto;
+}
+
+.upload-lightbox-toolbar[hidden] {
+  display: none;
+}
+
+.upload-lightbox-hint {
+  margin: 0;
+  flex: 1 1 12rem;
+  font-size: 0.78rem;
+  color: #c8d4dc;
+  line-height: 1.35;
+}
+
+.upload-split-stage {
+  position: relative;
+  display: inline-block;
+  max-width: 96vw;
+  max-height: calc(90vh - 3.2rem);
+  margin: 0 auto;
+  pointer-events: auto;
+}
+
+.upload-lightbox-panel img,
+.upload-split-stage img {
   display: block;
   max-width: 96vw;
-  max-height: 90vh;
+  max-height: calc(90vh - 3.2rem);
   width: auto;
   height: auto;
   object-fit: contain;
@@ -1204,12 +1298,64 @@ body.cv-active .cv-label {
   background: #0a0e12;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.65);
   pointer-events: auto;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
-.upload-lightbox-x {
+.upload-split-overlay {
   position: absolute;
-  top: 0.4rem;
-  right: 0.4rem;
+  inset: 0;
+  z-index: 1;
+}
+
+.upload-split-overlay[hidden] {
+  display: none;
+}
+
+.upload-split-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid #3db8c8;
+  background: rgba(61, 184, 200, 0.06);
+  cursor: move;
+  touch-action: none;
+}
+
+.upload-split-box-label {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  padding: 0.1rem 0.35rem;
+  font-size: 0.65rem;
+  font-weight: 600;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  border-radius: 3px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.upload-split-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background: #e8eef2;
+  border: 1px solid rgba(0, 0, 0, 0.55);
+  border-radius: 2px;
+  z-index: 2;
+}
+
+.upload-split-handle-nw { top: -5px; left: -5px; cursor: nwse-resize; }
+.upload-split-handle-ne { top: -5px; right: -5px; cursor: nesw-resize; }
+.upload-split-handle-sw { bottom: -5px; left: -5px; cursor: nesw-resize; }
+.upload-split-handle-se { bottom: -5px; right: -5px; cursor: nwse-resize; }
+.upload-split-handle-n { top: -5px; left: 50%; margin-left: -5px; cursor: ns-resize; }
+.upload-split-handle-s { bottom: -5px; left: 50%; margin-left: -5px; cursor: ns-resize; }
+.upload-split-handle-w { left: -5px; top: 50%; margin-top: -5px; cursor: ew-resize; }
+.upload-split-handle-e { right: -5px; top: 50%; margin-top: -5px; cursor: ew-resize; }
+
+.upload-lightbox-x {
+  position: relative;
+  flex: 0 0 auto;
   width: 2.1rem;
   height: 2.1rem;
   border-radius: 999px;
@@ -1220,7 +1366,6 @@ body.cv-active .cv-label {
   line-height: 1;
   cursor: pointer;
   pointer-events: auto;
-  z-index: 2;
 }
 
 body.upload-lightbox-open {
@@ -1239,7 +1384,7 @@ body.upload-lightbox-open {
   margin: 0.2rem 0 0.45rem;
   font-family: var(--mono);
   font-size: 0.68rem;
-  color: var(--accent, #3db8c8);
+  color: var(--muted);
   line-height: 1.35;
 }
 

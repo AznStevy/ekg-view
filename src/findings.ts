@@ -75,6 +75,9 @@ export type FindingId =
   | "pacedAtrial"
   | "pacedVentricular"
   | "pacedDual"
+  | "pacedRvSeptal"
+  | "pacedRvot"
+  | "pacedHis"
   | "pacedLbap"
   | "pacedBiv"
   | "failureToPace"
@@ -141,10 +144,10 @@ export const FINDINGS: Finding[] = [
     id: "afib",
     name: "Atrial fibrillation",
     short: "AFib",
-    detail: "No P waves · SA quiescent · fibrillatory atria · irregularly irregular QRS",
+    detail: "No P waves · SA quiescent · LSPV trigger · fibrillatory atria · irregularly irregular QRS",
     category: "rhythm",
-    tags: ["atrial", "irregular"],
-    aliases: ["af", "atrial fib", "fibrillation"],
+    tags: ["atrial", "irregular", "pv", "pulmonary veins"],
+    aliases: ["af", "atrial fib", "fibrillation", "pulmonary vein"],
     cycleSec: 3.33,
     ventRateBpm: 90,
     rateLabel: "Irregular",
@@ -335,7 +338,7 @@ export const FINDINGS: Finding[] = [
     id: "lafb",
     name: "Left anterior fascicular block",
     short: "LAFB",
-    detail: "Block in LAF · left axis · qR in I/aVL · rS in II/III/aVF",
+    detail: "LAD −45°…−90° · qR I/aVL · rS II/III/aVF · R-peak aVL >45 ms",
     category: "bbb",
     tags: ["fascicle", "hemiblock", "laf", "axis"],
     aliases: ["left anterior hemiblock", "lahb", "lafb"],
@@ -347,7 +350,7 @@ export const FINDINGS: Finding[] = [
     id: "lpfb",
     name: "Left posterior fascicular block",
     short: "LPFB",
-    detail: "Block in LPF · right axis · rS in I/aVL · qR inferior (rare alone)",
+    detail: "RAD >+90° · rS I/aVL · qR II/III/aVF · R-peak aVF >45 ms (rare alone)",
     category: "bbb",
     tags: ["fascicle", "hemiblock", "lpf", "axis"],
     aliases: ["left posterior hemiblock", "lphb", "lpfb"],
@@ -645,13 +648,49 @@ export const FINDINGS: Finding[] = [
     rateLabel: "60 bpm",
   },
   {
+    id: "pacedRvSeptal",
+    name: "DDD · RV septal",
+    short: "RVs",
+    detail: "RA + mid-RV septal lead · myocardial capture · moderately wide QRS",
+    category: "paced",
+    tags: ["pacemaker", "dual", "rv", "septal", "spike"],
+    aliases: ["rv septal pacing", "septal pace"],
+    cycleSec: 0.95,
+    ventRateBpm: 60,
+    rateLabel: "60 bpm",
+  },
+  {
+    id: "pacedRvot",
+    name: "DDD · RVOT",
+    short: "RVOT",
+    detail: "RA + RV outflow lead · myocardial capture · inferior-axis paced QRS",
+    category: "paced",
+    tags: ["pacemaker", "dual", "rvot", "outflow", "spike"],
+    aliases: ["rvot pacing", "outflow pace"],
+    cycleSec: 0.95,
+    ventRateBpm: 60,
+    rateLabel: "60 bpm",
+  },
+  {
+    id: "pacedHis",
+    name: "DDD · His-bundle",
+    short: "His",
+    detail: "RA + His lead · conduction-system capture · near-physiologic QRS",
+    category: "paced",
+    tags: ["pacemaker", "dual", "his", "csp", "conduction system"],
+    aliases: ["his bundle pacing", "hbp", "selective his"],
+    cycleSec: 0.95,
+    ventRateBpm: 60,
+    rateLabel: "60 bpm",
+  },
+  {
     id: "pacedLbap",
     name: "DDD · LBAP",
     short: "LBAP",
     detail: "RA + left bundle area pacing · narrower / physiologic QRS",
     category: "paced",
     tags: ["pacemaker", "dual", "lbap", "csp", "conduction system"],
-    aliases: ["left bundle area", "lbbap", "csp", "his bundle pacing"],
+    aliases: ["left bundle area", "lbbap", "csp"],
     cycleSec: 0.95,
     ventRateBpm: 60,
     rateLabel: "60 bpm",

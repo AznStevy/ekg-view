@@ -87,13 +87,13 @@ export function describeBundleBlocks(blocks: Iterable<BundleBlockId>): {
       return {
         name: "Left anterior fascicular block",
         short: "LAFB",
-        detail: `Block in ${parts} · inferior→superior force · left axis · qR I/aVL · rS II/III/aVF`,
+        detail: `Block in ${parts} · LAD −45°…−90° · qR I/aVL · rS II/III/aVF · R-peak aVL >45 ms`,
       };
     case "lpfb":
       return {
         name: "Left posterior fascicular block",
         short: "LPFB",
-        detail: `Block in ${parts} · superior→inferior force · right axis · rS I/aVL · qR inferior`,
+        detail: `Block in ${parts} · RAD >+90° · rS I/aVL · qR II/III/aVF · R-peak aVF >45 ms`,
       };
     case "rbbbLafb":
       return {
@@ -116,8 +116,62 @@ export function describeBundleBlocks(blocks: Iterable<BundleBlockId>): {
   }
 }
 
+/** User-selected tracts shown as lesion markers on the model */
 export function lesionSegmentsForBlocks(blocks: Iterable<BundleBlockId>): SegmentId[] {
   return [...new Set(blocks)] as SegmentId[];
+}
+
+/**
+ * Tracts that must not seed the activation map or carry the impulse ball.
+ * Expands main LBB → both fascicles, and complete chamber block → distal Purkinje.
+ */
+export function gatingLesionSegments(blocks: Iterable<BundleBlockId>): SegmentId[] {
+  const e = effectiveBlocks(blocks);
+  const out: SegmentId[] = [...e];
+  if (e.has("rbb")) out.push("purkinjeR");
+  if (e.has("lbb") || (e.has("lbba") && e.has("lbbp"))) out.push("purkinjeL");
+  return [...new Set(out)];
+}
+
+/** Complete left HPS block (LBBB / both fascicles) — RV seeds only, LV via myocardium. */
+export function isCompleteLeftBlock(blocks: Iterable<BundleBlockId>): boolean {
+  const e = effectiveBlocks(blocks);
+  return e.has("lbb") || (e.has("lbba") && e.has("lbbp"));
+}
+
+/** Complete right HPS block (RBBB) — LV seeds only, RV via myocardium. */
+export function isCompleteRightBlock(blocks: Iterable<BundleBlockId>): boolean {
+  return effectiveBlocks(blocks).has("rbb");
+}
+
+/** Smooth 0→1 engage window for passive (myocardial) capture of a blocked tract. */
+export function passiveBlockEngage(
+  tCycle: number,
+  blocks: Iterable<BundleBlockId>,
+): { left: number; right: number; laf: number; lpf: number } {
+  const t = ((tCycle % 1) + 1) % 1;
+  const e = effectiveBlocks(blocks);
+  const leftComplete = e.has("lbb") || (e.has("lbba") && e.has("lbbp"));
+  const rightComplete = e.has("rbb");
+  const lafOnly = e.has("lbba") && !e.has("lbbp") && !e.has("lbb");
+  const lpfOnly = e.has("lbbp") && !e.has("lbba") && !e.has("lbb");
+
+  const ramp = (t0: number, t1: number) => {
+    if (t < t0) return 0;
+    if (t > t1) return 1;
+    return (t - t0) / Math.max(1e-4, t1 - t0);
+  };
+  // Fade after ST so tubes return translucent before the next beat
+  const hold = (engage: number) => engage * (1 - ramp(0.68, 0.82));
+
+  return {
+    // LBBB: right finishes ~0.40, myocardium crosses septum mid–late QRS
+    left: leftComplete ? hold(ramp(0.4, 0.56)) : 0,
+    // RBBB: left finishes ~0.40, RV fills later
+    right: rightComplete ? hold(ramp(0.4, 0.56)) : 0,
+    laf: lafOnly || (rightComplete && e.has("lbba") && !leftComplete) ? hold(ramp(0.38, 0.52)) : leftComplete ? hold(ramp(0.4, 0.56)) : 0,
+    lpf: lpfOnly || (rightComplete && e.has("lbbp") && !leftComplete) ? hold(ramp(0.38, 0.52)) : leftComplete ? hold(ramp(0.4, 0.56)) : 0,
+  };
 }
 
 export function blocksForFinding(finding: string | undefined): BundleBlockId[] {

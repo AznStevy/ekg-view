@@ -66,6 +66,7 @@ export type EkgTrace = {
   canvas: HTMLCanvasElement;
   setFinding: (id: FindingId) => void;
   setCycleSec: (sec: number) => void;
+  getCycleSec: () => number;
   setUpload: (upload: UploadedEkg | null) => void;
   setCustomSample: (fn: ((t: number) => WaveSample) | null, opts?: CustomSampleOpts) => void;
   /** Wire scrubbing; return false to ignore */
@@ -196,6 +197,10 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
 
   function setCycleSec(sec: number) {
     cycleSec = Math.max(0.25, sec);
+  }
+
+  function getCycleSec() {
+    return cycleSec;
   }
 
   function setUpload(next: UploadedEkg | null) {
@@ -1006,6 +1011,7 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
     canvas,
     setFinding,
     setCycleSec,
+    getCycleSec,
     setUpload,
     setCustomSample,
     onScrub,
