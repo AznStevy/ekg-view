@@ -1119,8 +1119,18 @@ function pathwayVectorVisible(f: ActiveFront): boolean {
     // lesions already computed above for liveSegments gating
     // LAT map + myocardial Dijkstra handle delay into blocked territory — no additive lag
     const isRepol = opts.mark === "T" || opts.mark === "ST";
-    /** Field arrows: transparent grey epi→endo on the T wave — keep depol through QRS+ST. */
-    const fieldRepol = opts.mark === "T";
+    /** Field arrows: grey epi→endo on T — but only after HPS finishes (AVNRT P-on-T overlaps QRS). */
+    const ventHpsLive = fieldFronts.some(
+      (f) =>
+        f.id === "his" ||
+        f.id === "rbb" ||
+        f.id === "lbb" ||
+        f.id === "lbba" ||
+        f.id === "lbbp" ||
+        f.id === "purkinjeR" ||
+        f.id === "purkinjeL",
+    );
+    const fieldRepol = opts.mark === "T" && !ventHpsLive;
     const mag = ekgMagnitude(opts.leads);
 
     const foci = normalizeFoci(opts.ectopyFocus);

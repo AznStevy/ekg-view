@@ -1899,9 +1899,21 @@ function sampleAvnrtTypical(t: number): WaveSample {
     leads,
     phaseFor(tt, [
       { start: 0.0, end: 0.12, phase: "Typical AVNRT · slow pathway anterograde", active: ["avnrtSlow", "av"], mark: "PR" },
-      { start: 0.12, end: 0.28, phase: "His–Purkinje · narrow QRS", active: ["his", "rbb", "lbb", "lbba", "lbbp", "purkinjeR", "purkinjeL", "myocardiumV"], mark: "QRS" },
-      { start: 0.28, end: 0.45, phase: "Retrograde fast pathway · P-on-T", active: ["avnrtFast", "av", "internodal", "myocardiumA", "myocardiumV"], mark: "T" },
-      { start: 0.45, end: 0.85, phase: "T wave · next cycle imminent", active: ["myocardiumV"], mark: "T" },
+      {
+        start: 0.12,
+        end: 0.34,
+        phase: "His–Purkinje · narrow QRS",
+        active: ["his", "rbb", "lbb", "lbba", "lbbp", "purkinjeR", "purkinjeL", "myocardiumV"],
+        mark: "QRS",
+      },
+      {
+        start: 0.34,
+        end: 0.48,
+        phase: "Retrograde fast pathway · P-on-T",
+        active: ["avnrtFast", "av", "internodal", "myocardiumA", "myocardiumV"],
+        mark: "ST",
+      },
+      { start: 0.48, end: 0.85, phase: "T wave · next cycle imminent", active: ["myocardiumV"], mark: "T" },
     ]),
   );
 }
@@ -1925,8 +1937,14 @@ function sampleAvnrtAtypical(t: number): WaveSample {
     leads,
     phaseFor(tt, [
       { start: 0.0, end: 0.1, phase: "Atypical AVNRT · fast pathway anterograde", active: ["avnrtFast", "av"], mark: "PR" },
-      { start: 0.1, end: 0.26, phase: "His–Purkinje · narrow QRS", active: ["his", "rbb", "lbb", "lbba", "lbbp", "purkinjeR", "purkinjeL", "myocardiumV"], mark: "QRS" },
-      { start: 0.26, end: 0.42, phase: "T wave", active: ["myocardiumV"], mark: "T" },
+      {
+        start: 0.1,
+        end: 0.32,
+        phase: "His–Purkinje · narrow QRS",
+        active: ["his", "rbb", "lbb", "lbba", "lbbp", "purkinjeR", "purkinjeL", "myocardiumV"],
+        mark: "QRS",
+      },
+      { start: 0.32, end: 0.42, phase: "T wave", active: ["myocardiumV"], mark: "T" },
       { start: 0.42, end: 0.62, phase: "Retrograde slow pathway · long-RP P", active: ["avnrtSlow", "av", "internodal", "myocardiumA"], mark: "P" },
       { start: 0.62, end: 0.9, phase: "Diastolic pause · next anterograde fast", active: [], mark: "TP" },
     ]),
