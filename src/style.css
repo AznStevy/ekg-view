@@ -900,6 +900,15 @@ body.cv-active .cv-label {
   border-color: rgba(74, 158, 176, 0.4);
 }
 
+.paced-fail-head,
+.paced-base-wrap .finding-expand-head {
+  margin-top: 0.75rem;
+}
+
+.paced-base-wrap[hidden] {
+  display: none !important;
+}
+
 .bbb-lesion-grid,
 .chb-escape-grid {
   display: grid;

@@ -381,9 +381,11 @@ export function buildActivationMap(opts: BuildActivationMapOpts): ActivationMapR
       for (let i = 0; i < n; i++) {
         const s = opts.samples[i]!;
         if (s.tissue === "insulator") continue;
+        // Never let atrial pace/PAC seeds paint ventricle (or vice versa) — even on
+        // the relaxed pass. Pass 1 only drops chamber/fascicle snap preferences.
+        if (wantVent && s.tissue !== "ventricular") continue;
+        if (wantAtrial && s.tissue !== "atrial") continue;
         if (pass === 0) {
-          if (wantVent && s.tissue !== "ventricular") continue;
-          if (wantAtrial && s.tissue !== "atrial") continue;
           if (seed.segmentId === "his" && !inSeptum(s.pos)) continue;
           // Prefer chamber-matched snap for initial seeds (propagation may still cross in BBB)
           if (seed.segmentId === "purkinjeL" || seed.segmentId === "lbb" || seed.segmentId === "lbba" || seed.segmentId === "lbbp") {

@@ -159,13 +159,14 @@ const LEADS: Record<DeviceLeadId, LeadSpec> = {
       [0.2, -0.42, 0.0],
     ],
   },
-  // CS LV — hot pink, not AV orange (#ff7a4a)
+  // CS LV — tip on LV lateral endocardium (field capture); route via CS
   lvCs: {
     label: "LV",
-    name: "LV lead · CS posterolateral",
-    detail: "CRT LV pace · coronary sinus to posterolateral LV",
+    name: "LV lead · CS → LV endocardium",
+    detail: "CRT LV pace · coronary sinus to posterolateral LV endocardium",
     color: 0xff006e,
-    tip: [0.58, -0.48, -0.22],
+    // More cavity-ward than epi free-wall so capture sits on endocardium
+    tip: [0.34, -0.52, -0.16],
     path: [
       SVC_SUP,
       [-0.45, 0.82, 0.14],
@@ -176,9 +177,9 @@ const LEADS: Record<DeviceLeadId, LeadSpec> = {
       // Enter CS ostium from RA side (AV / Thorel sit more septal at ~[0, 0.02, -0.12])
       [-0.1, 0.02, -0.14],
       CS_OST,
-      [0.12, -0.12, -0.22],
-      [0.36, -0.3, -0.26],
-      [0.58, -0.48, -0.22],
+      [0.12, -0.14, -0.2],
+      [0.24, -0.32, -0.18],
+      [0.34, -0.52, -0.16],
     ],
   },
 };
@@ -327,8 +328,31 @@ export function createDeviceLeads(): DeviceLeadsView {
   };
 }
 
-/** Map paced findings → which device leads to show */
-export function deviceModeForFinding(finding: string): DeviceLeadMode {
+/** Modes that place device leads (excludes malfunctions). */
+export const PACED_BASE_MODES: {
+  mode: Exclude<DeviceLeadMode, "none">;
+  short: string;
+  name: string;
+}[] = [
+  { mode: "aai", short: "AAI", name: "RA lead" },
+  { mode: "vvi", short: "VVI", name: "RV apical lead" },
+  { mode: "ddd", short: "DDD", name: "RA + RV leads" },
+  { mode: "rvSeptal", short: "RVs", name: "RA + RV septal" },
+  { mode: "rvOt", short: "RVOT", name: "RA + RVOT" },
+  { mode: "his", short: "His", name: "RA + His" },
+  { mode: "lbap", short: "LBAP", name: "RA + LBAP" },
+  { mode: "biv", short: "BiV", name: "RA + RV + LV" },
+];
+
+export function isPacingFailureFinding(finding: string): boolean {
+  return finding === "failureToPace" || finding === "failureToCapture" || finding === "failureToSense";
+}
+
+/** Map paced findings → which device leads to show. Failures use `failureBaseMode`. */
+export function deviceModeForFinding(
+  finding: string,
+  failureBaseMode: DeviceLeadMode = "ddd",
+): DeviceLeadMode {
   switch (finding) {
     case "pacedVentricular":
       return "vvi";
@@ -346,6 +370,10 @@ export function deviceModeForFinding(finding: string): DeviceLeadMode {
       return "biv";
     case "pacedAtrial":
       return "aai";
+    case "failureToPace":
+    case "failureToCapture":
+    case "failureToSense":
+      return failureBaseMode !== "none" ? failureBaseMode : "ddd";
     default:
       return "none";
   }

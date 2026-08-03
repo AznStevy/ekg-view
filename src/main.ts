@@ -47,7 +47,7 @@ import {
   type StimSite,
   type StimState,
 } from "./stimPace";
-import { createDeviceLeads, deviceModeForFinding } from "./deviceLeads";
+import { createDeviceLeads, deviceModeForFinding, PACED_BASE_MODES, isPacingFailureFinding, type DeviceLeadMode } from "./deviceLeads";
 import { blockSiteForFinding, branchesFromBundleBlocks, branchesForPvcSite } from "./pathwayTiming";
 import {
   BUNDLE_BLOCK_OPTIONS,
@@ -184,7 +184,7 @@ const PACED_FINDING_IDS = new Set<FindingId>([
   "failureToSense",
 ]);
 
-const PACED_OPTIONS: { id: FindingId; short: string; name: string }[] = [
+const PACED_MODE_OPTIONS: { id: FindingId; short: string; name: string }[] = [
   {
     id: "pacedAtrial",
     short: "AAI",
@@ -225,6 +225,9 @@ const PACED_OPTIONS: { id: FindingId; short: string; name: string }[] = [
     short: "BiV",
     name: "CRT · RA + RV + LV capture",
   },
+];
+
+const PACED_FAIL_OPTIONS: { id: FindingId; short: string; name: string }[] = [
   {
     id: "failureToPace",
     short: "No pace",
@@ -437,6 +440,8 @@ type AppState = {
   /** PVC teaching strip: coupling pattern + RNG seed for random */
   pvcPattern: PvcPatternId;
   pvcSeed: number;
+  /** Underlying device mode when showing pace malfunctions (drives which leads appear) */
+  pacedBaseMode: Exclude<DeviceLeadMode, "none">;
 };
 
 function buildUI(root: HTMLElement): {
@@ -647,12 +652,32 @@ function buildUI(root: HTMLElement): {
                     <button type="button" id="btn-paced-clear" class="finding-expand-clear">Clear</button>
                   </div>
                   <div class="chb-escape-grid" id="paced-type-grid">
-                    ${PACED_OPTIONS.map(
+                    ${PACED_MODE_OPTIONS.map(
                       (o) => `<button type="button" class="chb-escape-chip" data-paced-finding="${o.id}">
                         <span class="chb-escape-short">${o.short}</span>
                         <span class="chb-escape-name">${o.name}</span>
                       </button>`,
                     ).join("")}
+                  </div>
+                  <div class="finding-expand-head paced-fail-head"><span>Malfunction</span></div>
+                  <div class="chb-escape-grid" id="paced-fail-grid">
+                    ${PACED_FAIL_OPTIONS.map(
+                      (o) => `<button type="button" class="chb-escape-chip" data-paced-finding="${o.id}">
+                        <span class="chb-escape-short">${o.short}</span>
+                        <span class="chb-escape-name">${o.name}</span>
+                      </button>`,
+                    ).join("")}
+                  </div>
+                  <div class="paced-base-wrap" id="paced-base-wrap" hidden>
+                    <div class="finding-expand-head"><span>Device mode (leads shown)</span></div>
+                    <div class="chb-escape-grid" id="paced-base-grid">
+                      ${PACED_BASE_MODES.map(
+                        (o) => `<button type="button" class="chb-escape-chip" data-paced-base="${o.mode}">
+                          <span class="chb-escape-short">${o.short}</span>
+                          <span class="chb-escape-name">${o.name}</span>
+                        </button>`,
+                      ).join("")}
+                    </div>
                   </div>
                   <div class="finding-expand-result" id="paced-result">Select pacing mode or malfunction</div>
                 </div>
@@ -1226,6 +1251,9 @@ function buildUI(root: HTMLElement): {
     "paced-options",
     "paced-result",
     "paced-type-grid",
+    "paced-fail-grid",
+    "paced-base-wrap",
+    "paced-base-grid",
     "btn-paced-clear",
     "btn-stemi",
     "stemi-options",
@@ -1313,6 +1341,7 @@ function main() {
     ectopySite: null,
     pvcPattern: defaultPvcPattern() as PvcPatternId,
     pvcSeed: 1,
+    pacedBaseMode: "ddd",
   };
 
   let pvcSchedule: PvcSchedule = buildPvcSchedule(state.pvcPattern, state.pvcSeed);
@@ -1713,6 +1742,10 @@ function main() {
     }
   }
 
+  function pacedModeLabel(mode: DeviceLeadMode): string {
+    return PACED_BASE_MODES.find((m) => m.mode === mode)?.short ?? mode.toUpperCase();
+  }
+
   function syncPacedOptions() {
     const pacedActive =
       !(state.cvRecovery && !state.cvRecovery.settled) && PACED_FINDING_IDS.has(state.finding);
@@ -1723,9 +1756,23 @@ function main() {
     els["paced-type-grid"].querySelectorAll<HTMLButtonElement>("button[data-paced-finding]").forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.pacedFinding === state.finding);
     });
+    els["paced-fail-grid"].querySelectorAll<HTMLButtonElement>("button[data-paced-finding]").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.pacedFinding === state.finding);
+    });
+    const fail = isPacingFailureFinding(state.finding);
+    els["paced-base-wrap"].hidden = !fail;
+    els["paced-base-grid"].querySelectorAll<HTMLButtonElement>("button[data-paced-base]").forEach((btn) => {
+      btn.classList.toggle("active", fail && btn.dataset.pacedBase === state.pacedBaseMode);
+    });
     if (pacedActive) {
       const f = getFinding(state.finding);
-      els["paced-result"].textContent = `${f.short} · ${f.detail}`;
+      if (fail) {
+        const leads = deviceModeForFinding(state.finding, state.pacedBaseMode);
+        const leadNames = PACED_BASE_MODES.find((m) => m.mode === leads)?.name ?? leads;
+        els["paced-result"].textContent = `${f.short} · ${pacedModeLabel(state.pacedBaseMode)} (${leadNames}) · ${f.detail}`;
+      } else {
+        els["paced-result"].textContent = `${f.short} · ${f.detail}`;
+      }
     } else {
       els["paced-result"].textContent = "Select pacing mode or malfunction";
     }
@@ -2003,7 +2050,7 @@ function main() {
     deviceLeads.setMode(
       stimSite || state.upload || usingCustomBlocks || cvBusy
         ? "none"
-        : deviceModeForFinding(state.finding),
+        : deviceModeForFinding(state.finding, state.pacedBaseMode),
     );
     syncBranchBlockCheckboxes();
     syncChbOptions();
@@ -2474,7 +2521,28 @@ function main() {
     const pacedOpt = (e.target as HTMLElement).closest("button[data-paced-finding]");
     if (pacedOpt) {
       const id = (pacedOpt as HTMLElement).dataset.pacedFinding as FindingId;
+      if (!isPacingFailureFinding(id)) {
+        const mode = deviceModeForFinding(id);
+        if (mode !== "none") state.pacedBaseMode = mode;
+      }
       setFinding(id);
+      return;
+    }
+    const pacedBase = (e.target as HTMLElement).closest("button[data-paced-base]");
+    if (pacedBase) {
+      const mode = (pacedBase as HTMLElement).dataset.pacedBase as Exclude<DeviceLeadMode, "none">;
+      if (mode) {
+        state.pacedBaseMode = mode;
+        if (!isPacingFailureFinding(state.finding)) {
+          // Jump to matching capture rhythm if user picks a mode while on a mode chip
+          const match = PACED_MODE_OPTIONS.find((o) => deviceModeForFinding(o.id) === mode);
+          if (match) setFinding(match.id);
+          else syncPacedOptions();
+        } else {
+          deviceLeads.setMode(deviceModeForFinding(state.finding, state.pacedBaseMode));
+          syncPacedOptions();
+        }
+      }
       return;
     }
     const stemiBtn = (e.target as HTMLElement).closest("#btn-stemi");
@@ -2767,6 +2835,7 @@ function main() {
     filterFindingChips("vf-amp-grid", "data-vf-finding");
     filterFindingChips("vt-type-grid", "data-vt-finding");
     filterFindingChips("paced-type-grid", "data-paced-finding");
+    filterFindingChips("paced-fail-grid", "data-paced-finding");
     filterFindingChips("stemi-type-grid", "data-stemi-finding");
     filterFindingChips("avnrt-type-grid", "data-avnrt-finding");
     filterFindingChips("avrt-type-grid", "data-avrt-finding");

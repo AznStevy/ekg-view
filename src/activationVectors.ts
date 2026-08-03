@@ -175,13 +175,14 @@ function fieldAge(t: number, eventT: number, longCycle: boolean): number {
   return age;
 }
 
-/** True for atrial myocardium / internodal / flutter / PV-focus colors. */
+/** True for atrial myocardium / internodal / flutter / PV-focus / RA-pace colors. */
 function isAtrialFieldColor(hex: number): boolean {
   return (
     hex === 0xf0c040 ||
     hex === 0xe8a838 ||
     hex === 0xe040fb ||
     hex === 0xd08090 ||
+    hex === 0xff8a1a || // RA appendage pace lead
     hex === 0x8a9aa8 ||
     hex === SEGMENT_FIELD_COLOR.sa ||
     hex === SEGMENT_FIELD_COLOR.internodal ||
@@ -1034,6 +1035,7 @@ function pathwayVectorVisible(f: ActiveFront): boolean {
       opts.finding === "avrtOrthoRight" ||
       opts.finding === "avrtAntiLeft" ||
       opts.finding === "avrtAntiRight";
+    const isPaced = opts.finding.startsWith("paced");
     const longCycle = (opts.cycleSec ?? 1) > 1.6;
     // AFib f-waves / CTI flutter never idle — keep atrial group eligible under every EKG mark
     if (isAfib || isFlutter) {
@@ -1688,6 +1690,15 @@ function pathwayVectorVisible(f: ActiveFront): boolean {
           // His field along the penetration / septal His
           s.nearestId === "his";
         if ((isAfib || isFlutter) && s.tissue === "atrial") chamberOk = true;
+        // Dual-chamber / atrial pace: finish atrial capture field into early QRS
+        if (
+          isPaced &&
+          s.tissue === "atrial" &&
+          fromMyoFocus &&
+          focusTissue === "atrial"
+        ) {
+          chamberOk = true;
+        }
         // AVRT: show field crossing the fibrous plane along the Kent insertion
         if (accessoryLive && nearKentAvCross(s.pos, s.nearestId)) chamberOk = true;
       } else if (opts.mark === "TP") {
@@ -2081,8 +2092,8 @@ function pathwayVectorVisible(f: ActiveFront): boolean {
           : pvcDrive / (pathDrive + pvcDrive + 1e-6);
       s.pvcBlend = s.pvcBlend * 0.88 + blendTarget * 0.12;
       if (!chamberOk) s.pvcBlend *= 0.94;
-      // AVRT never uses PVC orange blend
-      if (isAvrt) s.pvcBlend = 0;
+      // AVRT / paced: never PVC-orange blend (paced uses lead color via focus contrib)
+      if (isAvrt || isPaced) s.pvcBlend = 0;
 
       const intensity = s.glow;
       const show = intensity > 0.04;

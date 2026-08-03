@@ -525,9 +525,9 @@ function buildBranchesForFinding(finding: FindingId | string | undefined): Branc
     ];
   }
   if (finding === "pacedDual") {
-    // A spike 0.08 · V spike 0.28 — RA wall field then RV apical wall → tracts
+    // A spike 0.08 · V spike 0.28 — RA wall field fills atria through AV delay
     return [
-      { id: "internodal", t0: 0.08, t1: 0.2, group: "atrial" },
+      { id: "internodal", t0: 0.08, t1: 0.28, group: "atrial" },
       { id: "av", t0: 0.18, t1: 0.28, group: "av-delay" },
       { id: "purkinjeR", t0: 0.36, t1: 0.54, group: "ectopy" },
       { id: "rbb", t0: 0.38, t1: 0.5, group: "ectopy", reverse: true },
@@ -537,7 +537,7 @@ function buildBranchesForFinding(finding: FindingId | string | undefined): Branc
   if (finding === "pacedRvSeptal") {
     // Mid-septal myocardial capture — earlier left engagement than apical
     return [
-      { id: "internodal", t0: 0.08, t1: 0.2, group: "atrial" },
+      { id: "internodal", t0: 0.08, t1: 0.27, group: "atrial" },
       { id: "av", t0: 0.18, t1: 0.27, group: "av-delay" },
       { id: "purkinjeR", t0: 0.34, t1: 0.5, group: "ectopy" },
       { id: "rbb", t0: 0.35, t1: 0.48, group: "ectopy", reverse: true, u0: 0.35 },
@@ -548,7 +548,7 @@ function buildBranchesForFinding(finding: FindingId | string | undefined): Branc
   if (finding === "pacedRvot") {
     // RVOT myocardial capture — superior exit, late apical/left
     return [
-      { id: "internodal", t0: 0.08, t1: 0.2, group: "atrial" },
+      { id: "internodal", t0: 0.08, t1: 0.27, group: "atrial" },
       { id: "av", t0: 0.18, t1: 0.27, group: "av-delay" },
       { id: "rbb", t0: 0.34, t1: 0.48, group: "ectopy", reverse: true, u0: 0.15 },
       { id: "purkinjeR", t0: 0.36, t1: 0.52, group: "ectopy" },
@@ -559,7 +559,7 @@ function buildBranchesForFinding(finding: FindingId | string | undefined): Branc
   if (finding === "pacedHis") {
     // His conduction capture → both bundles nearly physiologic
     return [
-      { id: "internodal", t0: 0.08, t1: 0.2, group: "atrial" },
+      { id: "internodal", t0: 0.08, t1: 0.26, group: "atrial" },
       { id: "av", t0: 0.18, t1: 0.26, group: "av-delay" },
       { id: "his", t0: 0.26, t1: 0.36, group: "his" },
       { id: "rbb", t0: 0.32, t1: 0.46, group: "bundles" },
@@ -573,7 +573,7 @@ function buildBranchesForFinding(finding: FindingId | string | undefined): Branc
   if (finding === "pacedLbap") {
     // LBAP tip fires conduction tissue, then engages left bundle
     return [
-      { id: "internodal", t0: 0.08, t1: 0.2, group: "atrial" },
+      { id: "internodal", t0: 0.08, t1: 0.26, group: "atrial" },
       { id: "av", t0: 0.18, t1: 0.26, group: "av-delay" },
       { id: "lbb", t0: 0.32, t1: 0.46, group: "ectopy", u0: 0.35 },
       { id: "lbba", t0: 0.34, t1: 0.48, group: "fascicles" },
@@ -587,7 +587,7 @@ function buildBranchesForFinding(finding: FindingId | string | undefined): Branc
   if (finding === "pacedBiv") {
     // BiV spike @ 0.27 — RV + LV wall fields fuse, then tracts
     return [
-      { id: "internodal", t0: 0.08, t1: 0.2, group: "atrial" },
+      { id: "internodal", t0: 0.08, t1: 0.27, group: "atrial" },
       { id: "av", t0: 0.18, t1: 0.27, group: "av-delay" },
       { id: "purkinjeR", t0: 0.34, t1: 0.52, group: "ectopy" },
       { id: "purkinjeL", t0: 0.34, t1: 0.52, group: "ectopy" },
@@ -598,8 +598,15 @@ function buildBranchesForFinding(finding: FindingId | string | undefined): Branc
   if (finding === "pacedAtrial") {
     // RA appendage wall capture → AV → His–Purkinje (narrow QRS)
     return [
-      { id: "internodal", t0: 0.08, t1: 0.2, group: "atrial" },
-      ...ventCascade(0.34),
+      { id: "internodal", t0: 0.08, t1: 0.28, group: "atrial" },
+      { id: "av", t0: 0.2, t1: 0.3, group: "av-delay" },
+      { id: "his", t0: 0.28, t1: 0.36, group: "his" },
+      { id: "rbb", t0: 0.32, t1: 0.46, group: "bundles" },
+      { id: "lbb", t0: 0.32, t1: 0.46, group: "bundles" },
+      { id: "lbba", t0: 0.34, t1: 0.48, group: "fascicles" },
+      { id: "lbbp", t0: 0.34, t1: 0.48, group: "fascicles" },
+      { id: "purkinjeR", t0: 0.36, t1: 0.5, group: "purkinje" },
+      { id: "purkinjeL", t0: 0.36, t1: 0.5, group: "purkinje" },
     ];
   }
   if (finding === "av1") {

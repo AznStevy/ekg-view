@@ -2743,8 +2743,8 @@ function samplePacedDual(t: number): WaveSample {
     leads,
     phaseFor(tt, [
       { start: 0.05, end: 0.11, phase: "Atrial pacing spike · RA lead", active: ["sa", "myocardiumA"], mark: "P" },
-      { start: 0.11, end: 0.2, phase: "Captured P", active: ["internodal", "myocardiumA"], mark: "P" },
-      { start: 0.2, end: 0.28, phase: "AV delay (paced)", active: ["av"], mark: "PR" },
+      { start: 0.11, end: 0.26, phase: "Captured P · atrial myocardial field", active: ["internodal", "myocardiumA"], mark: "P" },
+      { start: 0.26, end: 0.28, phase: "AV delay (paced)", active: ["av", "myocardiumA"], mark: "PR" },
       { start: 0.28, end: 0.32, phase: "Ventricular pacing spike · RV apical", active: [], mark: "QRS" },
       { start: 0.32, end: qrsEnd, phase: "Captured wide QRS", active: ["purkinjeR", "purkinjeL", "myocardiumV"], mark: "QRS" },
       { start: qrsEnd, end: 0.95, phase: "Repolarization", active: ["myocardiumV"], mark: "T" },

@@ -4,6 +4,7 @@ import {
   projectOntoVentricularMyocardium,
   inSeptum,
   AV_JUNCTION,
+  FIELD_ELLIPSOID,
 } from "./heartEllipsoid";
 import type { FindingId } from "./findings";
 import {
@@ -450,6 +451,15 @@ export function pacedCaptureFoci(finding: FindingId): CaptureFocus[] {
     let pos: [number, number, number];
     if (capture === "conduction") {
       pos = tip;
+    } else if (lead === "lvCs") {
+      // CRT LV tip on endocardial LV free wall (near cavity), not epi shell
+      pos = projectOntoMyocardialShell(tip, FIELD_ELLIPSOID.innerLimit * 1.06);
+      if (pos[1]! > AV_JUNCTION.planeY - 0.05) {
+        pos = projectOntoMyocardialShell(
+          [pos[0]!, AV_JUNCTION.planeY - 0.12, pos[2]!],
+          FIELD_ELLIPSOID.innerLimit * 1.06,
+        );
+      }
     } else if (lead === "rvSeptal" || lead === "rvOt" || inSeptum(tip)) {
       pos = projectOntoVentricularMyocardium(tip, lead === "rvSeptal" || lead === "rvOt" ? -1 : undefined);
       if (tissue === "ventricular" && pos[1]! > AV_JUNCTION.planeY - 0.04) {
@@ -464,8 +474,9 @@ export function pacedCaptureFoci(finding: FindingId): CaptureFocus[] {
       pos,
       color: deviceLeadColor(lead),
       t0,
-      speed: capture === "conduction" ? 0.22 : tissue === "atrial" ? 0.28 : 0.38,
-      waveDur: capture === "conduction" ? 0.28 : tissue === "atrial" ? 0.22 : 0.42,
+      // Atrial shell is large — keep wave live long enough to finish (was cutting off mid-atrium)
+      speed: capture === "conduction" ? 0.22 : tissue === "atrial" ? 0.24 : 0.38,
+      waveDur: capture === "conduction" ? 0.28 : tissue === "atrial" ? 0.48 : 0.42,
       fireDur: 0.1,
       tissue,
       capture,
