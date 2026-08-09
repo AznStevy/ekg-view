@@ -3,6 +3,7 @@ import type { SegmentId } from "./findings";
 import {
   branchesForFinding,
   refractoryGlow,
+  effectiveImpulseWindow,
   PURKINJE_L_LAF_CURVES,
   PURKINJE_L_LPF_CURVES,
   type PathwayProbePoint,
@@ -10,6 +11,7 @@ import {
 import {
   FIELD_ELLIPSOID,
   buildSeptumWallGeometry,
+  projectOntoMyocardialShell,
 } from "./heartEllipsoid";
 
 export {
@@ -85,6 +87,11 @@ type PathSpec = {
   tubularSegments?: number;
   /** Radius mix along the path. Default smoothstep; smootherstep = gentler shoulders. */
   taperEase?: "smoothstep" | "smootherstep";
+  /**
+   * Optional exact curve (e.g. cubic Bezier). Prefer this over Catmull-Rom through
+   * `points` when the tract must stay kink-free (Kent bundles).
+   */
+  buildCurve?: () => THREE.Curve<THREE.Vector3>;
 };
 
 type GuideTubeSpec = {
@@ -393,31 +400,193 @@ const AV_HALO_R = AV_R * 1.55;
 /** AVNRT loop radius — sits on the translucent halo surface. */
 const AVN_LOOP_R = AV_HALO_R * 1.02;
 const HIS_BRANCH: [number, number, number] = [0.05, -0.28, -0.04];
-/** Broad LBB cascade on left septal endocardium (under aortic cusp → trifurcation). */
-const LBB_ORIGIN: [number, number, number] = [0.2, -0.42, 0.02];
+/** Broad LBB cascade on left septal endocardium (under aortic cusp → fascicle split). */
+const LBB_ORIGIN: [number, number, number] = [0.18, -0.4, 0.0];
 /** Fascicle tips — Purkinje arborizations must start here so tubes visibly join.
  *  Kept inside FIELD_ELLIPSOID with margin for tube radius / Catmull-Rom overshoot. */
-/** LAF tip · thick fascicle down left septum (slight anterior) toward apex. */
-const LAF_TIP: [number, number, number] = [0.2, -0.96, 0.12];
-/** Mid-septal takeoff along LAF for apical/basal septal Purkinje. */
-const SEPTAL_TIP: [number, number, number] = [0.16, -0.68, 0.06];
-/** LPF tip · thinner fascicle on posterior LV free wall (PM papillary territory). */
-const LPF_TIP: [number, number, number] = [0.62, -0.74, -0.4];
-/** Distal tip of LV anterolateral Purkinje · base (left Kent ventricular insertion). */
-const PURK_L_ANT_BASE_TIP: [number, number, number] = [0.76, -0.4, 0.14];
-/** Distal tip of RV free-wall Purkinje · superior (right Kent ventricular insertion). */
-const PURK_R_FW_SUP_TIP: [number, number, number] = [-0.7, -0.31, 0.22];
+/**
+ * LAF tip · mid-anterior LV free wall (slightly apical) so fascicle arcs smoothly
+ * and Purkinje rays have room — not piled on the Kent basal tip.
+ */
+const LAF_TIP: [number, number, number] = [0.5, -0.72, 0.24];
+/**
+ * LPF tip · thicker fascicle · inferior–lateral free-wall hub for the main
+ * outward-spreading LV Purkinje arbor.
+ */
+const LPF_TIP: [number, number, number] = [0.6, -0.84, -0.28];
+/** Mid-LPF · inferior LV before the distal free-wall fan. */
+const LPF_MID: [number, number, number] = [0.36, -0.66, -0.14];
+/**
+ * Small left septal fascicle tip — mid-septal cord from the LBB cascade
+ * (third fascicle / septal branch of the left system).
+ */
+const SEPTAL_BRANCH_TIP: [number, number, number] = [0.13, -0.9, 0.05];
+/** Raw basal anterolateral landmark — projected onto LV endo shell below. */
+const PURK_L_ANT_BASE_RAW: [number, number, number] = [0.52, -0.58, 0.24];
+
+/** Distal tip of RV free-wall Purkinje · superior (right Kent ventricular insertion).
+ *  Slightly anterior of the extreme lateral wall so Kent can arc in without a kink. */
+const PURK_R_FW_SUP_TIP: [number, number, number] = [-0.64, -0.34, 0.27];
 /** RBB mid-septal point — stays in the cavity / endocardial plane (not wall-nudged). */
 const RBB_MID: [number, number, number] = [-0.08, -0.55, 0.18];
 const RBB_APEX: [number, number, number] = [-0.18, -0.95, 0.32];
 const MOD_BAND_END: [number, number, number] = [-0.48, -0.62, 0.48];
 
-/** Left-lateral Kent · atrial insert outside mitral ring; LV end = anterolateral Purkinje · base tip. */
-const ACC_L_LA: [number, number, number] = [0.64, 0.16, 0.06];
-const ACC_L_EPIC: [number, number, number] = [0.72, 0.06, 0.1];
-/** Right-lateral Kent · atrial insert outside tricuspid ring; RV end = free-wall superior tip. */
-const ACC_R_LA: [number, number, number] = [-0.55, 0.08, 0.22];
-const ACC_R_EPIC: [number, number, number] = [-0.68, 0.0, 0.32];
+/** Endocardial free-wall shell — Kent tracts hug this (just outside cavity, in the wall). */
+const ENDO_SHELL_N2 = FIELD_ELLIPSOID.innerLimit * 1.45;
+function endoShell(p: [number, number, number]): [number, number, number] {
+  return projectOntoMyocardialShell(p, ENDO_SHELL_N2);
+}
+
+/**
+ * LV Purkinje / fascicle points on the endocardial free wall.
+ * Projects onto the shell but keeps authored lateral (+X) extent so fans spread
+ * along the outer endocardium instead of collapsing toward the septum/cavity.
+ */
+const LV_ENDO_N2 = FIELD_ELLIPSOID.innerLimit * 1.62;
+function lvEndo(p: [number, number, number]): [number, number, number] {
+  const s = projectOntoMyocardialShell(p, LV_ENDO_N2);
+  const x = Math.max(s[0]!, p[0]!);
+  if (x === s[0]) return s;
+  return projectOntoMyocardialShell([x, s[1]!, s[2]!], LV_ENDO_N2);
+}
+
+/** Distal tip of LV anterolateral Purkinje · base (left Kent ventricular insertion).
+ *  On the free-wall endocardial shell — never a chord through the cavity. */
+const PURK_L_ANT_BASE_TIP: [number, number, number] = lvEndo(PURK_L_ANT_BASE_RAW);
+
+/**
+ * Left Kent along the mitral AV groove / annulus.
+ * Project to the endocardial shell, then force Y down to valve-plane height so the
+ * tract cannot ride the superior LA wall toward Bachmann (y ≈ 0.4–0.7).
+ */
+function mitralGroove(p: [number, number, number]): [number, number, number] {
+  const s = endoShell(p);
+  // Fibrous plane ~0.04; mitral hinge / AV groove sits at or just below it
+  const y = Math.min(-0.02, Math.max(-0.16, p[1]!));
+  // Keep lateral X out on the free wall (shell can pull inward)
+  const x = Math.max(s[0]!, p[0]! * 0.92);
+  return [x, y, s[2]!];
+}
+
+/**
+ * Right Kent along the tricuspid AV groove / annulus.
+ * Same idea as mitralGroove: endocardial shell at hinge height, skirting the
+ * orifice on the free-wall side.
+ */
+function tricuspidGroove(p: [number, number, number]): [number, number, number] {
+  const s = endoShell(p);
+  // Tricuspid hinge sits slightly more apical than mitral
+  const y = Math.min(-0.01, Math.max(-0.14, p[1]!));
+  // Keep lateral (−X) out on the RV free wall
+  const x = Math.min(s[0]!, p[0]! * 0.92);
+  return [x, y, s[2]!];
+}
+
+/** Approximate center of the authored tricuspid annulus guide ring (XZ). */
+const TRICUSPID_RING_C: [number, number] = [-0.22, 0.08];
+
+/**
+ * Push a tricuspid-annulus landmark radially outward so Kent stays on the
+ * free-wall / AV-groove side of the orifice (never chords across the valve).
+ */
+function outsideTricuspid(p: [number, number, number], scale = 1.16): [number, number, number] {
+  const [cx, cz] = TRICUSPID_RING_C;
+  const dx = p[0]! - cx;
+  const dz = p[2]! - cz;
+  return tricuspidGroove([cx + dx * scale, p[1]!, cz + dz * scale]);
+}
+
+function v3(p: [number, number, number]): THREE.Vector3 {
+  return new THREE.Vector3(p[0], p[1], p[2]);
+}
+
+/**
+ * C¹ cubic Bezier chain through waypoints (Catmull–Rom → Bezier).
+ * Use when the tract must follow a polyline (e.g. wrap outside an annulus).
+ */
+function makeSmoothCurveThrough(points: [number, number, number][]): THREE.CurvePath<THREE.Vector3> {
+  const path = new THREE.CurvePath<THREE.Vector3>();
+  const pts = points.map(v3);
+  if (pts.length < 2) return path;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i]!;
+    const p1 = pts[i + 1]!;
+    const prev =
+      pts[i - 1] ??
+      p0.clone().sub(p1.clone().sub(p0));
+    const next =
+      pts[i + 2] ??
+      p1.clone().add(p1.clone().sub(p0));
+    // Standard centripetal-ish local cubic: B1 = P0+(P1−P₋₁)/6, B2 = P1−(P₂−P0)/6
+    const b1 = p0.clone().add(p1.clone().sub(prev).multiplyScalar(1 / 6));
+    const b2 = p1.clone().sub(next.clone().sub(p0).multiplyScalar(1 / 6));
+    path.add(new THREE.CubicBezierCurve3(p0, b1, b2, p1));
+  }
+  return path;
+}
+
+/**
+ * Two C¹-joined cubic Beziers — smooth AV → annulus → free-wall tip (left Kent).
+ */
+function makeKentBezierCurve(
+  midAnnulus: [number, number, number],
+  tip: [number, number, number],
+  exitCtrl: [number, number, number],
+  annulusCtrl: [number, number, number],
+  wallCtrl: [number, number, number],
+): THREE.CurvePath<THREE.Vector3> {
+  const av = v3(AV);
+  const mid = v3(midAnnulus);
+  const end = v3(tip);
+  const c1 = v3(exitCtrl);
+  const c2 = v3(annulusCtrl);
+  // Match first-curve end tangent so the join has no corner
+  const joinTan = mid.clone().sub(c2);
+  const c3 = mid.clone().addScaledVector(joinTan, 0.9);
+  const c4 = v3(wallCtrl);
+  const path = new THREE.CurvePath<THREE.Vector3>();
+  path.add(new THREE.CubicBezierCurve3(av, c1, c2, mid));
+  path.add(new THREE.CubicBezierCurve3(mid, c3, c4, end));
+  return path;
+}
+
+/** Left-lateral Kent · mitral groove → LV anterolateral Purkinje tip. */
+const ACC_L_LA: [number, number, number] = mitralGroove([0.5, -0.05, 0.1]);
+function buildLeftKentCurve(): THREE.CurvePath<THREE.Vector3> {
+  return makeKentBezierCurve(
+    ACC_L_LA,
+    PURK_L_ANT_BASE_TIP,
+    mitralGroove([0.16, -0.02, -0.06]),
+    mitralGroove([0.34, -0.03, 0.02]),
+    endoShell([0.52, -0.38, 0.18]),
+  );
+}
+
+/**
+ * Right-lateral Kent · wrap OUTSIDE the posterior–lateral tricuspid rim to AV
+ * (not the anterior free-wall arc), then down to the Purkinje tip.
+ * Waypoints track the authored tricuspid annulus guide, radially inflated.
+ */
+const ACC_R_LA: [number, number, number] = outsideTricuspid([-0.554, -0.014, 0.161], 1.16);
+function buildRightKentCurve(): THREE.CurvePath<THREE.Vector3> {
+  return makeSmoothCurveThrough([
+    AV,
+    // Leave Koch along the posterior / inferoseptal rim (outside the orifice)
+    outsideTricuspid([-0.006, -0.006, -0.001], 1.08),
+    outsideTricuspid([-0.101, -0.023, -0.103], 1.12),
+    outsideTricuspid([-0.245, -0.037, -0.156], 1.15),
+    // Sweep the posterior free-wall annulus toward the lateral groove
+    outsideTricuspid([-0.398, -0.043, -0.145], 1.16),
+    outsideTricuspid([-0.519, -0.04, -0.075], 1.17),
+    outsideTricuspid([-0.576, -0.03, 0.038], 1.16),
+    ACC_R_LA,
+    // Lateral groove → endocardial descent to tip
+    endoShell([-0.6, -0.12, 0.2]),
+    endoShell([-0.62, -0.22, 0.24]),
+    PURK_R_FW_SUP_TIP,
+  ]);
+}
 
 /** CTI flutter ring landmarks (RA around tricuspid annulus) */
 const CTI_LAT: [number, number, number] = [-0.48, -0.02, 0.18];
@@ -744,45 +913,64 @@ const PATHS: PathSpec[] = [
   },
 
   // —— Left bundle / fascicles ——
-  // LAF: thicker cord down the left septal endocardium (slight anterior).
-  // LPF: thinner cord swinging onto the posterior LV free wall.
+  // Short cascade → thinner LAF (anterosuperior free-wall wrap) → thicker LPF
+  // (inferior–lateral free wall) → small mid-septal fascicle.
   {
     id: "lbb",
     name: "Left bundle (cascade)",
-    detail: "Broad left septal fan under aortic cusp",
+    detail: "Broad left septal fan under aortic cusp → fascicle split",
     radiusStart: 0.048,
-    radiusEnd: 0.042,
+    radiusEnd: 0.04,
     tubularSegments: 40,
-    points: [HIS_BRANCH, [0.1, -0.32, -0.02], [0.15, -0.37, 0.0], LBB_ORIGIN],
+    points: [HIS_BRANCH, [0.1, -0.32, -0.02], [0.14, -0.36, 0.0], LBB_ORIGIN],
+  },
+  {
+    id: "lbb",
+    name: "Left septal fascicle",
+    detail: "Small mid-septal branch of the LBB cascade",
+    radiusStart: 0.012,
+    radiusEnd: 0.0045,
+    tubularSegments: 40,
+    points: [
+      LBB_ORIGIN,
+      [0.16, -0.52, 0.02],
+      [0.14, -0.68, 0.04],
+      [0.13, -0.8, 0.05],
+      SEPTAL_BRANCH_TIP,
+    ],
   },
   {
     id: "lbba",
     name: "Left anterior fascicle",
-    detail: "Thick fascicle · left septal endocardium toward apex",
-    radiusStart: 0.046,
-    radiusEnd: 0.018,
-    tubularSegments: 64,
+    detail: "Thinner fascicle · smooth arc to mid-anterior LV endocardium",
+    radiusStart: 0.026,
+    radiusEnd: 0.01,
+    tubularSegments: 72,
+    // Gradual left–anterior–apical arc (no horizontal→up kink)
     points: [
       LBB_ORIGIN,
-      [0.18, -0.52, 0.04],
-      SEPTAL_TIP,
-      [0.18, -0.82, 0.09],
-      LAF_TIP,
+      [0.22, -0.46, 0.05],
+      [0.28, -0.52, 0.1],
+      [0.36, -0.58, 0.15],
+      [0.44, -0.66, 0.2],
+      lvEndo(LAF_TIP),
     ],
   },
   {
     id: "lbbp",
     name: "Left posterior fascicle",
-    detail: "Thinner fascicle · posterior LV free wall · PM papillary",
-    radiusStart: 0.022,
-    radiusEnd: 0.009,
-    tubularSegments: 56,
+    detail: "Thicker fascicle · inferior–lateral LV free wall · main arbor hub",
+    radiusStart: 0.042,
+    radiusEnd: 0.016,
+    tubularSegments: 72,
     points: [
       LBB_ORIGIN,
-      [0.32, -0.5, -0.14],
-      [0.44, -0.6, -0.28],
-      [0.54, -0.68, -0.36],
-      LPF_TIP,
+      [0.22, -0.48, -0.06],
+      [0.3, -0.56, -0.12],
+      LPF_MID,
+      lvEndo([0.48, -0.72, -0.22]),
+      lvEndo([0.56, -0.8, -0.26]),
+      lvEndo(LPF_TIP),
     ],
   },
 
@@ -796,8 +984,8 @@ const PATHS: PathSpec[] = [
     tubularSegments: 40,
     points: [
       MOD_BAND_END,
-      [-0.58, -0.55, 0.45],
-      [-0.65, -0.4, 0.32],
+      [-0.56, -0.52, 0.42],
+      [-0.6, -0.42, 0.34],
       PURK_R_FW_SUP_TIP,
     ],
   },
@@ -854,148 +1042,156 @@ const PATHS: PathSpec[] = [
     ],
   },
 
-  // —— LV Purkinje · sparse rays from each fascicle tip (territories stay apart) ——
-  // LAF territory: from septal tip → apex / anterior wall / lateral base (Kent)
+  // —— LV Purkinje ——
+  // Curve order is load-bearing for fascicular-block gating:
+  //   0–2 LAF · 3–6 LPF (outward free-wall fan) · 7 septal fascicle
+  // Rays stay on the endocardial wall and spread OUTWARD (not into the cavity).
   {
     id: "purkinjeL",
     name: "LV anterior Purkinje · apex",
-    detail: "From LAF tip · apical septum / anterior wall",
-    radiusStart: 0.012,
-    radiusEnd: 0.004,
-    tubularSegments: 40,
+    detail: "From LAF tip · along anterior endocardium toward apex",
+    radiusStart: 0.008,
+    radiusEnd: 0.003,
+    tubularSegments: 48,
     points: [
-      LAF_TIP,
-      [0.26, -1.06, 0.08],
-      [0.34, -1.1, 0.02],
-      [0.28, -1.12, -0.04],
+      lvEndo(LAF_TIP),
+      lvEndo([0.54, -0.88, 0.2]),
+      lvEndo([0.5, -1.05, 0.1]),
+      lvEndo([0.44, -1.16, 0.02]),
     ],
   },
   {
     id: "purkinjeL",
-    name: "LV anterior Purkinje · free wall",
-    detail: "From LAF tip · anterior LV toward free wall",
-    radiusStart: 0.011,
-    radiusEnd: 0.004,
+    name: "LV anterior Purkinje · lateral",
+    detail: "From LAF tip · outward along mid-anterior free wall",
+    radiusStart: 0.008,
+    radiusEnd: 0.003,
+    tubularSegments: 48,
     points: [
-      LAF_TIP,
-      [0.34, -0.9, 0.2],
-      [0.48, -0.82, 0.22],
-      [0.58, -0.72, 0.16],
-    ],
-  },
-  {
-    id: "purkinjeL",
-    name: "LV anterior Purkinje · mid wall",
-    detail: "From LAF tip · mid-anterior LV toward lateral wall",
-    radiusStart: 0.011,
-    radiusEnd: 0.004,
-    points: [
-      LAF_TIP,
-      [0.4, -0.98, 0.14],
-      [0.52, -0.92, 0.08],
-      [0.64, -0.82, 0.02],
+      lvEndo(LAF_TIP),
+      lvEndo([0.62, -0.74, 0.16]),
+      lvEndo([0.72, -0.8, 0.04]),
+      lvEndo([0.76, -0.92, -0.04]),
     ],
   },
   {
     id: "purkinjeL",
     name: "LV anterolateral Purkinje · base",
-    detail: "From mid-septal LAF · toward LV base / Kent insertion",
-    radiusStart: 0.01,
-    radiusEnd: 0.004,
+    detail: "From LAF tip · basal anterolateral LV (Kent insertion)",
+    radiusStart: 0.009,
+    radiusEnd: 0.0035,
+    tubularSegments: 56,
+    // Follow the free-wall shell basally — never chord through the cavity
     points: [
-      SEPTAL_TIP,
-      [0.36, -0.55, 0.14],
-      [0.58, -0.46, 0.16],
+      lvEndo(LAF_TIP),
+      lvEndo([0.52, -0.7, 0.24]),
+      lvEndo([0.54, -0.66, 0.25]),
+      lvEndo([0.53, -0.62, 0.24]),
       PURK_L_ANT_BASE_TIP,
     ],
   },
-  // LPF territory: posterior LV free wall
+  // LPF: umbrella OUT along the free-wall endocardium (lateral / post / apical)
   {
     id: "purkinjeL",
-    name: "LV posterior Purkinje",
-    detail: "From LPF tip · posterior wall",
-    radiusStart: 0.01,
+    name: "LV inferior Purkinje · apex",
+    detail: "From LPF tip · inferior free wall toward apex (outward)",
+    radiusStart: 0.011,
     radiusEnd: 0.004,
+    tubularSegments: 56,
     points: [
-      LPF_TIP,
-      [0.58, -0.88, -0.36],
-      [0.5, -0.98, -0.32],
-      [0.42, -1.02, -0.28],
+      lvEndo(LPF_TIP),
+      lvEndo([0.64, -0.96, -0.22]),
+      lvEndo([0.66, -1.08, -0.1]),
+      lvEndo([0.6, -1.16, 0.02]),
+      lvEndo([0.52, -1.2, 0.06]),
+    ],
+  },
+  {
+    id: "purkinjeL",
+    name: "LV lateral Purkinje · mid wall",
+    detail: "From LPF tip · outward along mid-lateral free wall",
+    radiusStart: 0.011,
+    radiusEnd: 0.004,
+    tubularSegments: 56,
+    points: [
+      lvEndo(LPF_TIP),
+      lvEndo([0.7, -0.82, -0.18]),
+      lvEndo([0.78, -0.74, -0.06]),
+      lvEndo([0.8, -0.62, 0.04]),
+      lvEndo([0.76, -0.5, 0.08]),
     ],
   },
   {
     id: "purkinjeL",
     name: "LV posterolateral Purkinje",
-    detail: "From LPF tip · posterolateral free wall",
+    detail: "From LPF tip · posterolateral free wall (outward)",
     radiusStart: 0.01,
     radiusEnd: 0.004,
+    tubularSegments: 56,
     points: [
-      LPF_TIP,
-      [0.7, -0.7, -0.34],
-      [0.74, -0.58, -0.26],
-      [0.7, -0.48, -0.2],
+      lvEndo(LPF_TIP),
+      lvEndo([0.68, -0.78, -0.36]),
+      lvEndo([0.74, -0.66, -0.38]),
+      lvEndo([0.72, -0.52, -0.32]),
+      lvEndo([0.66, -0.42, -0.24]),
     ],
   },
   {
     id: "purkinjeL",
-    name: "LV septal Purkinje · base",
-    detail: "From mid-septal LAF · toward LVOT / basal septum",
-    radiusStart: 0.009,
+    name: "LV posterior Purkinje · base",
+    detail: "From LPF tip · basal posterior free wall",
+    radiusStart: 0.01,
     radiusEnd: 0.0035,
+    tubularSegments: 56,
     points: [
-      SEPTAL_TIP,
-      [0.15, -0.55, 0.02],
-      [0.16, -0.44, -0.02],
-      [0.18, -0.34, -0.04],
+      lvEndo(LPF_TIP),
+      lvEndo([0.58, -0.72, -0.38]),
+      lvEndo([0.56, -0.58, -0.44]),
+      lvEndo([0.54, -0.46, -0.4]),
+      lvEndo([0.5, -0.36, -0.32]),
+    ],
+  },
+  // One short apical twig from the septal fascicle (no back-up “mid” limb)
+  {
+    id: "purkinjeL",
+    name: "LV septal Purkinje",
+    detail: "From septal fascicle · short mid-septum toward apex",
+    radiusStart: 0.006,
+    radiusEnd: 0.0025,
+    tubularSegments: 32,
+    points: [
+      SEPTAL_BRANCH_TIP,
+      [0.14, -1.02, 0.04],
+      [0.15, -1.12, 0.01],
     ],
   },
 
   // —— Accessory pathways (WPW / AVRT) · left & right Kent ——
-  // Outside the AV valve orifices (epicardial groove), then to distal Purkinje tips
-  // so ortho/anti circuits close through the Purkinje network.
+  // Exact cubic Bezier CurvePaths (buildCurve) — Catmull-Rom through control
+  // points was causing tip bumps and AV elbows.
   {
     id: "accessory",
     name: "Kent bundle (left lateral)",
-    detail: "AVRT limb · AV ↔ LA ↔ epicardial groove ↔ LV anterolateral Purkinje · base tip",
+    detail: "AVRT limb · AV ↔ mitral annulus / AV groove ↔ LV anterolateral Purkinje tip",
     radiusStart: 0.015,
     radiusEnd: 0.004,
-    tubularSegments: 96,
-    points: [
-      AV,
-      [0.12, 0.14, -0.1],
-      [0.28, 0.2, -0.08],
-      [0.44, 0.2, -0.02],
-      ACC_L_LA,
-      ACC_L_EPIC,
-      [0.74, -0.06, 0.11],
-      [0.76, -0.18, 0.12],
-      [0.76, -0.3, 0.13],
-      PURK_L_ANT_BASE_TIP,
-    ],
+    tubularSegments: 128,
+    points: [AV, ACC_L_LA, PURK_L_ANT_BASE_TIP],
+    buildCurve: buildLeftKentCurve,
   },
   {
     id: "accessoryR",
     name: "Kent bundle (right lateral)",
-    detail: "AVRT limb · AV ↔ RA ↔ epicardial groove ↔ RV free-wall Purkinje · superior tip",
+    detail: "AVRT limb · AV ↔ tricuspid annulus / AV groove ↔ RV free-wall Purkinje tip",
     radiusStart: 0.015,
     radiusEnd: 0.004,
-    tubularSegments: 96,
-    points: [
-      AV,
-      [-0.12, 0.1, -0.02],
-      [-0.28, 0.12, 0.08],
-      [-0.42, 0.1, 0.16],
-      ACC_R_LA,
-      ACC_R_EPIC,
-      [-0.7, -0.08, 0.3],
-      [-0.71, -0.16, 0.26],
-      [-0.71, -0.24, 0.24],
-      PURK_R_FW_SUP_TIP,
-    ],
+    tubularSegments: 128,
+    points: [AV, ACC_R_LA, PURK_R_FW_SUP_TIP],
+    buildCurve: buildRightKentCurve,
   },
 ];
 
-function makeCurve(points: [number, number, number][]): THREE.CatmullRomCurve3 {
+function makeCurve(points: [number, number, number][]): THREE.Curve<THREE.Vector3> {
   const vecs = points.map(([x, y, z]) => new THREE.Vector3(x, y, z));
   // Centripetal avoids the end-loop / overshoot common with "catmullrom" + tension,
   // which made distal vectors aim sideways or backward near fiber tips.
@@ -1111,7 +1307,10 @@ function createTaperedTubeGeometry(
 }
 
 function createPathMesh(spec: PathSpec): THREE.Mesh {
-  const curve = makeCurve(spec.points);
+  const curve = spec.buildCurve?.() ?? makeCurve(spec.points);
+  const pathPoints: [number, number, number][] = spec.buildCurve
+    ? curve.getSpacedPoints(32).map((p) => [p.x, p.y, p.z] as [number, number, number])
+    : spec.points;
   const geo = createTaperedTubeGeometry(
     curve,
     spec.tubularSegments ?? 48,
@@ -1143,7 +1342,7 @@ function createPathMesh(spec: PathSpec): THREE.Mesh {
   mesh.userData.isConduction = true;
   mesh.userData.baseEmissive = isFlutter || isAvnrt ? 0.1 : 0.12;
   mesh.userData.curve = curve;
-  mesh.userData.pathPoints = spec.points;
+  mesh.userData.pathPoints = pathPoints;
   if (isAvnrt) {
     mesh.renderOrder = 3; // above translucent AV halo
   }
@@ -1346,6 +1545,7 @@ export type ConductionSystem = {
     tCycle: number;
     finding?: string;
     mark?: string;
+    cycleSec?: number;
     branches?: import("./pathwayTiming").BranchWindow[];
     intensity?: number;
     lesionIds?: SegmentId[];
@@ -1356,6 +1556,7 @@ export type ConductionSystem = {
     active: SegmentId[];
     finding?: string;
     mark?: string;
+    cycleSec?: number;
     branches?: import("./pathwayTiming").BranchWindow[];
     lesionIds?: SegmentId[];
   }) => void;
@@ -1366,6 +1567,7 @@ export type ConductionSystem = {
     tCycle: number;
     finding?: string;
     mark?: string;
+    cycleSec?: number;
     branches?: import("./pathwayTiming").BranchWindow[];
     lesionIds?: SegmentId[];
   }) => import("./pathwayTiming").ActiveFront[];
@@ -1383,7 +1585,7 @@ export type ConductionSystem = {
 
 type CurveEntry = {
   id: SegmentId;
-  curve: THREE.CatmullRomCurve3;
+  curve: THREE.Curve<THREE.Vector3>;
   color: number;
 };
 
@@ -1398,7 +1600,7 @@ export function createConductionSystem(): ConductionSystem {
   pathways.name = "pathways";
 
   const curveEntries: CurveEntry[] = [];
-  const curvesBySegment = new Map<SegmentId, THREE.CatmullRomCurve3[]>();
+  const curvesBySegment = new Map<SegmentId, THREE.Curve<THREE.Vector3>[]>();
 
   function isVentricularSeg(id: SegmentId): boolean {
     return (
@@ -1415,7 +1617,7 @@ export function createConductionSystem(): ConductionSystem {
   for (const path of PATHS) {
     const mesh = createPathMesh(path);
     pathways.add(mesh);
-    const curve = mesh.userData.curve as THREE.CatmullRomCurve3;
+    const curve = mesh.userData.curve as THREE.Curve<THREE.Vector3>;
     const list = curvesBySegment.get(path.id) ?? [];
     mesh.userData.curveIndex = list.length;
     list.push(curve);
@@ -1504,37 +1706,27 @@ export function createConductionSystem(): ConductionSystem {
         { color: SEGMENT_COLORS.lbbp, id: "lbbp" },
       ],
       "Left bundle fan",
-      "LBB cascade → anterior (septal) / posterior fascicles",
+      "LBB cascade → anterior / posterior / septal fascicles",
     ),
     createMultiColorJunction(
-      LAF_TIP,
-      0.024,
+      lvEndo(LAF_TIP),
+      0.022,
       [
         { color: SEGMENT_COLORS.lbba, id: "lbba" },
         { color: SEGMENT_COLORS.purkinjeL, id: "purkinjeL" },
       ],
       "LAF–Purkinje junction",
-      "Left anterior fascicle → apical / anterior LV Purkinje",
+      "Left anterior fascicle → anterosuperior free-wall Purkinje",
     ),
     createMultiColorJunction(
-      LPF_TIP,
-      0.018,
+      lvEndo(LPF_TIP),
+      0.022,
       [
         { color: SEGMENT_COLORS.lbbp, id: "lbbp" },
         { color: SEGMENT_COLORS.purkinjeL, id: "purkinjeL" },
       ],
       "LPF–Purkinje junction",
-      "Left posterior fascicle → posterior LV Purkinje",
-    ),
-    createMultiColorJunction(
-      SEPTAL_TIP,
-      0.02,
-      [
-        { color: SEGMENT_COLORS.lbba, id: "lbba" },
-        { color: SEGMENT_COLORS.purkinjeL, id: "purkinjeL" },
-      ],
-      "Mid-septal Purkinje takeoff",
-      "LAF mid-septum → basal / anterolateral Purkinje",
+      "Left posterior fascicle → outward free-wall LV Purkinje",
     ),
     createMultiColorJunction(
       RBB_APEX,
@@ -1557,20 +1749,6 @@ export function createConductionSystem(): ConductionSystem {
       "Moderator band → anterior papillary / Purkinje",
     ),
     createMultiColorJunction(
-      ACC_L_LA,
-      0.018,
-      [{ color: SEGMENT_COLORS.accessory, id: "accessory" }],
-      "Left Kent atrial insertion",
-      "Left-lateral LA · basal/outside mitral annulus",
-    ),
-    createMultiColorJunction(
-      ACC_L_EPIC,
-      0.014,
-      [{ color: SEGMENT_COLORS.accessory, id: "accessory" }],
-      "Left Kent epicardial bridge",
-      "AV-groove fat pad · lateral to fibrous mitral ring",
-    ),
-    createMultiColorJunction(
       PURK_L_ANT_BASE_TIP,
       0.02,
       [
@@ -1579,20 +1757,6 @@ export function createConductionSystem(): ConductionSystem {
       ],
       "Left Kent–Purkinje tip",
       "Left-lateral Kent meets LV anterolateral Purkinje · base tip",
-    ),
-    createMultiColorJunction(
-      ACC_R_LA,
-      0.018,
-      [{ color: SEGMENT_COLORS.accessoryR, id: "accessoryR" }],
-      "Right Kent atrial insertion",
-      "Right-lateral RA · outside tricuspid annulus",
-    ),
-    createMultiColorJunction(
-      ACC_R_EPIC,
-      0.014,
-      [{ color: SEGMENT_COLORS.accessoryR, id: "accessoryR" }],
-      "Right Kent epicardial bridge",
-      "AV-groove fat pad · lateral to fibrous tricuspid ring",
     ),
     createMultiColorJunction(
       PURK_R_FW_SUP_TIP,
@@ -1869,8 +2033,8 @@ export function createConductionSystem(): ConductionSystem {
   }
   root.add(guides);
 
-  // Pool of pulses for parallel branch fronts
-  const PULSE_POOL = 28;
+  // Pool of pulses for parallel branch fronts (AVRT expands many Purkinje rays + Kent)
+  const PULSE_POOL = 48;
   const pulsePool: THREE.Mesh[] = [];
   for (let i = 0; i < PULSE_POOL; i++) {
     const p = createPulseSprite(i === 0 ? 0.052 : 0.038);
@@ -1912,6 +2076,7 @@ export function createConductionSystem(): ConductionSystem {
     tCycle: number;
     finding?: string;
     mark?: string;
+    cycleSec?: number;
     branches?: import("./pathwayTiming").BranchWindow[];
     intensity?: number;
     /** Blocked tracts stay dim — never peak-light from EKG active set */
@@ -1929,6 +2094,12 @@ export function createConductionSystem(): ConductionSystem {
     const engage = opts.passiveEngage ?? { left: 0, right: 0, laf: 0, lpf: 0 };
     const mark = opts.mark ?? "TP";
     const ventPhase = mark === "QRS" || mark === "ST" || mark === "T";
+    const scheduledWholeSegment = new Set<SegmentId>();
+    const scheduledCurves = new Set<string>();
+    for (const branch of branches) {
+      if (branch.curveIndex == null) scheduledWholeSegment.add(branch.id);
+      else scheduledCurves.add(`${branch.id}:${branch.curveIndex}`);
+    }
 
     const passiveFor = (id: SegmentId, ci?: number): number => {
       if (id === "rbb" || id === "purkinjeR") return engage.right;
@@ -2010,7 +2181,21 @@ export function createConductionSystem(): ConductionSystem {
       }
 
       const base = Number(obj.userData.baseEmissive ?? 0.12);
-      let glow = refractoryGlow(opts.tCycle, branches, id, ci);
+      let glow = refractoryGlow(
+        opts.tCycle,
+        branches,
+        id,
+        ci,
+        lesions,
+        opts.cycleSec ?? 0.86,
+      );
+      if (
+        opts.finding === "pvc" &&
+        (mark === "ST" || mark === "T") &&
+        (id === "sa" || id === "internodal" || id === "myocardiumA")
+      ) {
+        glow = 0;
+      }
 
       // AFib: SA node is not the pacemaker — keep it visually quenched
       if (id === "sa") {
@@ -2030,11 +2215,11 @@ export function createConductionSystem(): ConductionSystem {
       // Schedule alone must not light ventricles during atrial / idle marks
       if (isVentricularSeg(id) && !ventPhase && !ekgActive.has(id)) glow = 0;
 
-      // EKG active only lights curves that are actually on the pathway schedule
-      const curveOnSchedule = branches.some(
-        (b) => b.id === id && (b.curveIndex == null || ci == null || b.curveIndex === ci),
-      );
-      const ekgLights = ekgActive.has(id) && curveOnSchedule;
+      // EKG active must not force peak before the causal handoff window opens
+      const curveOnSchedule =
+        scheduledWholeSegment.has(id) ||
+        (ci != null && scheduledCurves.has(`${id}:${ci}`));
+      const ekgLights = ekgActive.has(id) && curveOnSchedule && glow >= 0.95;
 
       let intensity = base;
       if (glow >= 0.95 || ekgLights) {
@@ -2052,17 +2237,18 @@ export function createConductionSystem(): ConductionSystem {
       if ((id === "avnrtSlow" || id === "avnrtFast") && !obj.userData.isJunctionWedge) {
         // Conducting vs refractory (inhibited) vs resting — pulse the limb itself
         if (glow >= 0.95 || ekgLights) {
-          mat.color.setHex(0xe8eef4);
-          mat.emissive.setHex(0xc8d4e0);
+          // Active AVNRT limb follows the AV-node orange teaching color.
+          mat.color.setHex(SEGMENT_COLORS.av);
+          mat.emissive.setHex(SEGMENT_COLORS.av);
           mat.opacity = 0.95;
           intensity = peak;
           obj.userData.avnrtState = "conducting";
         } else if (glow > 0) {
           const pulse = 0.5 + 0.5 * Math.sin(opts.tCycle * Math.PI * 1.6);
-          mat.color.setHex(0xe07050);
-          mat.emissive.setHex(0xb03820);
+          mat.color.setHex(0x7f8993);
+          mat.emissive.setHex(0x3a4550);
           mat.opacity = 0.55 + 0.4 * pulse;
-          intensity = 0.4 + 0.55 * pulse;
+          intensity = 0.18 + 0.3 * pulse;
           obj.userData.avnrtState = "refractory";
         } else {
           mat.color.setHex(0x9aa4ae);
@@ -2111,6 +2297,7 @@ export function createConductionSystem(): ConductionSystem {
     tCycle: number;
     finding?: string;
     mark?: string;
+    cycleSec?: number;
     branches?: import("./pathwayTiming").BranchWindow[];
     lesionIds?: SegmentId[];
   }): import("./pathwayTiming").ActiveFront[] {
@@ -2119,11 +2306,21 @@ export function createConductionSystem(): ConductionSystem {
     const lesions = new Set(opts.lesionIds ?? []);
     const mark = opts.mark ?? "TP";
     const ventPhase = mark === "QRS" || mark === "ST" || mark === "T";
-    const isAfib = opts.finding === "afib";
+    const finding = opts.finding ?? "";
+    const holdScale = Math.min(1, 0.86 / Math.max(0.25, opts.cycleSec ?? 0.86));
+    const reentryFinding =
+      finding.startsWith("avrt") ||
+      finding === "avnrtTypical" ||
+      finding === "avnrtAtypical" ||
+      finding === "avnrt";
+    // AVRT ortho marks Kent echo as "P" while Purkinje tip is still finishing —
+    // keep ventricular balls visible through the whole reentry loop (not only QRS/ST/T).
+    const allowVentBalls = ventPhase || (reentryFinding && mark !== "TP");
+    const isAfib = finding === "afib";
     const out: import("./pathwayTiming").ActiveFront[] = [];
 
-    // Prefer the newest live window per (segment, curve) so overlapping wavelets
-    // don't spawn duplicate arrows that fight for the same slot.
+    // Prefer the newest live window per (segment, curve, direction, schedule start)
+    // so overlapping wavelets each finish — a later limb must not erase an earlier one.
     const best = new Map<
       string,
       {
@@ -2136,24 +2333,44 @@ export function createConductionSystem(): ConductionSystem {
 
     for (const b of branches) {
       if (lesions.has(b.id)) continue;
-      // Tip-hold only on terminal Purkinje so vectors can finish at the tips.
-      // Intermediate tracts and reentry loops hand off at junctions (no linger).
+      if (
+        finding === "pvc" &&
+        (mark === "ST" || mark === "T") &&
+        (b.id === "sa" || b.id === "internodal" || b.id === "myocardiumA")
+      ) {
+        continue;
+      }
+      // Hold at the distal tip long enough that the next wavefront can start
+      // behind without making this one vanish mid-tract.
       const tipHold =
         b.id === "purkinjeL" || b.id === "purkinjeR"
-          ? 0.14
-          : b.id === "flutter" || b.id === "avnrtSlow" || b.id === "avnrtFast"
-            ? 0
-            : 0.02;
-      if (t < b.t0 || t > b.t1 + tipHold) continue;
-      // AFib: atrial fronts stay live on TP; ventricles only during QRS/ST/T
-      if (!ventPhase && isVentricularSeg(b.id)) continue;
-      if (!isAfib && mark === "TP") continue;
-      const span = Math.max(1e-4, b.t1 - b.t0);
-      const progress = Math.min(1, Math.max(0, (t - b.t0) / span));
-      const uStart = b.u0 ?? (b.reverse ? 1 : 0);
-      const uEnd = b.u1 ?? (b.reverse ? 0 : 1);
-      const u = uStart + (uEnd - uStart) * Math.min(1, progress);
-      const holding = tipHold > 0 && t > b.t1;
+          ? 0.16
+          : b.id === "flutter"
+            ? 0.04
+            : b.id === "avnrtSlow" || b.id === "avnrtFast"
+              ? 0.12
+              : b.id === "accessory" || b.id === "accessoryR"
+                ? 0.12
+                : 0.08;
+      const scaledTipHold = tipHold * holdScale;
+      // AFib: atrial fronts stay live on TP; ventricles only during QRS/ST/T (or reentry)
+      if (!allowVentBalls && isVentricularSeg(b.id)) continue;
+      // AVRT/AVNRT: EKG often labels the atrial echo as TP after T — do not kill the
+      // still-traveling Kent / dual-pathway fronts the instant that mark flips.
+      if (!isAfib && mark === "TP") {
+        if (!reentryFinding) continue;
+        const keepReentry =
+          b.id === "accessory" ||
+          b.id === "accessoryR" ||
+          b.id === "avnrtSlow" ||
+          b.id === "avnrtFast" ||
+          b.id === "av" ||
+          b.id === "his" ||
+          b.id === "internodal" ||
+          b.id === "sa" ||
+          b.id === "myocardiumA";
+        if (!keepReentry) continue;
+      }
       const curves = curvesBySegment.get(b.id);
       const curveIndices =
         b.curveIndex != null
@@ -2172,13 +2389,27 @@ export function createConductionSystem(): ConductionSystem {
         ) {
           continue;
         }
-        const key = `${b.id}:${ci}`;
+        const win = effectiveImpulseWindow(b, branches, lesions, ci);
+        if (!win) continue;
+        if (t < win.t0 || t > win.t1 + scaledTipHold) continue;
+        const span = Math.max(1e-4, win.t1 - win.t0);
+        const progress = Math.min(1, Math.max(0, (t - win.t0) / span));
+        const uStart = b.u0 ?? (b.reverse ? 1 : 0);
+        const uEnd = b.u1 ?? (b.reverse ? 0 : 1);
+        const u = uStart + (uEnd - uStart) * Math.min(1, progress);
+        const holding = scaledTipHold > 0 && t > win.t1;
+        // Unique per schedule limb so concurrent AVNRT/AVRT wavelets all finish
+        const key = `${b.id}:${ci}:${b.reverse ? "r" : "a"}:${b.t0.toFixed(3)}`;
         const prev = best.get(key);
-        // Prefer actively traveling over tip-hold; then later t0 (newer wavelet)
-        const score = (holding ? 0 : 2) + b.t0;
-        const prevScore = prev ? (prev.tipHold ? 0 : 2) + prev.b.t0 : -1;
+        const score = (holding ? 1 : 2) + progress;
+        const prevScore = prev ? (prev.tipHold ? 1 : 2) + prev.progress : -1;
         if (score >= prevScore) {
-          best.set(key, { b, progress: holding ? 1 : progress, u: holding ? uEnd : u, tipHold: holding });
+          best.set(key, {
+            b: { ...b, t0: win.t0, t1: win.t1 },
+            progress: holding ? 1 : progress,
+            u: holding ? uEnd : u,
+            tipHold: holding,
+          });
         }
       }
     }
@@ -2261,11 +2492,18 @@ export function createConductionSystem(): ConductionSystem {
     return probes;
   }
 
+  /** Smooth ball positions — keyed by schedule limb so concurrent waves finish independently. */
+  const impulseDisplay = new Map<
+    string,
+    { pos: THREE.Vector3; u: number; id: SegmentId; curveIndex: number; color: number }
+  >();
+
   function updateImpulse(opts: {
     tCycle: number;
     active: SegmentId[];
     finding?: string;
     mark?: string;
+    cycleSec?: number;
     branches?: import("./pathwayTiming").BranchWindow[];
     lesionIds?: SegmentId[];
   }) {
@@ -2275,38 +2513,61 @@ export function createConductionSystem(): ConductionSystem {
     const activeSet = new Set(opts.active);
     const mark = opts.mark ?? "TP";
     const ventPhase = mark === "QRS" || mark === "ST" || mark === "T";
+    const finding = opts.finding ?? "";
+    const holdScale = Math.min(1, 0.86 / Math.max(0.25, opts.cycleSec ?? 0.86));
+    const reentryFinding =
+      finding.startsWith("avrt") ||
+      finding === "avnrtTypical" ||
+      finding === "avnrtAtypical" ||
+      finding === "avnrt";
+    const allowVentBalls = ventPhase || (reentryFinding && mark !== "TP");
 
-    type Front = {
+    type Desired = {
+      key: string;
       id: SegmentId;
       curveIndex: number;
       u: number;
       color: number;
+      priority: number;
     };
-    const fronts: Front[] = [];
+    const desired: Desired[] = [];
+
+    const ballPriority = (id: SegmentId, ci: number, holding: boolean): number => {
+      // Lower = drawn first (kept when pool is full)
+      if (id === "accessory" || id === "accessoryR") return 0;
+      if (id === "avnrtSlow" || id === "avnrtFast") return 1;
+      if (id === "av" || id === "his") return 2;
+      if (id === "lbba" || id === "lbbp" || id === "lbb" || id === "rbb") return 3;
+      // Prefer Kent tip rays over every parallel Purkinje twig tip-hold
+      if (id === "purkinjeL" && ci === 2 && !holding) return 3;
+      if (id === "purkinjeR" && ci === 0 && !holding) return 3;
+      if (id === "purkinjeL" || id === "purkinjeR") return holding ? 8 : 5;
+      return 6;
+    };
 
     for (const b of branches) {
       if (lesions.has(b.id)) continue;
-      if (t < b.t0 || t > b.t1) continue;
-      if (!ventPhase && isVentricularSeg(b.id)) continue;
-      const uRaw = (t - b.t0) / Math.max(1e-4, b.t1 - b.t0);
-      const uStart = b.u0 ?? (b.reverse ? 1 : 0);
-      const uEnd = b.u1 ?? (b.reverse ? 0 : 1);
-      const u = uStart + (uEnd - uStart) * uRaw;
-      const curves = curvesBySegment.get(b.id);
-
-      if (!curves?.length) {
-        if (b.id === "sa" || b.id === "av") {
-          fronts.push({
-            id: b.id,
-            curveIndex: 0,
-            u,
-            color: SEGMENT_COLORS[b.id],
-          });
-        }
+      if (
+        finding === "pvc" &&
+        (mark === "ST" || mark === "T") &&
+        (b.id === "sa" || b.id === "internodal" || b.id === "myocardiumA")
+      ) {
         continue;
       }
+      if (!allowVentBalls && isVentricularSeg(b.id)) continue;
+      const curves = curvesBySegment.get(b.id);
+      const tipHold =
+        b.id === "purkinjeL" || b.id === "purkinjeR"
+          ? 0.16
+          : b.id === "avnrtSlow" || b.id === "avnrtFast"
+            ? 0.12
+            : b.id === "accessory" || b.id === "accessoryR"
+              ? 0.12
+              : 0.08;
+      const scaledTipHold = tipHold * holdScale;
 
-      const pushFront = (ci: number) => {
+      const pushFront = (ci: number, win: { t0: number; t1: number }) => {
+        if (t < win.t0 || t > win.t1 + scaledTipHold) return;
         if (
           b.id === "purkinjeL" &&
           ((lesions.has("lbba") && !lesions.has("lbbp") && PURKINJE_L_LAF_CURVES.has(ci)) ||
@@ -2314,27 +2575,79 @@ export function createConductionSystem(): ConductionSystem {
         ) {
           return;
         }
-        fronts.push({
+        const span = Math.max(1e-4, win.t1 - win.t0);
+        const uRaw = Math.min(1, Math.max(0, (t - win.t0) / span));
+        const uStart = b.u0 ?? (b.reverse ? 1 : 0);
+        const uEnd = b.u1 ?? (b.reverse ? 0 : 1);
+        const u = uStart + (uEnd - uStart) * uRaw;
+        const holding = scaledTipHold > 0 && t > win.t1;
+        desired.push({
+          key: `${b.id}:${ci}:${b.reverse ? "r" : "a"}:${b.t0.toFixed(3)}`,
           id: b.id,
           curveIndex: ci,
           u,
-          color: SEGMENT_COLORS[b.id],
+          color:
+            b.id === "avnrtSlow" || b.id === "avnrtFast"
+              ? SEGMENT_COLORS.av
+              : SEGMENT_COLORS[b.id],
+          priority: ballPriority(b.id, ci, holding),
         });
       };
 
+      if (!curves?.length) {
+        if (b.id === "sa" || b.id === "av") {
+          const win = effectiveImpulseWindow(b, branches, lesions, 0);
+          if (win) pushFront(0, win);
+        }
+        continue;
+      }
+
       if (b.curveIndex != null) {
-        pushFront(b.curveIndex);
+        const win = effectiveImpulseWindow(b, branches, lesions, b.curveIndex);
+        if (win) pushFront(b.curveIndex, win);
       } else {
-        // All parallel tracts of this segment (e.g. three internodal + Bachmann)
-        for (let ci = 0; ci < curves.length; ci++) pushFront(ci);
+        for (let ci = 0; ci < curves.length; ci++) {
+          const win = effectiveImpulseWindow(b, branches, lesions, ci);
+          if (win) pushFront(ci, win);
+        }
       }
     }
 
-    // Hide unused pool slots
+    desired.sort((a, b) => a.priority - b.priority || a.key.localeCompare(b.key));
+
+    const activeKeys = new Set(desired.map((d) => d.key));
+    const LERP_U = 0.42;
+    const LERP_POS = 0.5;
+
+    for (const f of desired) {
+      const target = pointOnSegment(f.id, f.u, f.curveIndex);
+      let st = impulseDisplay.get(f.key);
+      if (!st) {
+        const pos =
+          target?.clone() ??
+          (f.id === "sa"
+            ? new THREE.Vector3(...SA)
+            : f.id === "av"
+              ? new THREE.Vector3(...AV)
+              : new THREE.Vector3());
+        st = { pos, u: f.u, id: f.id, curveIndex: f.curveIndex, color: f.color };
+        impulseDisplay.set(f.key, st);
+      } else {
+        st.u += (f.u - st.u) * LERP_U;
+        st.color = f.color;
+        const smoothed = pointOnSegment(f.id, st.u, f.curveIndex);
+        if (smoothed) st.pos.lerp(smoothed, LERP_POS);
+        else if (target) st.pos.lerp(target, LERP_POS);
+      }
+    }
+
+    for (const key of [...impulseDisplay.keys()]) {
+      if (!activeKeys.has(key)) impulseDisplay.delete(key);
+    }
+
     for (const p of pulsePool) p.visible = false;
 
-    if (!fronts.length) {
-      // Soft hold on last active node if EKG says something is lit
+    if (!desired.length) {
       if (activeSet.has("av")) {
         pulse.visible = true;
         pulse.position.set(...AV);
@@ -2345,28 +2658,21 @@ export function createConductionSystem(): ConductionSystem {
       return;
     }
 
-    for (let i = 0; i < fronts.length && i < pulsePool.length; i++) {
-      const f = fronts[i]!;
+    // Render in priority order so Kent / left tip are never crowded out
+    let i = 0;
+    for (const f of desired) {
+      if (i >= pulsePool.length) break;
+      const st = impulseDisplay.get(f.key);
+      if (!st) continue;
       const mesh = pulsePool[i]!;
-      const pt = pointOnSegment(f.id, f.u, f.curveIndex);
-      if (!pt) {
-        if (f.id === "sa") {
-          mesh.visible = true;
-          mesh.position.set(...SA);
-        } else if (f.id === "av") {
-          mesh.visible = true;
-          mesh.position.set(...AV);
-        }
-      } else {
-        mesh.visible = true;
-        mesh.position.copy(pt);
-      }
-      mesh.scale.setScalar(i < 3 ? 1.15 : 0.9);
+      mesh.visible = true;
+      mesh.position.copy(st.pos);
+      mesh.scale.setScalar(f.priority <= 3 ? 1.2 : 0.9);
       if (mesh.material instanceof THREE.MeshBasicMaterial) {
-        // Flutter circuit is thin grey — keep pulse bright so the lap is followable
         mesh.material.color.setHex(f.id === "flutter" ? 0xe8f0f4 : f.color);
         mesh.material.opacity = activeSet.has(f.id) || activeSet.size === 0 ? 0.95 : 0.7;
       }
+      i++;
     }
   }
 

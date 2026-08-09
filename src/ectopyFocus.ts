@@ -117,7 +117,7 @@ export const ECTOPY_SITES: EctopySite[] = [
     id: "raHigh",
     label: "High RA (near SA)",
     short: "High RA",
-    pos: shell([-0.42, 0.62, 0.38]),
+    pos: shell([-0.48, 0.82, 0.34]),
     chamber: "rightAtrium",
   },
   {
@@ -131,7 +131,7 @@ export const ECTOPY_SITES: EctopySite[] = [
     id: "raLow",
     label: "Low RA / CTI",
     short: "Low RA",
-    pos: shell([-0.32, 0.22, 0.12]),
+    pos: shell([-0.42, 0.1, 0.05]),
     chamber: "rightAtrium",
   },
   {
@@ -163,8 +163,14 @@ export function isAtrialEctopySite(id: EctopySiteId): boolean {
 
 /** Kent ventricular insertion tips (match conductionAnatomy Purkinje–Kent junctions). */
 export const KENT_VENT_TIP = {
-  left: ventShell([0.76, -0.4, 0.14]) as [number, number, number],
-  right: ventShell([-0.7, -0.31, 0.22]) as [number, number, number],
+  left: ventShell([0.44, -0.62, 0.2]) as [number, number, number],
+  right: ventShell([-0.64, -0.34, 0.27]) as [number, number, number],
+};
+
+/** Kent atrial insertion tips · mitral/tricuspid AV groove (not superior atrium / Bachmann). */
+export const KENT_ATRIAL_INSERT = {
+  left: ventShell([0.5, -0.05, 0.1]) as [number, number, number],
+  right: ventShell([-0.55, -0.02, 0.16]) as [number, number, number],
 };
 
 export function ectopySiteById(id: EctopySiteId): EctopySite {
@@ -222,7 +228,12 @@ function hash01(n: number): number {
  * Build a multi-beat PVC teaching strip with compensatory pauses.
  * `sinusBeforePvc` = how many sinus QRSs precede each PVC (1 = bigeminy).
  */
+const PVC_SCHEDULE_CACHE = new Map<string, PvcSchedule>();
+
 export function buildPvcSchedule(pattern: PvcPatternId, seed = 1): PvcSchedule {
+  const cacheKey = `${pattern}|${seed}`;
+  const cached = PVC_SCHEDULE_CACHE.get(cacheKey);
+  if (cached) return cached;
   const RR = 0.86;
   const pr = 0.16;
   /** Coupling after sinus QRS: mid-diastole (after T), not glued to the T peak. */
@@ -270,7 +281,9 @@ export function buildPvcSchedule(pattern: PvcPatternId, seed = 1): PvcSchedule {
   if (sinusP.length === 0) sinusP.push(0.14);
   if (pvcEvents.length === 0) pvcEvents.push({ q: 1.72, afterSinusQ: 1.16 });
 
-  return { cycleSec, sinusP, pvcEvents };
+  const schedule = { cycleSec, sinusP, pvcEvents };
+  PVC_SCHEDULE_CACHE.set(cacheKey, schedule);
+  return schedule;
 }
 
 export function defaultPvcPattern(): PvcPatternId {
@@ -316,6 +329,15 @@ export function ectopyBeatT0(
 ): number {
   if (finding === "pac") {
     const beats = PAC_STRIP_EVENTS.map((p) => p / PAC_STRIP_CYCLE_SEC);
+    const t = ((tCycle % 1) + 1) % 1;
+    let best = beats[0]!;
+    for (const b of beats) {
+      if (t + 0.02 >= b) best = b;
+    }
+    return best;
+  }
+  if (finding === "av3") {
+    const beats = [0.5 / 3.33, 2.17 / 3.33];
     const t = ((tCycle % 1) + 1) % 1;
     let best = beats[0]!;
     for (const b of beats) {

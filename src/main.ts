@@ -52,6 +52,7 @@ import { blockSiteForFinding, branchesFromBundleBlocks, branchesForPvcSite } fro
 import {
   BUNDLE_BLOCK_OPTIONS,
   blocksForFinding,
+  cycleFindingForBlocks,
   describeBundleBlocks,
   findingIdForBlocks,
   isBlockableSegment,
@@ -93,21 +94,32 @@ const BBB_FINDING_IDS = new Set<FindingId>([
   "lpfb",
   "rbbbLafb",
   "rbbbLpfb",
+  "ivcd",
 ]);
 
-const CHB_FINDING_IDS = new Set<FindingId>(["av3Junctional", "av3"]);
+const BBB_PRESET_OPTIONS: { id: FindingId; short: string; name: string }[] = [
+  { id: "ivcd", short: "IVCD", name: "QRS >100 ms · not LBBB/RBBB" },
+];
 
-const CHB_OPTIONS: { id: FindingId; short: string; name: string }[] = [
-  {
-    id: "av3Junctional",
-    short: "Junctional",
-    name: "Narrow escape · supra-His",
-  },
-  {
-    id: "av3",
-    short: "Ventricular",
-    name: "Wide escape · infra-His",
-  },
+/** All AV conduction blocks (1° / 2° / fixed-ratio / 3°) live in one expandable */
+const AVB_FINDING_IDS = new Set<FindingId>([
+  "av1",
+  "av2i",
+  "av2ii",
+  "av21",
+  "av31",
+  "av3Junctional",
+  "av3",
+]);
+
+const AVB_OPTIONS: { id: FindingId; short: string; name: string }[] = [
+  { id: "av1", short: "1°", name: "PR > 200 ms · every P conducts" },
+  { id: "av2i", short: "Mobitz I", name: "Progressive PR → dropped QRS" },
+  { id: "av2ii", short: "Mobitz II", name: "Constant PR · sudden drop" },
+  { id: "av21", short: "2:1", name: "Fixed ratio · 2 P : 1 QRS" },
+  { id: "av31", short: "3:1", name: "High-grade · 3 P : 1 QRS" },
+  { id: "av3Junctional", short: "CHB junct", name: "Complete · narrow His escape" },
+  { id: "av3", short: "CHB vent", name: "Complete · wide ventricular escape" },
 ];
 
 const FLUTTER_FINDING_IDS = new Set<FindingId>(["aflutterCcw", "aflutterCw"]);
@@ -122,6 +134,36 @@ const FLUTTER_OPTIONS: { id: FindingId; short: string; name: string }[] = [
     id: "aflutterCw",
     short: "CW",
     name: "Reverse typical · inferior + F",
+  },
+];
+
+const SND_FINDING_IDS = new Set<FindingId>([
+  "sinusPause",
+  "saExitBlock",
+  "sickSinus",
+  "tachyBrady",
+]);
+
+const SND_OPTIONS: { id: FindingId; short: string; name: string }[] = [
+  {
+    id: "sinusPause",
+    short: "Pause",
+    name: "Sudden absent P · pause not a multiple of PP",
+  },
+  {
+    id: "saExitBlock",
+    short: "SA block",
+    name: "Dropped P–QRS · pause ≈ 2× basic PP",
+  },
+  {
+    id: "sickSinus",
+    short: "SSS",
+    name: "Brady · arrest · junctional escape",
+  },
+  {
+    id: "tachyBrady",
+    short: "TachyBrady",
+    name: "Atrial burst → long sinus pause",
   },
 ];
 
@@ -352,10 +394,22 @@ const AVRT_OPTIONS: { id: FindingId; short: string; name: string }[] = [
 
 /** Keep expand panels open briefly after last option cleared */
 const EXPAND_HOLD_MS = 2000;
-type ExpandHoldKey = "bbb" | "chb" | "flutter" | "vf" | "vt" | "paced" | "stemi" | "avnrt" | "avrt" | "pvc" | "pac";
+type ExpandHoldKey =
+  | "bbb"
+  | "avb"
+  | "flutter"
+  | "vf"
+  | "vt"
+  | "paced"
+  | "stemi"
+  | "avnrt"
+  | "avrt"
+  | "pvc"
+  | "pac"
+  | "snd";
 const expandHoldUntil: Record<ExpandHoldKey, number> = {
   bbb: 0,
-  chb: 0,
+  avb: 0,
   flutter: 0,
   vf: 0,
   vt: 0,
@@ -365,10 +419,11 @@ const expandHoldUntil: Record<ExpandHoldKey, number> = {
   avrt: 0,
   pvc: 0,
   pac: 0,
+  snd: 0,
 };
 const expandHoldTimers: Record<ExpandHoldKey, number | null> = {
   bbb: null,
-  chb: null,
+  avb: null,
   flutter: null,
   vf: null,
   vt: null,
@@ -378,6 +433,7 @@ const expandHoldTimers: Record<ExpandHoldKey, number | null> = {
   avrt: null,
   pvc: null,
   pac: null,
+  snd: null,
 };
 let expandResync: (() => void) | null = null;
 
@@ -479,38 +535,49 @@ function buildUI(root: HTMLElement): {
                       </button>`,
                     ).join("")}
                   </div>
-                  <div class="finding-expand-result" id="bbb-result">Select one or more tracts</div>
-                </div>
-              </div>
-            </div>`;
-
-  const chbGroupButton = `<button type="button" id="btn-chb" data-chb-group title="Complete heart block · escape rhythm">
-      CHB<small>3° · pick escape</small>
-    </button>`;
-
-  const chbOptionsHtml = `
-            <div class="finding-expand chb-options" id="chb-options" aria-hidden="true" style="display:none">
-              <div class="finding-expand-inner">
-                <div class="finding-expand-panel">
-                  <div class="finding-expand-head">
-                    <span>Escape focus?</span>
-                    <button type="button" id="btn-chb-clear" class="finding-expand-clear">Clear</button>
+                  <div class="finding-expand-head" style="margin-top:0.55rem">
+                    <span>Other conduction delay</span>
                   </div>
-                  <div class="chb-escape-grid" id="chb-escape-grid">
-                    ${CHB_OPTIONS.map(
-                      (o) => `<button type="button" class="chb-escape-chip" data-chb-finding="${o.id}">
+                  <div class="chb-escape-grid" id="bbb-preset-grid">
+                    ${BBB_PRESET_OPTIONS.map(
+                      (o) => `<button type="button" class="chb-escape-chip" data-bbb-finding="${o.id}">
                         <span class="chb-escape-short">${o.short}</span>
                         <span class="chb-escape-name">${o.name}</span>
                       </button>`,
                     ).join("")}
                   </div>
-                  <div class="finding-expand-result" id="chb-result">Select junctional or ventricular escape</div>
+                  <div class="finding-expand-result" id="bbb-result">Select one or more tracts</div>
+                </div>
+              </div>
+            </div>`;
+
+  const avbGroupButton = `<button type="button" id="btn-avb" data-avb-group title="AV conduction blocks · 1° / 2° / 3°">
+      AVB<small>1° · 2° · 3°</small>
+    </button>`;
+
+  const avbOptionsHtml = `
+            <div class="finding-expand chb-options" id="avb-options" aria-hidden="true" style="display:none">
+              <div class="finding-expand-inner">
+                <div class="finding-expand-panel">
+                  <div class="finding-expand-head">
+                    <span>Which AV block?</span>
+                    <button type="button" id="btn-avb-clear" class="finding-expand-clear">Clear</button>
+                  </div>
+                  <div class="chb-escape-grid" id="avb-type-grid">
+                    ${AVB_OPTIONS.map(
+                      (o) => `<button type="button" class="chb-escape-chip" data-avb-finding="${o.id}">
+                        <span class="chb-escape-short">${o.short}</span>
+                        <span class="chb-escape-name">${o.name}</span>
+                      </button>`,
+                    ).join("")}
+                  </div>
+                  <div class="finding-expand-result" id="avb-result">Select 1°, 2°, fixed-ratio, or complete block</div>
                 </div>
               </div>
             </div>`;
 
   const flutterGroupButton = `<button type="button" id="btn-flutter" data-flutter-group title="Atrial flutter · circuit direction">
-      Flutter<small>CCW · CW</small>
+      Atrial flutter<small>CCW · CW</small>
     </button>`;
 
   const flutterOptionsHtml = `
@@ -530,6 +597,31 @@ function buildUI(root: HTMLElement): {
                     ).join("")}
                   </div>
                   <div class="finding-expand-result" id="flutter-result">Select counterclockwise or clockwise</div>
+                </div>
+              </div>
+            </div>`;
+
+  const sndGroupButton = `<button type="button" id="btn-snd" data-snd-group title="Sinus node dysfunction">
+      SND<small>Pause · SA · SSS</small>
+    </button>`;
+
+  const sndOptionsHtml = `
+            <div class="finding-expand snd-options" id="snd-options" aria-hidden="true" style="display:none">
+              <div class="finding-expand-inner">
+                <div class="finding-expand-panel">
+                  <div class="finding-expand-head">
+                    <span>Which SND pattern?</span>
+                    <button type="button" id="btn-snd-clear" class="finding-expand-clear">Clear</button>
+                  </div>
+                  <div class="chb-escape-grid" id="snd-type-grid">
+                    ${SND_OPTIONS.map(
+                      (o) => `<button type="button" class="chb-escape-chip" data-snd-finding="${o.id}">
+                        <span class="chb-escape-short">${o.short}</span>
+                        <span class="chb-escape-name">${o.name}</span>
+                      </button>`,
+                    ).join("")}
+                  </div>
+                  <div class="finding-expand-result" id="snd-result">Select pause, SA exit block, SSS, or tachy–brady</div>
                 </div>
               </div>
             </div>`;
@@ -639,8 +731,8 @@ function buildUI(root: HTMLElement): {
               </div>
             </div>`;
 
-  const pacedGroupButton = `<button type="button" id="btn-paced" data-paced-group title="Paced rhythms · device modes & failures">
-      Pace<small>AAI · VVI · His · BiV</small>
+  const pacedGroupButton = `<button type="button" id="btn-paced" data-paced-group title="Pacing · device modes & failures">
+      Pacing<small>Modes · failures</small>
     </button>`;
 
   const pacedOptionsHtml = `
@@ -648,7 +740,7 @@ function buildUI(root: HTMLElement): {
               <div class="finding-expand-inner">
                 <div class="finding-expand-panel">
                   <div class="finding-expand-head">
-                    <span>Mode or malfunction?</span>
+                    <span>Pacing mode or failure?</span>
                     <button type="button" id="btn-paced-clear" class="finding-expand-clear">Clear</button>
                   </div>
                   <div class="chb-escape-grid" id="paced-type-grid">
@@ -659,7 +751,7 @@ function buildUI(root: HTMLElement): {
                       </button>`,
                     ).join("")}
                   </div>
-                  <div class="finding-expand-head paced-fail-head"><span>Malfunction</span></div>
+                  <div class="finding-expand-head paced-fail-head"><span>Pacing failures</span></div>
                   <div class="chb-escape-grid" id="paced-fail-grid">
                     ${PACED_FAIL_OPTIONS.map(
                       (o) => `<button type="button" class="chb-escape-chip" data-paced-finding="${o.id}">
@@ -761,8 +853,9 @@ function buildUI(root: HTMLElement): {
 
   const findingButtonHtml: string[] = [];
   let bbbInserted = false;
-  let chbInserted = false;
+  let avbInserted = false;
   let flutterInserted = false;
+  let sndInserted = false;
   let pvcInserted = false;
   let pacInserted = false;
   let vfInserted = false;
@@ -772,7 +865,7 @@ function buildUI(root: HTMLElement): {
   let avnrtInserted = false;
   let avrtInserted = false;
   for (const f of FINDINGS) {
-    if (f.category === "bbb") {
+    if (BBB_FINDING_IDS.has(f.id)) {
       if (!bbbInserted) {
         findingButtonHtml.push(bbbGroupButton);
         findingButtonHtml.push(bbbOptionsHtml);
@@ -780,11 +873,11 @@ function buildUI(root: HTMLElement): {
       }
       continue;
     }
-    if (CHB_FINDING_IDS.has(f.id)) {
-      if (!chbInserted) {
-        findingButtonHtml.push(chbGroupButton);
-        findingButtonHtml.push(chbOptionsHtml);
-        chbInserted = true;
+    if (AVB_FINDING_IDS.has(f.id)) {
+      if (!avbInserted) {
+        findingButtonHtml.push(avbGroupButton);
+        findingButtonHtml.push(avbOptionsHtml);
+        avbInserted = true;
       }
       continue;
     }
@@ -793,6 +886,14 @@ function buildUI(root: HTMLElement): {
         findingButtonHtml.push(flutterGroupButton);
         findingButtonHtml.push(flutterOptionsHtml);
         flutterInserted = true;
+      }
+      continue;
+    }
+    if (SND_FINDING_IDS.has(f.id)) {
+      if (!sndInserted) {
+        findingButtonHtml.push(sndGroupButton);
+        findingButtonHtml.push(sndOptionsHtml);
+        sndInserted = true;
       }
       continue;
     }
@@ -893,6 +994,10 @@ function buildUI(root: HTMLElement): {
     findingButtonHtml.push(flutterGroupButton);
     findingButtonHtml.push(flutterOptionsHtml);
   }
+  if (!sndInserted) {
+    findingButtonHtml.push(sndGroupButton);
+    findingButtonHtml.push(sndOptionsHtml);
+  }
   if (!pvcInserted) {
     findingButtonHtml.push(pvcGroupButton);
     findingButtonHtml.push(pvcOptionsHtml);
@@ -901,9 +1006,9 @@ function buildUI(root: HTMLElement): {
     findingButtonHtml.push(pacGroupButton);
     findingButtonHtml.push(pacOptionsHtml);
   }
-  if (!chbInserted) {
-    findingButtonHtml.push(chbGroupButton);
-    findingButtonHtml.push(chbOptionsHtml);
+  if (!avbInserted) {
+    findingButtonHtml.push(avbGroupButton);
+    findingButtonHtml.push(avbOptionsHtml);
   }
   if (!bbbInserted) {
     findingButtonHtml.push(bbbGroupButton);
@@ -1216,16 +1321,22 @@ function buildUI(root: HTMLElement): {
     "btn-bbb",
     "bbb-options",
     "bbb-result",
-    "btn-chb",
-    "chb-options",
-    "chb-result",
-    "chb-escape-grid",
-    "btn-chb-clear",
+    "bbb-preset-grid",
+    "btn-avb",
+    "avb-options",
+    "avb-result",
+    "avb-type-grid",
+    "btn-avb-clear",
     "btn-flutter",
     "flutter-options",
     "flutter-result",
     "flutter-dir-grid",
     "btn-flutter-clear",
+    "btn-snd",
+    "snd-options",
+    "snd-result",
+    "snd-type-grid",
+    "btn-snd-clear",
     "btn-pvc",
     "pvc-options",
     "pvc-result",
@@ -1345,6 +1456,8 @@ function main() {
   };
 
   let pvcSchedule: PvcSchedule = buildPvcSchedule(state.pvcPattern, state.pvcSeed);
+  let cachedPvcBranchKey = "";
+  let cachedPvcBranches: ReturnType<typeof branchesForPvcSite> | undefined;
 
   const segmentVisibility: Record<SegmentId, boolean> = Object.fromEntries(
     SEGMENT_META.map((g) => [g.id, g.defaultOn]),
@@ -1594,6 +1707,11 @@ function main() {
       ekg.setCycleSec(PAC_STRIP_CYCLE_SEC);
       return;
     }
+    if (state.customBlockMode && state.customBlocks.length > 0) {
+      const cf = getFinding(cycleFindingForBlocks(state.customBlocks));
+      ekg.setCycleSec(cycleSecForRate(cf, state.ventRateBpm));
+      return;
+    }
     const f = getFinding(state.finding);
     ekg.setCycleSec(cycleSecForRate(f, state.ventRateBpm));
   }
@@ -1654,6 +1772,7 @@ function main() {
     });
     const blocks = activeBundleBlocks();
     const desc = describeBundleBlocks(blocks);
+    const ivcdActive = state.finding === "ivcd" && !state.customBlockMode;
     const bbbActive =
       !(state.cvRecovery && !state.cvRecovery.settled) &&
       (state.customBlockMode || BBB_FINDING_IDS.has(state.finding) || blocks.length > 0);
@@ -1661,30 +1780,38 @@ function main() {
     const bbbOpen = bbbActive || expandHeld("bbb");
     setFindingExpand(els["bbb-options"], bbbOpen);
     els["btn-bbb"].classList.toggle("active", bbbOpen && !state.upload && !state.stim.site);
-    els["bbb-result"].textContent =
-      blocks.length === 0
-        ? "Select one or more tracts · click a bundle on the model to lesion"
-        : `${desc.name} · ${desc.detail}`;
+    els["bbb-preset-grid"].querySelectorAll<HTMLButtonElement>("button[data-bbb-finding]").forEach((btn) => {
+      btn.classList.toggle("active", ivcdActive && btn.dataset.bbbFinding === state.finding);
+    });
+    if (ivcdActive) {
+      const f = getFinding("ivcd");
+      els["bbb-result"].textContent = `${f.short} · ${f.detail}`;
+    } else if (blocks.length === 0) {
+      els["bbb-result"].textContent =
+        "Select one or more tracts · click a bundle on the model to lesion";
+    } else {
+      els["bbb-result"].textContent = `${desc.name} · ${desc.detail}`;
+    }
   }
 
-  function syncChbOptions() {
-    // Never open CHB from BBB custom lesions (trifascicular used to set finding=av3)
-    const chbActive =
+  function syncAvbOptions() {
+    // Never open AVB from BBB custom lesions (trifascicular used to set finding=av3)
+    const avbActive =
       !(state.cvRecovery && !state.cvRecovery.settled) &&
       !state.customBlockMode &&
-      CHB_FINDING_IDS.has(state.finding);
-    if (chbActive) clearExpandHold("chb");
-    const chbOpen = chbActive || expandHeld("chb");
-    setFindingExpand(els["chb-options"], chbOpen);
-    els["btn-chb"].classList.toggle("active", chbOpen && !state.upload && !state.stim.site);
-    els["chb-escape-grid"].querySelectorAll<HTMLButtonElement>("button[data-chb-finding]").forEach((btn) => {
-      btn.classList.toggle("active", chbActive && btn.dataset.chbFinding === state.finding);
+      AVB_FINDING_IDS.has(state.finding);
+    if (avbActive) clearExpandHold("avb");
+    const avbOpen = avbActive || expandHeld("avb");
+    setFindingExpand(els["avb-options"], avbOpen);
+    els["btn-avb"].classList.toggle("active", avbOpen && !state.upload && !state.stim.site);
+    els["avb-type-grid"].querySelectorAll<HTMLButtonElement>("button[data-avb-finding]").forEach((btn) => {
+      btn.classList.toggle("active", avbActive && btn.dataset.avbFinding === state.finding);
     });
-    if (chbActive) {
+    if (avbActive) {
       const f = getFinding(state.finding);
-      els["chb-result"].textContent = `${f.short} · ${f.detail}`;
+      els["avb-result"].textContent = `${f.short} · ${f.detail}`;
     } else {
-      els["chb-result"].textContent = "Select junctional or ventricular escape";
+      els["avb-result"].textContent = "Select 1°, 2°, fixed-ratio, or complete block";
     }
   }
 
@@ -1703,6 +1830,24 @@ function main() {
       els["flutter-result"].textContent = `${f.short} · ${f.detail}`;
     } else {
       els["flutter-result"].textContent = "Select counterclockwise or clockwise";
+    }
+  }
+
+  function syncSndOptions() {
+    const sndActive =
+      !(state.cvRecovery && !state.cvRecovery.settled) && SND_FINDING_IDS.has(state.finding);
+    if (sndActive) clearExpandHold("snd");
+    const sndOpen = sndActive || expandHeld("snd");
+    setFindingExpand(els["snd-options"], sndOpen);
+    els["btn-snd"].classList.toggle("active", sndOpen && !state.upload && !state.stim.site);
+    els["snd-type-grid"].querySelectorAll<HTMLButtonElement>("button[data-snd-finding]").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.sndFinding === state.finding);
+    });
+    if (sndActive) {
+      const f = getFinding(state.finding);
+      els["snd-result"].textContent = `${f.short} · ${f.detail}`;
+    } else {
+      els["snd-result"].textContent = "Select pause, SA exit block, SSS, or tachy–brady";
     }
   }
 
@@ -1976,7 +2121,9 @@ function main() {
       bindCardioversionSample(state.cvRecovery.settled);
     } else if (usingCustomBlocks) {
       ekg.setCustomSample((t) => sampleFromBundleBlocks(blocks, t));
-      ekg.setCycleSec(cycleSecForRate(f, state.ventRateBpm));
+      ekg.setCycleSec(
+        cycleSecForRate(getFinding(cycleFindingForBlocks(blocks)), state.ventRateBpm),
+      );
     } else if (state.finding === "pvc" && !state.upload) {
       applyPvcConfig({ resetElapsed: false });
     } else if (state.finding === "pac" && !state.upload) {
@@ -2053,8 +2200,9 @@ function main() {
         : deviceModeForFinding(state.finding, state.pacedBaseMode),
     );
     syncBranchBlockCheckboxes();
-    syncChbOptions();
+    syncAvbOptions();
     syncFlutterOptions();
+    syncSndOptions();
     syncVtOptions();
     syncVfOptions();
     syncPacedOptions();
@@ -2244,8 +2392,9 @@ function main() {
   syncFindingUI();
   expandResync = () => {
     syncBranchBlockCheckboxes();
-    syncChbOptions();
+    syncAvbOptions();
     syncFlutterOptions();
+    syncSndOptions();
     syncVtOptions();
     syncVfOptions();
     syncPacedOptions();
@@ -2368,27 +2517,39 @@ function main() {
       stimMarker.visible = false;
       state.cvRecovery = null;
       ekg.setCustomSample(null);
-      syncRateUI(getFinding(state.finding).ventRateBpm);
+      syncRateUI(
+        blocks.length > 0
+          ? getFinding(cycleFindingForBlocks(blocks)).ventRateBpm
+          : getFinding("nsr").ventRateBpm,
+      );
       syncFindingUI();
       syncViewLabel();
       if (blocks.length > 0) ensureTeachOverlaysForFinding(state.finding);
       setPlaying(true);
       return;
     }
-    const chbBtn = (e.target as HTMLElement).closest("#btn-chb");
-    if (chbBtn) {
-      const open = els["chb-options"].classList.contains("is-open");
-      if (open && CHB_FINDING_IDS.has(state.finding)) {
-        holdExpandOpen("chb");
+    const bbbPreset = (e.target as HTMLElement).closest("button[data-bbb-finding]");
+    if (bbbPreset) {
+      const id = (bbbPreset as HTMLElement).dataset.bbbFinding as FindingId;
+      state.customBlocks = [];
+      state.customBlockMode = false;
+      setFinding(id);
+      return;
+    }
+    const avbBtn = (e.target as HTMLElement).closest("#btn-avb");
+    if (avbBtn) {
+      const open = els["avb-options"].classList.contains("is-open");
+      if (open && AVB_FINDING_IDS.has(state.finding)) {
+        holdExpandOpen("avb");
         setFinding("nsr");
       } else {
-        setFinding("av3Junctional");
+        setFinding("av1");
       }
       return;
     }
-    const chbOpt = (e.target as HTMLElement).closest("button[data-chb-finding]");
-    if (chbOpt) {
-      const id = (chbOpt as HTMLElement).dataset.chbFinding as FindingId;
+    const avbOpt = (e.target as HTMLElement).closest("button[data-avb-finding]");
+    if (avbOpt) {
+      const id = (avbOpt as HTMLElement).dataset.avbFinding as FindingId;
       setFinding(id);
       return;
     }
@@ -2406,6 +2567,23 @@ function main() {
     const flutterOpt = (e.target as HTMLElement).closest("button[data-flutter-finding]");
     if (flutterOpt) {
       const id = (flutterOpt as HTMLElement).dataset.flutterFinding as FindingId;
+      setFinding(id);
+      return;
+    }
+    const sndBtn = (e.target as HTMLElement).closest("#btn-snd");
+    if (sndBtn) {
+      const open = els["snd-options"].classList.contains("is-open");
+      if (open && SND_FINDING_IDS.has(state.finding)) {
+        holdExpandOpen("snd");
+        setFinding("nsr");
+      } else {
+        setFinding("sinusPause");
+      }
+      return;
+    }
+    const sndOpt = (e.target as HTMLElement).closest("button[data-snd-finding]");
+    if (sndOpt) {
+      const id = (sndOpt as HTMLElement).dataset.sndFinding as FindingId;
       setFinding(id);
       return;
     }
@@ -2730,17 +2908,20 @@ function main() {
     });
     const bbbMatch =
       q.trim().length === 0 ||
-      FINDINGS.some((f) => f.category === "bbb" && findingMatchesQuery(f, q));
+      FINDINGS.some(
+        (f) =>
+          BBB_FINDING_IDS.has(f.id) && findingMatchesQuery(f, q),
+      );
     const bbbBtn = els["btn-bbb"] as HTMLButtonElement;
     bbbBtn.hidden = !bbbMatch;
     if (bbbMatch) visible += 1;
 
-    const chbMatch =
+    const avbMatch =
       q.trim().length === 0 ||
-      FINDINGS.some((f) => CHB_FINDING_IDS.has(f.id) && findingMatchesQuery(f, q));
-    const chbBtn = els["btn-chb"] as HTMLButtonElement;
-    chbBtn.hidden = !chbMatch;
-    if (chbMatch) visible += 1;
+      FINDINGS.some((f) => AVB_FINDING_IDS.has(f.id) && findingMatchesQuery(f, q));
+    const avbBtn = els["btn-avb"] as HTMLButtonElement;
+    avbBtn.hidden = !avbMatch;
+    if (avbMatch) visible += 1;
 
     const flutterMatch =
       q.trim().length === 0 ||
@@ -2748,6 +2929,13 @@ function main() {
     const flutterBtn = els["btn-flutter"] as HTMLButtonElement;
     flutterBtn.hidden = !flutterMatch;
     if (flutterMatch) visible += 1;
+
+    const sndMatch =
+      q.trim().length === 0 ||
+      FINDINGS.some((f) => SND_FINDING_IDS.has(f.id) && findingMatchesQuery(f, q));
+    const sndBtn = els["btn-snd"] as HTMLButtonElement;
+    sndBtn.hidden = !sndMatch;
+    if (sndMatch) visible += 1;
 
     const pvcMatch =
       q.trim().length === 0 || findingMatchesQuery(getFinding("pvc"), q);
@@ -2807,8 +2995,9 @@ function main() {
     const qActive = q.trim().length > 0;
     if (qActive) {
       if (bbbMatch) setFindingExpand(els["bbb-options"], true);
-      if (chbMatch) setFindingExpand(els["chb-options"], true);
+      if (avbMatch) setFindingExpand(els["avb-options"], true);
       if (flutterMatch) setFindingExpand(els["flutter-options"], true);
+      if (sndMatch) setFindingExpand(els["snd-options"], true);
       if (pvcMatch) setFindingExpand(els["pvc-options"], true);
       if (pacMatch) setFindingExpand(els["pac-options"], true);
       if (vtMatch) setFindingExpand(els["vt-options"], true);
@@ -2830,8 +3019,10 @@ function main() {
         btn.hidden = qActive && !findingMatchesQuery(getFinding(id), q);
       });
     };
-    filterFindingChips("chb-escape-grid", "data-chb-finding");
+    filterFindingChips("bbb-preset-grid", "data-bbb-finding");
+    filterFindingChips("avb-type-grid", "data-avb-finding");
     filterFindingChips("flutter-dir-grid", "data-flutter-finding");
+    filterFindingChips("snd-type-grid", "data-snd-finding");
     filterFindingChips("vf-amp-grid", "data-vf-finding");
     filterFindingChips("vt-type-grid", "data-vt-finding");
     filterFindingChips("paced-type-grid", "data-paced-finding");
@@ -2839,7 +3030,7 @@ function main() {
     filterFindingChips("stemi-type-grid", "data-stemi-finding");
     filterFindingChips("avnrt-type-grid", "data-avnrt-finding");
     filterFindingChips("avrt-type-grid", "data-avrt-finding");
-    // BBB chips are lesion toggles (not one finding each) — keep them all visible when BBB opens
+    // BBB lesion chips are multi-select toggles — keep them visible when BBB opens
 
     findingEmpty.hidden = visible > 0 || q.trim().length === 0;
     void runPhysioSearch(q);
@@ -3112,14 +3303,15 @@ function main() {
     state.customBlockMode = false;
     clearStim();
     holdExpandOpen("bbb");
-    if (blocksForFinding(state.finding).length > 0) setFinding("nsr");
-    else syncFindingUI();
+    if (BBB_FINDING_IDS.has(state.finding) || blocksForFinding(state.finding).length > 0) {
+      setFinding("nsr");
+    } else syncFindingUI();
   });
 
-  els["btn-chb-clear"].addEventListener("click", () => {
+  els["btn-avb-clear"].addEventListener("click", () => {
     clearStim();
-    holdExpandOpen("chb");
-    if (CHB_FINDING_IDS.has(state.finding)) setFinding("nsr");
+    holdExpandOpen("avb");
+    if (AVB_FINDING_IDS.has(state.finding)) setFinding("nsr");
     else syncFindingUI();
   });
 
@@ -3127,6 +3319,13 @@ function main() {
     clearStim();
     holdExpandOpen("flutter");
     if (FLUTTER_FINDING_IDS.has(state.finding)) setFinding("nsr");
+    else syncFindingUI();
+  });
+
+  els["btn-snd-clear"].addEventListener("click", () => {
+    clearStim();
+    holdExpandOpen("snd");
+    if (SND_FINDING_IDS.has(state.finding)) setFinding("nsr");
     else syncFindingUI();
   });
 
@@ -3688,7 +3887,11 @@ function main() {
     state.finding = findingIdForBlocks(blocks);
     if (blocks.length === 0) holdExpandOpen("bbb");
     state.elapsed = 0;
-    syncRateUI(getFinding(state.finding).ventRateBpm);
+    syncRateUI(
+      blocks.length > 0
+        ? getFinding(cycleFindingForBlocks(blocks)).ventRateBpm
+        : getFinding("nsr").ventRateBpm,
+    );
     syncFindingUI();
     if (blocks.length > 0) ensureTeachOverlaysForFinding(state.finding);
   });
@@ -3949,6 +4152,7 @@ function main() {
     }
 
     const lit = active.filter((id) => segmentVisibility[id] !== false);
+    const cycleSec = ekg.getCycleSec();
     const stimBranches = state.stim.site && !state.upload ? branchesFromStim(state.stim.site) : undefined;
     const blockBranches =
       !stimBranches && state.customBlockMode && state.customBlocks.length > 0
@@ -3970,7 +4174,12 @@ function main() {
       if (stimBranches || blockBranches || state.finding !== "pvc" || !ectopyIdForBranches) return undefined;
       const chamber = ectopySiteById(ectopyIdForBranches).chamber;
       if (chamber !== "leftVent" && chamber !== "rightVent") return undefined;
-      return branchesForPvcSite(chamber, pvcSchedule);
+      const key = `${chamber}|${state.pvcPattern}|${state.pvcSeed}`;
+      if (key !== cachedPvcBranchKey || !cachedPvcBranches) {
+        cachedPvcBranchKey = key;
+        cachedPvcBranches = branchesForPvcSite(chamber, pvcSchedule);
+      }
+      return cachedPvcBranches;
     })();
     const pathBranches = stimBranches ?? blockBranches ?? bbbPresetBranches ?? pvcBranches;
     const blockGating = gatingLesionSegments(activeBundleBlocks());
@@ -3980,6 +4189,7 @@ function main() {
       tCycle,
       finding: state.finding,
       mark,
+      cycleSec,
       branches: pathBranches,
       intensity: 0.95,
       lesionIds: blockGating,
@@ -3990,6 +4200,7 @@ function main() {
       active: lit,
       finding: state.finding,
       mark,
+      cycleSec,
       branches: pathBranches,
       lesionIds: blockGating,
     });
@@ -4003,7 +4214,10 @@ function main() {
       ? myocardialCaptureFoci(state.finding, ectopyId)
       : [];
     // Multi-beat PVC / PAC strips: lock wave onset to the current ectopic beat
-    if ((state.finding === "pvc" || state.finding === "pac") && ectopyFoci.length > 0) {
+    if (
+      (state.finding === "pvc" || state.finding === "pac" || state.finding === "av3") &&
+      ectopyFoci.length > 0
+    ) {
       const t0 = ectopyBeatT0(state.finding, tCycle, state.finding === "pvc" ? pvcSchedule : null);
       ectopyFoci = ectopyFoci.map((f) => ({ ...f, t0 }));
     }
@@ -4015,7 +4229,7 @@ function main() {
             pos: KENT_VENT_TIP[side],
             color: 0xc070ff,
             t0: 0,
-            t1: 0.36,
+            t1: 0.4,
           }
         : null;
 
@@ -4024,13 +4238,14 @@ function main() {
       active: lit,
       finding: state.finding,
       tCycle,
-      cycleSec: ekg.getCycleSec(),
+      cycleSec,
       leads,
       branches: pathBranches,
       fronts: conduction.getActiveFronts({
         tCycle,
         finding: state.finding,
         mark,
+        cycleSec,
         branches: pathBranches,
         lesionIds: blockGating,
       }),

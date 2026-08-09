@@ -329,70 +329,128 @@ function pacedRvotQrsLeads(
 
 function lbbbMorphQrs(t: number, mu: number, amp = 1.0, cycleSec = mapCycleSec): Record<LeadId, number> {
   const abs = (sec: number) => sec / Math.max(0.25, cycleSec);
-  // Fixed teaching width (~140–160 ms) — do not let LAT-map span warp morphology
-  const w = 1.15;
-  const shape =
-    gauss(t, mu - abs(0.02 * w), abs(0.022 * w), -0.08) +
-    gauss(t, mu + abs(0.02 * w), abs(0.045 * w), amp * 0.55) +
-    gauss(t, mu + abs(0.07 * w), abs(0.055 * w), amp) +
-    gauss(t, mu + abs(0.12 * w), abs(0.035 * w), -0.25);
-  // LBBB: broad R I/V6 · deep QS/rS V1 · leftward / posterior
-  return scaleLeads(shape, {
-    I: 0.95,
-    II: 0.35,
-    III: -0.55,
-    aVR: -0.45,
-    aVL: 0.85,
-    aVF: -0.15,
-    V1: -1.15,
-    V2: -0.95,
-    V3: -0.35,
+  // Fixed teaching width (~140–160 ms) — WiLLiaM: deep notched S (“W”) V1 · broad notched R (“M”) V6
+  const w = 1.2;
+  // Lateral / I: broad notched R (M)
+  const mShape =
+    gauss(t, mu - abs(0.015 * w), abs(0.016 * w), -0.06 * amp) +
+    gauss(t, mu + abs(0.018 * w), abs(0.028 * w), 0.55 * amp) +
+    gauss(t, mu + abs(0.055 * w), abs(0.022 * w), 0.22 * amp) + // notch trough (still ≥0 in V6)
+    gauss(t, mu + abs(0.085 * w), abs(0.032 * w), amp) +
+    gauss(t, mu + abs(0.13 * w), abs(0.028 * w), -0.18 * amp);
+  const lateral = scaleLeads(mShape, {
+    I: 1.0,
+    II: 0.4,
+    III: -0.45,
+    aVR: -0.5,
+    aVL: 0.9,
+    aVF: -0.05,
+    V1: 0,
+    V2: 0,
+    V3: 0,
     V4: 0.55,
     V5: 0.95,
-    V6: 1.05,
+    V6: 1.1,
   });
+  // V1–V2: dominant deep S with mid-QRS notch (W)
+  const wShape =
+    gauss(t, mu - abs(0.01 * w), abs(0.018 * w), -0.35 * amp) +
+    gauss(t, mu + abs(0.03 * w), abs(0.02 * w), 0.28 * amp) + // notch up toward baseline
+    gauss(t, mu + abs(0.075 * w), abs(0.04 * w), -1.15 * amp) +
+    gauss(t, mu + abs(0.12 * w), abs(0.025 * w), -0.2 * amp);
+  const rightPrec = scaleLeads(wShape, {
+    I: 0,
+    II: 0,
+    III: 0,
+    aVR: 0,
+    aVL: 0,
+    aVF: 0,
+    V1: 1.15,
+    V2: 0.95,
+    V3: 0.35,
+    V4: 0,
+    V5: 0,
+    V6: 0,
+  });
+  return addLeads(lateral, rightPrec);
 }
 
 function rbbbMorphQrs(t: number, mu: number, amp = 1.0, cycleSec = mapCycleSec): Record<LeadId, number> {
   const abs = (sec: number) => sec / Math.max(0.25, cycleSec);
-  // Fixed teaching width — classic rsR′ V1 must stay readable
-  const w = 1.1;
-  const early =
-    gauss(t, mu - abs(0.015 * w), abs(0.018 * w), -0.1) +
-    gauss(t, mu + abs(0.008 * w), abs(0.022 * w), amp * 0.45);
-  const late =
-    gauss(t, mu + abs(0.05 * w), abs(0.032 * w), amp * 0.35) +
-    gauss(t, mu + abs(0.085 * w), abs(0.038 * w), amp);
-  // Early LV (leftward) then late RV (rightward / anterior) → rsR′ V1, wide S I/V6
-  const a = scaleLeads(early, {
-    I: 0.7,
+  /**
+   * Classic complete RBBB (teaching):
+   *   • QRS > 120 ms (~140–150 ms here)
+   *   • rsR′ (“M”) in V1–V3
+   *   • Wide, slurred S in I, aVL, V5–V6
+   * Absolute paper times — do not let LAT-map span warp morphology.
+   */
+  const rPeak = mu + abs(0.012); // early septal r
+  const sNadir = mu + abs(0.042); // mid S (LV)
+  const rPrime = mu + abs(0.1); // late R′ (RV) — keeps total QRS >120 ms
+  const slur = mu + abs(0.135); // terminal slur ~145 ms from early onset
+
+  // —— Right precordials V1–V3: M-shaped rsR′ ——
+  const mShape =
+    gauss(t, rPeak, abs(0.011), 0.38 * amp) + // small r
+    gauss(t, sNadir, abs(0.015), -0.62 * amp) + // S
+    gauss(t, rPrime, abs(0.026), 1.2 * amp) + // tall R′
+    gauss(t, slur, abs(0.02), 0.22 * amp); // terminal plateau / slur
+  const rightPrec = scaleLeads(mShape, {
+    I: 0,
+    II: 0,
+    III: 0,
+    aVR: 0,
+    aVL: 0,
+    aVF: 0,
+    V1: 1.2,
+    V2: 1.05,
+    V3: 0.75, // still clearly rsR′ through V3
+    V4: 0.15,
+    V5: 0,
+    V6: 0,
+  });
+
+  // —— Lateral I / aVL / V5–V6: initial R then wide slurred S ——
+  const latShape =
+    gauss(t, rPeak - abs(0.006), abs(0.01), -0.08 * amp) + // tiny q optional
+    gauss(t, rPeak + abs(0.01), abs(0.016), 0.9 * amp) + // R
+    gauss(t, rPrime, abs(0.032), -0.7 * amp) + // wide S (delayed RV)
+    gauss(t, slur, abs(0.025), -0.4 * amp); // slurred terminal S
+  const lateral = scaleLeads(latShape, {
+    I: 1.0,
+    II: 0.35,
+    III: -0.15,
+    aVR: -0.45,
+    aVL: 0.9,
+    aVF: 0.15,
+    V1: 0,
+    V2: 0,
+    V3: 0,
+    V4: 0.35,
+    V5: 0.95,
+    V6: 1.05,
+  });
+
+  // Mild inferior contribution so limb leads stay readable
+  const inferior =
+    gauss(t, rPeak, abs(0.012), 0.35 * amp) +
+    gauss(t, rPrime, abs(0.028), -0.25 * amp);
+  const inf = scaleLeads(inferior, {
+    I: 0,
     II: 0.55,
-    III: 0.15,
-    aVR: -0.4,
-    aVL: 0.45,
-    aVF: 0.35,
-    V1: -0.35,
-    V2: -0.2,
-    V3: 0.25,
-    V4: 0.7,
-    V5: 0.85,
-    V6: 0.75,
+    III: 0.45,
+    aVR: 0,
+    aVL: 0,
+    aVF: 0.5,
+    V1: 0,
+    V2: 0,
+    V3: 0,
+    V4: 0,
+    V5: 0,
+    V6: 0,
   });
-  const b = scaleLeads(late, {
-    I: -0.55,
-    II: -0.25,
-    III: 0.2,
-    aVR: 0.35,
-    aVL: -0.4,
-    aVF: -0.05,
-    V1: 1.25,
-    V2: 1.0,
-    V3: 0.35,
-    V4: -0.15,
-    V5: -0.45,
-    V6: -0.55,
-  });
-  return addLeads(a, b);
+
+  return addLeads(addLeads(rightPrec, lateral), inf);
 }
 
 /**
@@ -603,13 +661,14 @@ function pack(
 }
 
 const NSR_WINDOWS = (prDelay = 0): Window[] => {
-  const d = prDelay * 0.6;
+  // Keep phase gates locked to the same PR shift used by P/QRS morph timing
+  const d = prDelay;
   return [
-    { start: 0.05 + d * 0.2, end: 0.16 + d * 0.2, phase: "SA node · atrial depolarization", active: ["sa", "internodal", "myocardiumA"], mark: "P" },
-    { start: 0.16 + d * 0.2, end: 0.26 + d, phase: "AV node delay (PR)", active: ["av"], mark: "PR" },
-    { start: 0.26 + d, end: 0.3 + d, phase: "His bundle", active: ["his"], mark: "QRS" },
-    { start: 0.3 + d, end: 0.34 + d, phase: "Bundle branches", active: ["his", "rbb", "lbb", "lbba", "lbbp"], mark: "QRS" },
-    { start: 0.34 + d, end: 0.48 + d, phase: "Purkinje · ventricular depolarization", active: ["purkinjeR", "purkinjeL", "myocardiumV", "rbb", "lbb", "lbba", "lbbp"], mark: "QRS" },
+    { start: 0.05, end: 0.15, phase: "SA node · atrial depolarization", active: ["sa", "internodal", "myocardiumA"], mark: "P" },
+    { start: 0.15, end: 0.22 + d, phase: "AV node delay (PR)", active: ["av"], mark: "PR" },
+    { start: 0.22 + d, end: 0.24 + d, phase: "His bundle", active: ["his"], mark: "QRS" },
+    { start: 0.24 + d, end: 0.28 + d, phase: "Bundle branches", active: ["his", "rbb", "lbb", "lbba", "lbbp"], mark: "QRS" },
+    { start: 0.28 + d, end: 0.48 + d, phase: "Purkinje · ventricular depolarization", active: ["purkinjeR", "purkinjeL", "myocardiumV", "rbb", "lbb", "lbba", "lbbp"], mark: "QRS" },
     { start: 0.48 + d, end: 0.54 + d, phase: "ST segment", active: ["myocardiumV"], mark: "ST" },
     { start: 0.54 + d, end: 0.74 + d, phase: "Ventricular repolarization", active: ["myocardiumV"], mark: "T" },
   ];
@@ -666,15 +725,17 @@ function sampleAfib(t: number): WaveSample {
     mark: "TP",
   };
 
+  // Paper-time mark widths (same absolute ms as NSR / flutter) so HPS + field
+  // stay gated through depolarization — not a blink that drops back to TP.
+  const s = paperScale(CYCLE);
   for (const b of beats) {
-    // Absolute timing: QRS ~80 ms, QT onset ~280–320 ms later (not glued to QRS)
-    const qrsW = 0.08 / CYCLE;
-    const tMu = b + 0.3 / CYCLE;
-    const tSig = 0.05 / CYCLE;
-    const inQrs = tt >= b - 0.02 / CYCLE && tt < b + qrsW;
-    const inT = tt >= tMu - 2.2 * tSig && tt < tMu + 2.5 * tSig;
-    if (inQrs || inT) {
-      leads = addLeads(leads, qrsLeads(tt, b, 0.028 / CYCLE, 1.0, -0.06, -0.18));
+    const tMu = b + 0.28 * s;
+    const tSig = 0.045 * s;
+    const inQrs = tt >= b - 0.02 * s && tt < b + 0.12 * s;
+    const inSt = tt >= b + 0.12 * s && tt < tMu - 2.0 * tSig;
+    const inT = tt >= tMu - 2.0 * tSig && tt < tMu + 2.4 * tSig;
+    if (inQrs || inSt || inT) {
+      leads = addLeads(leads, qrsLeads(tt, b, 0.028 * s, 1.0, -0.06, -0.18));
       leads = addLeads(leads, tWaveLeads(tt, tMu, 0.28, tSig));
     }
     if (inQrs) {
@@ -694,6 +755,12 @@ function sampleAfib(t: number): WaveSample {
           "myocardiumA",
         ],
         mark: "QRS",
+      };
+    } else if (inSt) {
+      meta = {
+        phase: "ST · atria still fibrillating",
+        active: ["myocardiumV", "internodal", "myocardiumA"],
+        mark: "ST",
       };
     } else if (inT) {
       meta = {
@@ -839,7 +906,8 @@ function sampleAflutterCw(t: number): WaveSample {
 }
 
 function sampleAv1(t: number): WaveSample {
-  // Clearly prolonged PR (teaching: PR ≫ 200 ms)
+  // Clearly prolonged PR (teaching: PR ≫ 200 ms). prDelay is in cycle units and
+  // must match pathwayTiming av1 HPS shift (0.20 → ~280–400 ms depending on cycleSec).
   return sampleNsr(t, 0.2);
 }
 
@@ -902,6 +970,105 @@ function sampleAv2i(t: number): WaveSample {
       }
     } else if (tt > e.p && tt < e.p + 0.2 * s + 0.04) {
       meta = { phase: "Blocked P · no ventricular activation", active: ["av"], mark: "PR" };
+    }
+  }
+  return pack(leads, meta);
+}
+
+/** Fixed-ratio 2:1 AV block — constant PR, every other P conducts */
+function sampleAv21(t: number): WaveSample {
+  const tt = clamp01(t);
+  /** Atrial ~75 bpm (P–P 0.80 s) · constant PR 180 ms · 1 QRS / 1.60 s ≈ 37.5 bpm */
+  const CYCLE = 1.6;
+  const s = paperScale(CYCLE);
+  const abs: { p: number; qrs: number | null }[] = [
+    { p: 0.08, qrs: 0.08 + 0.18 },
+    { p: 0.88, qrs: null },
+  ];
+  const events = abs.map((e) => ({
+    p: e.p / CYCLE,
+    qrs: e.qrs == null ? null : e.qrs / CYCLE,
+  }));
+
+  let leads = emptyLeads();
+  let meta: Pick<WaveSample, "phase" | "active" | "mark"> = {
+    phase: "2:1 AV block",
+    active: [],
+    mark: "TP",
+  };
+  for (const e of events) {
+    leads = addLeads(leads, pWaveLeads(tt, e.p, 0.18, 0.025 * s));
+    if (Math.abs(tt - e.p) < 0.035 * s + 0.01) {
+      meta = { phase: "Atrial depolarization", active: ["sa", "internodal", "myocardiumA"], mark: "P" };
+    }
+    if (e.qrs != null) {
+      leads = addLeads(
+        leads,
+        addLeads(qrsLeads(tt, e.qrs, 0.028 * s), tWaveLeads(tt, e.qrs + 0.16 * s, 0.22, 0.035 * s)),
+      );
+      if (tt >= e.qrs - 0.02 * s && tt < e.qrs + 0.11 * s) {
+        meta = {
+          phase: "Conducted (constant PR · 2:1)",
+          active: ["av", "his", "rbb", "lbb", "lbba", "lbbp", "purkinjeR", "purkinjeL", "myocardiumV"],
+          mark: "QRS",
+        };
+      } else if (tt >= e.qrs + 0.11 * s && tt < e.qrs + 0.22 * s) {
+        meta = { phase: "T wave", active: ["myocardiumV"], mark: "T" };
+      } else if (tt > e.p && tt < e.qrs) {
+        meta = { phase: "AV delay (constant PR)", active: ["av"], mark: "PR" };
+      }
+    } else if (tt > e.p && tt < e.p + 0.2 * s + 0.04) {
+      meta = { phase: "Blocked P · no QRS (2:1)", active: ["av"], mark: "PR" };
+    }
+  }
+  return pack(leads, meta);
+}
+
+/** High-grade 3:1 AV block — constant PR, three P waves per QRS */
+function sampleAv31(t: number): WaveSample {
+  const tt = clamp01(t);
+  /** Atrial ~75 bpm (P–P 0.80 s) · constant PR 180 ms · 1 QRS / 2.40 s = 25 bpm */
+  const CYCLE = 2.4;
+  const s = paperScale(CYCLE);
+  const abs: { p: number; qrs: number | null }[] = [
+    { p: 0.08, qrs: 0.08 + 0.18 },
+    { p: 0.88, qrs: null },
+    { p: 1.68, qrs: null },
+  ];
+  const events = abs.map((e) => ({
+    p: e.p / CYCLE,
+    qrs: e.qrs == null ? null : e.qrs / CYCLE,
+  }));
+
+  let leads = emptyLeads();
+  let meta: Pick<WaveSample, "phase" | "active" | "mark"> = {
+    phase: "High-grade 3:1 AV block",
+    active: [],
+    mark: "TP",
+  };
+  for (const e of events) {
+    leads = addLeads(leads, pWaveLeads(tt, e.p, 0.18, 0.025 * s));
+    if (Math.abs(tt - e.p) < 0.035 * s + 0.01) {
+      meta = { phase: "Atrial depolarization", active: ["sa", "internodal", "myocardiumA"], mark: "P" };
+    }
+    if (e.qrs != null) {
+      leads = addLeads(
+        leads,
+        addLeads(qrsLeads(tt, e.qrs, 0.028 * s), tWaveLeads(tt, e.qrs + 0.16 * s, 0.22, 0.035 * s)),
+      );
+      if (tt >= e.qrs - 0.02 * s && tt < e.qrs + 0.11 * s) {
+        meta = {
+          phase: "Conducted (constant PR · 3:1)",
+          active: ["av", "his", "rbb", "lbb", "lbba", "lbbp", "purkinjeR", "purkinjeL", "myocardiumV"],
+          mark: "QRS",
+        };
+      } else if (tt >= e.qrs + 0.11 * s && tt < e.qrs + 0.22 * s) {
+        meta = { phase: "T wave", active: ["myocardiumV"], mark: "T" };
+      } else if (tt > e.p && tt < e.qrs) {
+        meta = { phase: "AV delay (constant PR)", active: ["av"], mark: "PR" };
+      }
+    } else if (tt > e.p && tt < e.p + 0.2 * s + 0.04) {
+      meta = { phase: "Blocked P · high-grade AV block", active: ["av"], mark: "PR" };
     }
   }
   return pack(leads, meta);
@@ -1045,7 +1212,11 @@ function sampleAv3(t: number): WaveSample {
   }
   for (const escape of escapes) {
     if (Math.abs(tt - escape) < 0.07 * s + 0.02) {
-      meta = { phase: "Ventricular escape focus · wide QRS", active: ["purkinjeL", "purkinjeR", "myocardiumV"], mark: "QRS" };
+      meta = {
+        phase: "Ventricular escape focus · wide QRS",
+        active: ["myocardiumV"],
+        mark: "QRS",
+      };
     } else if (tt > escape + 0.07 * s && tt < escape + 0.22 * s) {
       meta = { phase: "Escape repolarization · dissociated", active: ["myocardiumV"], mark: "T" };
     }
@@ -1056,8 +1227,9 @@ function sampleAv3(t: number): WaveSample {
 function sampleRbbb(t: number): WaveSample {
   const tt = clamp01(t);
   const qrsMu = 0.32;
-  const qrsEnd = Math.min(0.58, qrsMu + 0.16);
-  const mid = qrsMu + (qrsEnd - qrsMu) * 0.4;
+  // Morph spans ~145 ms from early r to terminal slur (>120 ms criterion)
+  const qrsEnd = Math.min(0.58, qrsMu + 0.17);
+  const mid = qrsMu + (qrsEnd - qrsMu) * 0.45;
   let leads = pWaveLeads(tt, 0.1);
   leads = addLeads(leads, rbbbMorphQrs(tt, qrsMu, 1.0));
   leads = addLeads(
@@ -1083,7 +1255,7 @@ function sampleRbbb(t: number): WaveSample {
       { start: 0.05, end: 0.16, phase: "SA · atria", active: ["sa", "internodal", "myocardiumA"], mark: "P" },
       { start: 0.16, end: 0.28, phase: "AV · His", active: ["av", "his"], mark: "PR" },
       { start: 0.28, end: mid, phase: "Left bundle first · LV (RBB blocked)", active: ["lbb", "lbba", "lbbp", "purkinjeL", "myocardiumV"], mark: "QRS" },
-      { start: mid, end: qrsEnd, phase: "Myocardial spread → RV (RBB blocked)", active: ["myocardiumV"], mark: "QRS" },
+      { start: mid, end: qrsEnd, phase: "Late RV · rsR′ V1–V3 · slurred S laterally", active: ["myocardiumV"], mark: "QRS" },
       { start: qrsEnd, end: Math.min(0.85, qrsEnd + 0.08), phase: "ST segment", active: ["myocardiumV"], mark: "ST" },
       { start: Math.min(0.85, qrsEnd + 0.08), end: 0.95, phase: "Secondary T-wave changes", active: ["myocardiumV"], mark: "T" },
     ]),
@@ -1232,23 +1404,22 @@ function sampleRbbbLafb(t: number): WaveSample {
   const qrsMu = 0.32;
   const qrsEnd = Math.min(0.58, qrsMu + 0.18);
   let leads = pWaveLeads(tt, 0.1);
-  // Precordial RBBB pattern
-  leads = addLeads(leads, rbbbMorphQrs(tt, qrsMu, 0.9));
-  // Overlay classic LAFB limb morph (dominates frontal plane)
-  const limb = lafbMorphQrs(tt, qrsMu + 0.01, 0.85);
+  // Precordials from RBBB; limbs entirely from LAFB so axis criteria stay crisp
+  const prec = rbbbMorphQrs(tt, qrsMu, 0.95);
+  const limb = lafbMorphQrs(tt, qrsMu, 1.0);
   leads = addLeads(leads, {
-    I: limb.I * 0.85,
-    II: limb.II * 0.95,
+    I: limb.I,
+    II: limb.II,
     III: limb.III,
-    aVR: limb.aVR * 0.7,
+    aVR: limb.aVR,
     aVL: limb.aVL,
     aVF: limb.aVF,
-    V1: 0,
-    V2: 0,
-    V3: 0,
-    V4: 0,
-    V5: limb.V5 * 0.25,
-    V6: limb.V6 * 0.3,
+    V1: prec.V1,
+    V2: prec.V2,
+    V3: prec.V3,
+    V4: prec.V4 * 0.85 + limb.V4 * 0.15,
+    V5: prec.V5 * 0.55 + limb.V5 * 0.45,
+    V6: prec.V6 * 0.45 + limb.V6 * 0.55,
   });
   leads = addLeads(
     leads,
@@ -1280,21 +1451,21 @@ function sampleRbbbLpfb(t: number): WaveSample {
   const qrsMu = 0.32;
   const qrsEnd = Math.min(0.58, qrsMu + 0.18);
   let leads = pWaveLeads(tt, 0.1);
-  leads = addLeads(leads, rbbbMorphQrs(tt, qrsMu, 0.9));
-  const limb = lpfbMorphQrs(tt, qrsMu + 0.01, 0.85);
+  const prec = rbbbMorphQrs(tt, qrsMu, 0.95);
+  const limb = lpfbMorphQrs(tt, qrsMu, 1.0);
   leads = addLeads(leads, {
-    I: limb.I * 0.95,
+    I: limb.I,
     II: limb.II,
     III: limb.III,
-    aVR: limb.aVR * 0.7,
+    aVR: limb.aVR,
     aVL: limb.aVL,
     aVF: limb.aVF,
-    V1: 0,
-    V2: 0,
-    V3: 0,
-    V4: 0,
-    V5: limb.V5 * 0.2,
-    V6: limb.V6 * 0.25,
+    V1: prec.V1,
+    V2: prec.V2,
+    V3: prec.V3,
+    V4: prec.V4 * 0.85 + limb.V4 * 0.15,
+    V5: prec.V5 * 0.55 + limb.V5 * 0.45,
+    V6: prec.V6 * 0.45 + limb.V6 * 0.55,
   });
   leads = addLeads(
     leads,
@@ -1316,6 +1487,33 @@ function sampleRbbbLpfb(t: number): WaveSample {
       { start: 0.28, end: 0.4, phase: "LAF only (RBB + LPF blocked)", active: ["lbb", "lbba", "purkinjeL", "myocardiumV"], mark: "QRS" },
       { start: 0.4, end: qrsEnd, phase: "Myocardial spread → RV + posterior LV", active: ["myocardiumV"], mark: "QRS" },
       { start: qrsEnd, end: 0.75, phase: "Secondary T changes", active: ["myocardiumV"], mark: "T" },
+    ]),
+  );
+}
+
+/** Nonspecific IVCD — QRS >100 ms without LBBB/RBBB morphology */
+function sampleIvcd(t: number): WaveSample {
+  const tt = clamp01(t);
+  const qrsMu = 0.33;
+  const qrsEnd = Math.min(0.52, qrsMu + 0.14);
+  let leads = pWaveLeads(tt, 0.1);
+  // Mildly wide, normal-axis QRS — not MaRRoW / WiLLiaM
+  leads = addLeads(leads, qrsLeads(tt, qrsMu, 0.045, 0.95));
+  leads = addLeads(leads, tWaveLeads(tt, Math.min(0.72, qrsEnd + 0.12), 0.28, 0.045));
+  return pack(
+    leads,
+    phaseFor(tt, [
+      { start: 0.05, end: 0.16, phase: "SA · atria", active: ["sa", "internodal", "myocardiumA"], mark: "P" },
+      { start: 0.16, end: 0.28, phase: "AV · His", active: ["av", "his"], mark: "PR" },
+      {
+        start: 0.28,
+        end: qrsEnd,
+        phase: "Slowed ventricular conduction · nonspecific IVCD",
+        active: ["his", "rbb", "lbb", "lbba", "lbbp", "purkinjeR", "purkinjeL", "myocardiumV"],
+        mark: "QRS",
+      },
+      { start: qrsEnd, end: Math.min(0.6, qrsEnd + 0.08), phase: "ST", active: ["myocardiumV"], mark: "ST" },
+      { start: Math.min(0.6, qrsEnd + 0.08), end: 0.8, phase: "T wave", active: ["myocardiumV"], mark: "T" },
     ]),
   );
 }
@@ -1513,6 +1711,8 @@ export function samplePacPattern(t: number, site: EctopySiteId = "raLow"): WaveS
         active: ["av", "his", "rbb", "lbb", "purkinjeR", "purkinjeL", "myocardiumV"],
         mark: "QRS",
       };
+    } else if (tt >= q + abs(0.1) && tt < tw - abs(0.08)) {
+      meta = { phase: "ST segment", active: ["myocardiumV"], mark: "ST" };
     } else if (tt >= tw - abs(0.08) && tt < tw + abs(0.1)) {
       meta = { phase: "T wave", active: ["myocardiumV"], mark: "T" };
     }
@@ -1562,6 +1762,8 @@ export function samplePvcPattern(
         active: ["his", "rbb", "lbb", "purkinjeR", "purkinjeL", "myocardiumV"],
         mark: "QRS",
       };
+    } else if (tt >= q + abs(0.1) && tt < tw - abs(0.08)) {
+      meta = { phase: "ST segment", active: ["myocardiumV"], mark: "ST" };
     } else if (tt >= tw - abs(0.08) && tt < tw + abs(0.1)) {
       meta = { phase: "T wave", active: ["myocardiumV"], mark: "T" };
     }
@@ -2011,7 +2213,7 @@ function sampleAvrtOrtho(t: number, side: "left" | "right" = "left"): WaveSample
         end: 0.78,
         phase: "Long-RP retrograde P · return to AV",
         active: [ap, "av", "myocardiumA"],
-        mark: "P",
+        mark: "T",
       },
       { start: 0.78, end: 0.95, phase: "Next AV anterograde", active: ["av"], mark: "TP" },
     ]),
@@ -3188,6 +3390,8 @@ const SAMPLERS: Record<FindingId, (t: number) => WaveSample> = {
   av1: sampleAv1,
   av2i: sampleAv2i,
   av2ii: sampleAv2ii,
+  av21: sampleAv21,
+  av31: sampleAv31,
   av3: sampleAv3,
   av3Junctional: sampleAv3Junctional,
   rbbb: sampleRbbb,
@@ -3196,6 +3400,7 @@ const SAMPLERS: Record<FindingId, (t: number) => WaveSample> = {
   lpfb: sampleLpfb,
   rbbbLafb: sampleRbbbLafb,
   rbbbLpfb: sampleRbbbLpfb,
+  ivcd: sampleIvcd,
   pac: samplePac,
   pvc: samplePvc,
   vt: sampleVt,

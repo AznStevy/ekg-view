@@ -75,7 +75,7 @@ export function describeBundleBlocks(blocks: Iterable<BundleBlockId>): {
       return {
         name: "Right bundle branch block",
         short: "RBBB",
-        detail: `Block in ${parts} · LV first → transseptal RV · late +X/+Z · rsR′ V1 · wide S I/V6`,
+        detail: `Block in ${parts} · LV first → delayed RV · rsR′ (“M”) V1–V3 · wide slurred S I/aVL/V5–V6`,
       };
     case "lbbb":
       return {
@@ -111,7 +111,7 @@ export function describeBundleBlocks(blocks: Iterable<BundleBlockId>): {
       return {
         name: "Trifascicular block",
         short: "Tri-fasc",
-        detail: `Block in ${parts} · no His–Purkinje conduction · ventricular escape`,
+        detail: `Block in ${parts} · bifascicular + 3° AV block · ventricular escape · AV dissociation`,
       };
   }
 }
@@ -211,9 +211,16 @@ export function findingIdForBlocks(blocks: Iterable<BundleBlockId>): import("./f
       return "rbbbLpfb";
     case "trifascicular":
       // Stay on a BBB finding id so the CHB expander does not steal the UI.
-      // The EKG/waveform still uses the trifascicular → ventricular-escape sampler.
+      // Cycle length / rate use cycleFindingForBlocks → av3.
       return "rbbb";
   }
+}
+
+/** Finding whose cycleSec/ventRate should drive the strip when custom lesions are set */
+export function cycleFindingForBlocks(
+  blocks: Iterable<BundleBlockId>,
+): import("./findings").FindingId {
+  return classifyBundleBlocks(blocks) === "trifascicular" ? "av3" : findingIdForBlocks(blocks);
 }
 
 /** Map custom lesions → matching EKG */

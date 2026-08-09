@@ -600,6 +600,8 @@ export function myocardialTravelDistance(
 /**
  * Strip direction components that would carry anterograde current across the AV plane.
  * His penetration may only cross atrium → ventricle (inferior), never up into the atria.
+ * Free-wall ventricle aiming *at* the plane keeps its trajectory — callers shorten
+ * arrows at the fibrous plane instead of forcing the field downward/flat.
  */
 export function clampDirToAvPlane(
   pos: THREE.Vector3,
@@ -618,7 +620,14 @@ export function clampDirToAvPlane(
     const inGap = nearHisPenetration([hitX, py, hitZ], AV_JUNCTION.hisGapR * 1.15);
     // Only atrium → ventricle through the His gap is allowed
     const atriumToVent = pos.y > py && dir.y < 0;
-    if (!(atriumToVent && inGap)) {
+    // Ventricular free wall approaching the insulator: keep LAT direction
+    const ventTowardPlane =
+      pos.y < py - 0.005 &&
+      dir.y > 0 &&
+      !nearHisPenetration(pos, AV_JUNCTION.hisGapR * 2.0);
+    if (ventTowardPlane) {
+      /* keep dir — length clipping stops the arrow on the plane */
+    } else if (!(atriumToVent && inGap)) {
       dir.y = 0;
       if (dir.lengthSq() < 1e-10) {
         dir.set(0, pos.y < py ? -1 : 1, 0);

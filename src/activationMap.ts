@@ -9,6 +9,7 @@ import {
   SEPTUM_WALL,
   crossesAvJunction,
   clampDirToAvPlane,
+  projectOntoShellTangent,
   septumCoords,
   septumHalfThicknessAtRho,
 } from "./heartEllipsoid";
@@ -100,6 +101,7 @@ const _seedPos = new THREE.Vector3();
 const _edge = new THREE.Vector3();
 const _depol = new THREE.Vector3();
 const _repol = new THREE.Vector3();
+const _nrm = new THREE.Vector3();
 
 function tipDepthNorm(pos: THREE.Vector3): number {
   // Free wall / septum: 0 = endocardial, 1 = epicardial (or mid-septum as deep)
@@ -123,10 +125,11 @@ function tipDepthNorm(pos: THREE.Vector3): number {
 export function regionalApd(pos: THREE.Vector3, tissue: ActivationSampleInput["tissue"]): number {
   if (tissue === "insulator") return 0.05;
   if (tissue === "atrial") return 0.14 + (1 - tipDepthNorm(pos)) * 0.03;
-  // Small residual transmural / septal jitter — not enough to reverse LAT order
-  const base = 0.18;
-  const transmural = (1 - tipDepthNorm(pos)) * 0.01;
-  const septal = inSeptum(pos) ? 0.006 : 0;
+  // Nearly uniform APD — recovery order = activation order; absolute times are
+  // remapped into the T-wave window so both ventricles crest together on T.
+  const base = 0.26;
+  const transmural = (1 - tipDepthNorm(pos)) * 0.008;
+  const septal = inSeptum(pos) ? 0.004 : 0;
   return base + transmural + septal;
 }
 
@@ -240,7 +243,7 @@ export function activationSeedKey(
   blockedChamber?: "left" | "right" | null,
   blockedFascicle?: "laf" | "lpf" | null,
 ): string {
-  let key = `seq6|${myoSpeed.toFixed(3)}|${blockedChamber ?? ""}|${blockedFascicle ?? ""}|`;
+  let key = `seq11|${myoSpeed.toFixed(3)}|${blockedChamber ?? ""}|${blockedFascicle ?? ""}|`;
   if (lesionIds?.length) {
     key += lesionIds.slice().sort().join(",") + "|";
   }
@@ -249,16 +252,20 @@ export function activationSeedKey(
     const y = s.pos instanceof THREE.Vector3 ? s.pos.y : s.pos[1]!;
     const z = s.pos instanceof THREE.Vector3 ? s.pos.z : s.pos[2]!;
     // Quantize so tiny front jitter doesn't thrash Dijkstra
-    key += `${s.segmentId ?? ""}:${(s.t0 * 200) | 0}:${(x * 40) | 0},${(y * 40) | 0},${(z * 40) | 0};`;
+    key += `${s.segmentId ?? ""}:${s.capture ?? ""}:${s.color ?? ""}:${(s.t0 * 200) | 0}:${(x * 40) | 0},${(y * 40) | 0},${(z * 40) | 0};`;
   }
   return key;
 }
 
+/** LAF free-wall territory — excludes true septum (septal Purkinje stays intact in LAFB). */
 function inLafTerritory(p: THREE.Vector3): boolean {
+  if (inSeptum(p)) return false;
   return p.x > 0.12 && p.z > -0.05 && p.y > -1.08;
 }
 
+/** LPF free-wall territory — excludes true septum (septal Purkinje stays intact in LPFB). */
 function inLpfTerritory(p: THREE.Vector3): boolean {
+  if (inSeptum(p)) return false;
   return p.x > 0.1 && p.z < -0.12 && p.y < -0.35;
 }
 
@@ -289,12 +296,11 @@ function blockHopScale(
   let s = 1;
   if (chamber === "left") {
     // RV → LV septal cross, then slower LV free-wall fill (no left Purkinje).
-    // Keep modest so the teaching field visibly crosses the septum.
-    if (a.x < 0.06 && b.x > 0.06) s *= 1.55;
-    else if (b.x > 0.08) s *= 1.28;
+    if (a.x < 0.06 && b.x > 0.06) s *= 2.1;
+    else if (b.x > 0.08) s *= 1.65;
   } else if (chamber === "right") {
-    if (a.x > -0.06 && b.x < -0.06) s *= 1.55;
-    else if (b.x < -0.08) s *= 1.28;
+    if (a.x > -0.06 && b.x < -0.06) s *= 2.1;
+    else if (b.x < -0.08) s *= 1.65;
   }
   if (fascicle === "laf") {
     const aT = inLafTerritory(a);
@@ -420,21 +426,49 @@ export function buildActivationMap(opts: BuildActivationMapOpts): ActivationMapR
     }
   }
 
-  // Dijkstra with binary-search insert heap
-  const inQueue = new Uint8Array(n);
-  const heap: number[] = [];
+  // Dijkstra min-heap. Duplicate entries are cheap and stale entries are skipped;
+  // this avoids O(n) shift/splice costs during PAC/PVC map transitions.
+  type HeapEntry = { i: number; t: number };
+  const heap: HeapEntry[] = [];
+  const heapPush = (entry: HeapEntry) => {
+    let i = heap.length;
+    heap.push(entry);
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (heap[p]!.t <= entry.t) break;
+      heap[i] = heap[p]!;
+      i = p;
+    }
+    heap[i] = entry;
+  };
+  const heapPop = (): HeapEntry | undefined => {
+    const root = heap[0];
+    const last = heap.pop();
+    if (!root || !last || heap.length === 0) return root;
+    let i = 0;
+    while (true) {
+      const l = i * 2 + 1;
+      if (l >= heap.length) break;
+      const r = l + 1;
+      const c = r < heap.length && heap[r]!.t < heap[l]!.t ? r : l;
+      if (heap[c]!.t >= last.t) break;
+      heap[i] = heap[c]!;
+      i = c;
+    }
+    heap[i] = last;
+    return root;
+  };
   for (let i = 0; i < n; i++) {
     if (states[i]!.lat < INF) {
-      heap.push(i);
-      inQueue[i] = 1;
+      heapPush({ i, t: states[i]!.lat });
     }
   }
-  heap.sort((a, b) => states[a]!.lat - states[b]!.lat);
 
   while (heap.length) {
-    const i = heap.shift()!;
-    inQueue[i] = 0;
+    const entry = heapPop()!;
+    const i = entry.i;
     const ti = states[i]!.lat;
+    if (entry.t > ti + 1e-9) continue;
     const origin = states[i]!.originColor;
     const originSeg = states[i]!.originSegmentId;
     const neigh = neighbors[i]!;
@@ -456,23 +490,21 @@ export function buildActivationMap(opts: BuildActivationMapOpts): ActivationMapR
         writeColor = blockedChamber === "left" ? 0x5ec8ff : 0x6ae0a8;
         writeSeg = blockedChamber === "left" ? "purkinjeR" : "purkinjeL";
       }
+      // NSR: keep chamber colors honest — RV origin cannot own LV free wall (and vice versa)
+      if (!blockedChamber && writeSeg) {
+        const rightOrigin = writeSeg === "rbb" || writeSeg === "purkinjeR";
+        const leftOrigin =
+          writeSeg === "lbb" || writeSeg === "lbba" || writeSeg === "lbbp" || writeSeg === "purkinjeL";
+        if (rightOrigin && !inSeptum(to) && to.x > 0.06) continue;
+        if (leftOrigin && !inSeptum(to) && to.x < -0.06) continue;
+      }
       const scale = blockHopScale(from, to, blockedChamber, blockedFascicle);
       const cand = ti + nd[k]! * myoSpeed * scale;
       if (cand + 1e-9 < states[j]!.lat) {
         states[j]!.lat = cand;
         states[j]!.originColor = writeColor;
         states[j]!.originSegmentId = writeSeg;
-        if (!inQueue[j]) {
-          inQueue[j] = 1;
-          let lo = 0;
-          let hi = heap.length;
-          while (lo < hi) {
-            const mid = (lo + hi) >> 1;
-            if (states[heap[mid]!]!.lat <= cand) lo = mid + 1;
-            else hi = mid;
-          }
-          heap.splice(lo, 0, j);
-        }
+        heapPush({ i: j, t: cand });
       }
     }
   }
@@ -499,8 +531,20 @@ export function buildActivationMap(opts: BuildActivationMapOpts): ActivationMapR
     }
   }
 
+  /**
+   * Free-wall samples must not pull direction toward the contralateral ventricle
+   * (global LAT often ends on the LV lateral wall → every arrow streams left).
+   */
+  const chamberLink = (a: THREE.Vector3, b: THREE.Vector3): number => {
+    if (Math.abs(a.x) < 0.12 || Math.abs(b.x) < 0.12) return 1; // septum / midline OK
+    if (a.x * b.x < 0) return 0.04; // opposite free walls
+    return 1;
+  };
+
   // Directions: depol = toward later LAT; repol = toward later recovery (same
   // sequence as depol when APD is nearly uniform).
+  // Free-wall edges are weighted by how tangential they are so wall-depth
+  // neighbors don't pull the field radially (outward/inward through the wall).
   for (let i = 0; i < n; i++) {
     const st = states[i]!;
     if (st.lat >= INF) {
@@ -509,6 +553,8 @@ export function buildActivationMap(opts: BuildActivationMapOpts): ActivationMapR
     }
     st.recovery = st.lat + st.apd;
     const pos = opts.samples[i]!.pos;
+    const freeWall = !inSeptum(pos);
+    if (freeWall) ellipsoidNormal(pos, _nrm);
     _depol.set(0, 0, 0);
     let wDep = 0;
     const neigh = neighbors[i]!;
@@ -523,8 +569,11 @@ export function buildActivationMap(opts: BuildActivationMapOpts): ActivationMapR
       const dLat = sj.lat - st.lat;
       // Only later tissue — direction of electrical spread
       if (dLat > 1e-5) {
-        _depol.addScaledVector(_edge, dLat);
-        wDep += dLat;
+        const link = chamberLink(pos, other);
+        const tang =
+          freeWall ? Math.max(0.12, 1 - Math.abs(_edge.dot(_nrm))) : 1;
+        _depol.addScaledVector(_edge, dLat * link * tang);
+        wDep += dLat * link * tang;
       }
     }
     if (wDep > 1e-8 && _depol.lengthSq() > 1e-10) {
@@ -541,13 +590,22 @@ export function buildActivationMap(opts: BuildActivationMapOpts): ActivationMapR
         _edge.set(pos.x - other.x, pos.y - other.y, pos.z - other.z);
         if (_edge.lengthSq() < 1e-10) continue;
         _edge.normalize();
-        const wgt = st.lat - sj.lat;
+        const link = chamberLink(pos, other);
+        const tang =
+          freeWall ? Math.max(0.12, 1 - Math.abs(_edge.dot(_nrm))) : 1;
+        const wgt = (st.lat - sj.lat) * link * tang;
         _depol.addScaledVector(_edge, wgt);
         w += wgt;
       }
       if (w > 1e-8 && _depol.lengthSq() > 1e-10) st.depolDir.copy(_depol.normalize());
       else st.depolDir.copy(SEPTUM_WALL.longAxis);
     }
+    // Chamber-local: kill residual contralateral pull on free wall
+    if (pos.x < -0.14 && st.depolDir.x > 0) st.depolDir.x *= 0.08;
+    if (pos.x > 0.14 && st.depolDir.x < 0) st.depolDir.x *= 0.08;
+    if (st.depolDir.lengthSq() > 1e-10) st.depolDir.normalize();
+    // Keep free-wall arrows on the myocardial shell (no radial "out of the heart")
+    if (freeWall) projectOntoShellTangent(st.depolDir, pos);
     // Anterograde map: no field current across the fibrous AV plane (His gap only)
     clampDirToAvPlane(pos, st.depolDir, true);
 
@@ -565,8 +623,11 @@ export function buildActivationMap(opts: BuildActivationMapOpts): ActivationMapR
       _edge.normalize();
       const dRec = sj.recovery - st.recovery;
       if (dRec > 1e-5) {
-        _repol.addScaledVector(_edge, dRec);
-        wRep += dRec;
+        const link = chamberLink(pos, other);
+        const tang =
+          freeWall ? Math.max(0.12, 1 - Math.abs(_edge.dot(_nrm))) : 1;
+        _repol.addScaledVector(_edge, dRec * link * tang);
+        wRep += dRec * link * tang;
       }
     }
     if (wRep > 1e-8 && _repol.lengthSq() > 1e-10) {
@@ -574,7 +635,60 @@ export function buildActivationMap(opts: BuildActivationMapOpts): ActivationMapR
     } else {
       st.repolDir.copy(st.depolDir);
     }
+    // Teaching field: nearly uniform APD → recovery order = activation order.
+    // Prefer depolDir so the grey T-wave field follows how each region activated
+    // (avoids noisy flat recovery gradients collapsing to a global axis).
+    if (st.depolDir.lengthSq() > 1e-10) {
+      st.repolDir.lerp(st.depolDir, 0.9).normalize();
+    }
+    if (pos.x < -0.14 && st.repolDir.x > 0) st.repolDir.x *= 0.08;
+    if (pos.x > 0.14 && st.repolDir.x < 0) st.repolDir.x *= 0.08;
+    if (st.repolDir.lengthSq() > 1e-10) st.repolDir.normalize();
+    if (freeWall) projectOntoShellTangent(st.repolDir, pos);
     clampDirToAvPlane(pos, st.repolDir, true);
+  }
+
+  // Spatially smooth free-wall directions so the shell grid reads as one coherent
+  // wavefront (neighbor average), not independent noisy arrows.
+  {
+    const smoothDepol: THREE.Vector3[] = states.map(() => new THREE.Vector3());
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = 0; i < n; i++) {
+        const st = states[i]!;
+        const sample = opts.samples[i]!;
+        smoothDepol[i]!.copy(st.depolDir);
+        if (st.lat >= INF || sample.tissue !== "ventricular" || inSeptum(sample.pos)) continue;
+        const neigh = neighbors[i]!;
+        _depol.copy(st.depolDir);
+        let w = 1;
+        for (let ni = 0; ni < neigh.length; ni++) {
+          const j = neigh[ni]!;
+          const sj = states[j]!;
+          if (sj.lat >= INF) continue;
+          if (opts.samples[j]!.tissue !== "ventricular") continue;
+          // Only blend with neighbors activated in a similar window
+          if (Math.abs(sj.lat - st.lat) > 0.08) continue;
+          const align = Math.max(0, st.depolDir.dot(sj.depolDir));
+          const ww = 0.55 + 0.45 * align;
+          _depol.addScaledVector(sj.depolDir, ww);
+          w += ww;
+        }
+        if (w > 1e-6) smoothDepol[i]!.copy(_depol.multiplyScalar(1 / w));
+        if (smoothDepol[i]!.lengthSq() > 1e-10) smoothDepol[i]!.normalize();
+        projectOntoShellTangent(smoothDepol[i]!, sample.pos);
+        clampDirToAvPlane(sample.pos, smoothDepol[i]!, true);
+      }
+      for (let i = 0; i < n; i++) {
+        const st = states[i]!;
+        if (st.lat >= INF) continue;
+        if (opts.samples[i]!.tissue !== "ventricular") continue;
+        if (inSeptum(opts.samples[i]!.pos)) continue;
+        st.depolDir.copy(smoothDepol[i]!);
+        st.repolDir.lerp(st.depolDir, 0.85);
+        if (st.repolDir.lengthSq() > 1e-10) st.repolDir.normalize();
+        projectOntoShellTangent(st.repolDir, opts.samples[i]!.pos);
+      }
+    }
   }
 
   let ventMin = INF;
