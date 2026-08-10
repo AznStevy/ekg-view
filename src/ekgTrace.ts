@@ -579,6 +579,16 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
       useRhythmBuffer?: boolean;
       /** Override loop period for restart marks (defaults to paintCycleSec) */
       restartCycleSec?: number;
+      /**
+       * What to paint. 12-channel uses chrome → wave → overlay so tall QRS can
+       * spill into neighboring rows without later grids covering the tips.
+       */
+      paint?: "all" | "chrome" | "wave" | "overlay";
+      /**
+       * When false, the waveform may leave the cell vertically (still clipped
+       * to the strip width). Classic paper grid keeps the default clip.
+       */
+      clipWave?: boolean;
     },
   ) {
     const c = ctx!;
@@ -591,82 +601,106 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
     const i1 = Math.round(toFrac * (SAMPLES - 1));
     const span = Math.max(1, i1 - i0);
     const restartCycle = opts?.restartCycleSec ?? paintCycleSec;
+    const paint = opts?.paint ?? "all";
+    const doChrome = paint === "all" || paint === "chrome";
+    const doWave = paint === "all" || paint === "wave";
+    const doOverlay = paint === "all" || paint === "overlay";
+    const clipWave = opts?.clipWave !== false;
 
     // Square paper boxes: 1 mm small, 5 mm large (= 0.2 s horizontally)
     const mm = paperMmPx;
-    c.save();
-    c.beginPath();
-    c.rect(x, y, w, h);
-    c.clip();
-
-    if (missing) {
-      c.fillStyle = "rgba(8, 14, 18, 0.55)";
-      c.fillRect(x, y, w, h);
-    }
-
-    const drawGrid = (major: boolean) => {
-      c.strokeStyle = major ? GRID.large : GRID.small;
-      c.lineWidth = major ? 1.25 : 1;
-      // Vertical
-      for (let i = 0; ; i++) {
-        const gx = x + i * mm;
-        if (gx > x + w + 0.5) break;
-        if ((i % 5 === 0) !== major) continue;
-        c.beginPath();
-        c.moveTo(Math.floor(gx) + 0.5, y);
-        c.lineTo(Math.floor(gx) + 0.5, y + h);
-        c.stroke();
-      }
-      // Horizontal
-      for (let i = 0; ; i++) {
-        const gy = y + i * mm;
-        if (gy > y + h + 0.5) break;
-        if ((i % 5 === 0) !== major) continue;
-        c.beginPath();
-        c.moveTo(x, Math.floor(gy) + 0.5);
-        c.lineTo(x + w, Math.floor(gy) + 0.5);
-        c.stroke();
-      }
-    };
-    drawGrid(false);
-    drawGrid(true);
-
     const mid = y + h * 0.55;
     // Fixed paper gain: 10 mm/mV — same in grid and 12-channel (do not scale by row height).
     const MM_PER_MV = 10;
     const amp = paperMmPx * MM_PER_MV;
-    c.strokeStyle = GRID.baseline;
-    c.beginPath();
-    c.moveTo(x, mid);
-    c.lineTo(x + w, mid);
-    c.stroke();
 
-    // Faint vertical marks where the uploaded recording loops (all leads)
-    if (upload && Number.isFinite(bufferEndSec) && restartCycle > 0.25) {
-      c.strokeStyle = GRID.cycleRestart;
-      c.lineWidth = 1;
-      c.setLineDash([3, 4]);
-      let prevPhase = Number.NaN;
-      for (let i = i0; i <= i1; i++) {
-        const age = ((SAMPLES - 1 - i) / Math.max(1, SAMPLES - 1)) * viewWindowSec;
-        const tAbs = bufferEndSec - age;
-        const phase = ((tAbs % restartCycle) + restartCycle) % restartCycle;
-        if (Number.isFinite(prevPhase) && prevPhase > phase + restartCycle * 0.5) {
-          const px = x + ((i - i0) / span) * w;
+    if (doChrome) {
+      c.save();
+      c.beginPath();
+      c.rect(x, y, w, h);
+      c.clip();
+
+      if (missing) {
+        c.fillStyle = "rgba(8, 14, 18, 0.55)";
+        c.fillRect(x, y, w, h);
+      }
+
+      const drawGrid = (major: boolean) => {
+        c.strokeStyle = major ? GRID.large : GRID.small;
+        c.lineWidth = major ? 1.25 : 1;
+        // Vertical
+        for (let i = 0; ; i++) {
+          const gx = x + i * mm;
+          if (gx > x + w + 0.5) break;
+          if ((i % 5 === 0) !== major) continue;
           c.beginPath();
-          c.moveTo(Math.floor(px) + 0.5, y);
-          c.lineTo(Math.floor(px) + 0.5, y + h);
+          c.moveTo(Math.floor(gx) + 0.5, y);
+          c.lineTo(Math.floor(gx) + 0.5, y + h);
           c.stroke();
         }
-        prevPhase = phase;
+        // Horizontal
+        for (let i = 0; ; i++) {
+          const gy = y + i * mm;
+          if (gy > y + h + 0.5) break;
+          if ((i % 5 === 0) !== major) continue;
+          c.beginPath();
+          c.moveTo(x, Math.floor(gy) + 0.5);
+          c.lineTo(x + w, Math.floor(gy) + 0.5);
+          c.stroke();
+        }
+      };
+      drawGrid(false);
+      drawGrid(true);
+
+      c.strokeStyle = GRID.baseline;
+      c.beginPath();
+      c.moveTo(x, mid);
+      c.lineTo(x + w, mid);
+      c.stroke();
+
+      // Faint vertical marks where the uploaded recording loops (all leads)
+      if (upload && Number.isFinite(bufferEndSec) && restartCycle > 0.25) {
+        c.strokeStyle = GRID.cycleRestart;
+        c.lineWidth = 1;
+        c.setLineDash([3, 4]);
+        let prevPhase = Number.NaN;
+        for (let i = i0; i <= i1; i++) {
+          const age = ((SAMPLES - 1 - i) / Math.max(1, SAMPLES - 1)) * viewWindowSec;
+          const tAbs = bufferEndSec - age;
+          const phase = ((tAbs % restartCycle) + restartCycle) % restartCycle;
+          if (Number.isFinite(prevPhase) && prevPhase > phase + restartCycle * 0.5) {
+            const px = x + ((i - i0) / span) * w;
+            c.beginPath();
+            c.moveTo(Math.floor(px) + 0.5, y);
+            c.lineTo(Math.floor(px) + 0.5, y + h);
+            c.stroke();
+          }
+          prevPhase = phase;
+        }
+        c.setLineDash([]);
       }
-      c.setLineDash([]);
+
+      if (!missing) {
+        const cx = x + cursorXLocal;
+        c.fillStyle = "rgba(240, 192, 64, 0.06)";
+        c.fillRect(cx - 3, y, 6, h);
+      }
+
+      c.restore();
     }
 
-    if (!missing) {
+    if (doWave && !missing) {
+      c.save();
+      c.beginPath();
+      if (clipWave) {
+        c.rect(x, y, w, h);
+      } else {
+        // Keep the strip width; allow tall deflections into neighboring rows.
+        c.rect(x, 0, w, cssH);
+      }
+      c.clip();
+
       const cx = x + cursorXLocal;
-      c.fillStyle = "rgba(240, 192, 64, 0.06)";
-      c.fillRect(cx - 3, y, 6, h);
 
       c.beginPath();
       for (let i = i0; i <= i1; i++) {
@@ -705,8 +739,8 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
       c.strokeStyle = "rgba(240, 192, 64, 0.35)";
       c.lineWidth = 1;
       c.beginPath();
-      c.moveTo(cx + 0.5, y);
-      c.lineTo(cx + 0.5, y + h);
+      c.moveTo(cx + 0.5, clipWave ? y : 0);
+      c.lineTo(cx + 0.5, clipWave ? y + h : cssH);
       c.stroke();
 
       c.fillStyle = "rgba(240, 192, 64, 0.35)";
@@ -726,19 +760,51 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
       c.beginPath();
       c.arc(cx, cy, 1.6, 0, Math.PI * 2);
       c.fill();
+
+      c.restore();
     }
 
-    c.fillStyle = missing ? "rgba(138, 160, 174, 0.55)" : GRID.label;
-    c.font = '600 11px "IBM Plex Mono", monospace';
-    c.textAlign = "left";
-    c.textBaseline = "top";
-    c.fillText(missing ? `${label} · —` : label, x + 6, y + 5);
+    if (doOverlay) {
+      c.fillStyle = missing ? "rgba(138, 160, 174, 0.55)" : GRID.label;
+      c.font = '600 11px "IBM Plex Mono", monospace';
+      c.textAlign = "left";
+      c.textBaseline = "top";
+      c.fillText(missing ? `${label} · —` : label, x + 6, y + 5);
 
-    c.restore();
+      c.strokeStyle = GRID.panelLine;
+      c.lineWidth = 1;
+      c.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+    }
+  }
 
-    c.strokeStyle = GRID.panelLine;
-    c.lineWidth = 1;
-    c.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+  /** Chrome → wave → overlay so tall deflections can spill across neighboring cells. */
+  function paintSpillingLeadCells(
+    cells: Array<{
+      lead: LeadId;
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+      cursorXLocal: number;
+      opts?: {
+        missing?: boolean;
+        label?: string;
+        fromFrac?: number;
+        toFrac?: number;
+        useRhythmBuffer?: boolean;
+        restartCycleSec?: number;
+      };
+    }>,
+  ) {
+    for (const paint of ["chrome", "wave", "overlay"] as const) {
+      for (const cell of cells) {
+        drawLeadCell(cell.lead, cell.x, cell.y, cell.w, cell.h, cell.cursorXLocal, {
+          ...cell.opts,
+          paint,
+          clipWave: false,
+        });
+      }
+    }
   }
 
   function displayLeads(): LeadId[] {
@@ -886,53 +952,64 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
     const gridTop = barH + 4;
     caliperTop = gridTop;
 
-    // Stacked 12-channel monitor: one full-width row per lead
+    // Stacked 12-channel monitor: one full-width row per lead.
+    // Paint chrome → waves → overlays so tall QRS can spill across rows.
     if (isChannels) {
       const pack = LEADS;
       const rowH = (cssH - gridTop - 4) / pack.length;
       const cursorLocal = cssW - pad * 2 - 6;
-      pack.forEach((lead, i) => {
-        drawLeadCell(
+      paintSpillingLeadCells(
+        pack.map((lead, i) => ({
           lead,
-          pad,
-          gridTop + i * rowH,
-          cssW - pad * 2,
-          Math.max(1, rowH - 1),
-          cursorLocal,
-          {
+          x: pad,
+          y: gridTop + i * rowH,
+          w: cssW - pad * 2,
+          h: Math.max(1, rowH - 1),
+          cursorXLocal: cursorLocal,
+          opts: {
             label: labelFor(lead),
             missing: upload ? !shown.has(lead) : false,
             fromFrac: 0,
             toFrac: 1,
           },
-        );
-      });
+        })),
+      );
       return finishFrame(sample, tCycle);
     }
 
     // Telemetry / single-channel: one large strip
     if (layout === "telemetry" || available.length === 1) {
       const rhythmH = cssH - gridTop - 4;
-      drawLeadCell(rhythmLead, pad, gridTop, cssW - pad * 2, rhythmH, cssW - pad * 2 - 6, {
-        label: `${labelFor(rhythmLead)}${layout === "telemetry" ? "  telemetry" : ""}`,
-      });
+      paintSpillingLeadCells([
+        {
+          lead: rhythmLead,
+          x: pad,
+          y: gridTop,
+          w: cssW - pad * 2,
+          h: rhythmH,
+          cursorXLocal: cssW - pad * 2 - 6,
+          opts: {
+            label: `${labelFor(rhythmLead)}${layout === "telemetry" ? "  telemetry" : ""}`,
+          },
+        },
+      ]);
       return finishFrame(sample, tCycle);
     }
 
     // Rhythm-only pair: stacked full-width strips
     if (layout === "rhythm" || available.length === 2) {
       const rowH = (cssH - gridTop - 4) / available.length;
-      available.forEach((lead, i) => {
-        drawLeadCell(
+      paintSpillingLeadCells(
+        available.map((lead, i) => ({
           lead,
-          pad,
-          gridTop + i * rowH,
-          cssW - pad * 2,
-          rowH - 2,
-          cssW - pad * 2 - 6,
-          { label: labelFor(lead) },
-        );
-      });
+          x: pad,
+          y: gridTop + i * rowH,
+          w: cssW - pad * 2,
+          h: rowH - 2,
+          cursorXLocal: cssW - pad * 2 - 6,
+          opts: { label: labelFor(lead) },
+        })),
+      );
       return finishFrame(sample, tCycle);
     }
 
@@ -947,19 +1024,21 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
         layout === "limb6"
           ? (["I", "II", "III", "aVR", "aVL", "aVF"] as LeadId[])
           : (["V1", "V2", "V3", "V4", "V5", "V6"] as LeadId[]);
-      pack.forEach((lead, i) => {
-        const col = i % cols;
-        const row = Math.floor(i / cols);
-        drawLeadCell(
-          lead,
-          pad + col * colW,
-          gridTop + row * rowH,
-          colW,
-          rowH,
-          colW - 6,
-          { missing: !shown.has(lead) },
-        );
-      });
+      paintSpillingLeadCells(
+        pack.map((lead, i) => {
+          const col = i % cols;
+          const row = Math.floor(i / cols);
+          return {
+            lead,
+            x: pad + col * colW,
+            y: gridTop + row * rowH,
+            w: colW,
+            h: rowH,
+            cursorXLocal: colW - 6,
+            opts: { missing: !shown.has(lead) },
+          };
+        }),
+      );
       return finishFrame(sample, tCycle);
     }
 
@@ -971,25 +1050,62 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
     const rowH = gridH / 3;
     const cursorLocal = colW - 6;
 
+    const gridCells: Array<{
+      lead: LeadId;
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+      cursorXLocal: number;
+      opts?: {
+        missing?: boolean;
+        fromFrac?: number;
+        toFrac?: number;
+        useRhythmBuffer?: boolean;
+        restartCycleSec?: number;
+      };
+    }> = [];
     for (let col = 0; col < GRID_COLS; col++) {
       for (let row = 0; row < 3; row++) {
         const lead = LEAD_GRID[col]![row]!;
-        drawLeadCell(lead, pad + col * colW, gridTop + row * rowH, colW, rowH, cursorLocal, {
-          missing: upload ? !shown.has(lead) : false,
-          fromFrac: gridFromFrac,
-          toFrac: 1,
+        gridCells.push({
+          lead,
+          x: pad + col * colW,
+          y: gridTop + row * rowH,
+          w: colW,
+          h: rowH,
+          cursorXLocal: cursorLocal,
+          opts: {
+            missing: upload ? !shown.has(lead) : false,
+            fromFrac: gridFromFrac,
+            toFrac: 1,
+          },
         });
       }
     }
 
+    let ry = 0;
     if (showRhythm) {
-      const ry = gridTop + gridH + 2;
-      drawLeadCell(rhythmLead, pad, ry, cssW - pad * 2, rhythmH - 2, cssW - pad * 2 - 6, {
-        fromFrac: 0,
-        toFrac: 1,
-        useRhythmBuffer: !!upload?.rhythmSignal,
-        restartCycleSec: paintRhythmCycleSec,
+      ry = gridTop + gridH + 2;
+      gridCells.push({
+        lead: rhythmLead,
+        x: pad,
+        y: ry,
+        w: cssW - pad * 2,
+        h: rhythmH - 2,
+        cursorXLocal: cssW - pad * 2 - 6,
+        opts: {
+          fromFrac: 0,
+          toFrac: 1,
+          useRhythmBuffer: !!upload?.rhythmSignal,
+          restartCycleSec: paintRhythmCycleSec,
+        },
       });
+    }
+
+    paintSpillingLeadCells(gridCells);
+
+    if (showRhythm) {
       c.fillStyle = "#3db8c8";
       c.font = '600 10px "IBM Plex Mono", monospace';
       c.textAlign = "left";
