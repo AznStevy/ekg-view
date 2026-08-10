@@ -346,6 +346,7 @@ export async function parseEkgImage(file: File): Promise<UploadedEkg> {
     while (cols.length < 5) cols.push(w);
 
     const rows = detectClassic12Rows(ink, w, h, bands);
+    const calCenters = detectCalibrationPulses(ink, w, h).centers;
     const shortLeads: Partial<Record<LeadId, Float32Array>> = {};
     let idx = 0;
     let shortest = Infinity;
@@ -360,7 +361,10 @@ export async function parseEkgImage(file: File): Promise<UploadedEkg> {
         const rx0 = x0 + pad;
         const rx1 = x1 - 2;
         splitRegions.push({ lead: id, x0: rx0, y0: band.y0, x1: rx1, y1: band.y1 });
-        const sig = extractBandMv(ink, w, band.y0, band.y1, rx0, rx1, mvPerPx);
+        const sig = extractBandMv(ink, w, band.y0, band.y1, rx0, rx1, mvPerPx, {
+          boxPx,
+          baselineHint: calCenters[r],
+        });
         shortLeads[id] = sig;
         shortest = Math.min(shortest, sig.length);
         await yieldToUi();
@@ -377,7 +381,10 @@ export async function parseEkgImage(file: File): Promise<UploadedEkg> {
     const rhythm = rows[3];
     if (rhythm) {
       const rx0 = Math.floor(boxPx * 1.2);
-      rhythmSignal = extractBandMv(ink, w, rhythm.y0, rhythm.y1, rx0, w, mvPerPx);
+      rhythmSignal = extractBandMv(ink, w, rhythm.y0, rhythm.y1, rx0, w, mvPerPx, {
+        boxPx,
+        baselineHint: calCenters[3],
+      });
       splitRegions.push({
         lead: "rhythm",
         x0: rx0,
@@ -420,7 +427,7 @@ export async function parseEkgImage(file: File): Promise<UploadedEkg> {
     const y0 = bands[0]?.y0 ?? Math.floor(h * 0.12);
     const y1 = bands[0]?.y1 ?? Math.floor(h * 0.88);
     splitRegions.push({ lead: "II", x0: 0, y0, x1: w, y1 });
-    leadSignals.II = extractBandMv(ink, w, y0, y1, 0, w, mvPerPx);
+    leadSignals.II = extractBandMv(ink, w, y0, y1, 0, w, mvPerPx, boxPx);
   } else {
     // Stacked multi-channel strip without clear columns
     const order: LeadId[] = ["II", "I", "III", "V1", "V2", "V3", "V4", "V5", "V6", "aVR", "aVL", "aVF"];
@@ -428,7 +435,7 @@ export async function parseEkgImage(file: File): Promise<UploadedEkg> {
       const b = bands[i]!;
       const id = order[i]!;
       splitRegions.push({ lead: id, x0: 0, y0: b.y0, x1: w, y1: b.y1 });
-      leadSignals[id] = extractBandMv(ink, w, b.y0, b.y1, 0, w, mvPerPx);
+      leadSignals[id] = extractBandMv(ink, w, b.y0, b.y1, 0, w, mvPerPx, boxPx);
       await yieldToUi();
     }
   }
@@ -515,9 +522,28 @@ export async function reprocessUploadFromRegions(
   const leadSignals: Partial<Record<LeadId, Float32Array>> = {};
   let rhythmSignal: Float32Array | undefined;
   let gridLenHint = Infinity;
+  const calCenters = detectCalibrationPulses(ink, w, h).centers;
 
   for (const r of clamped) {
-    const sig = extractBandMv(ink, w, r.y0, r.y1, r.x0, r.x1, mvPerPx);
+    const midY = (r.y0 + r.y1) * 0.5;
+    let baselineHint: number | undefined;
+    if (calCenters.length) {
+      let best = calCenters[0]!;
+      let bestD = Math.abs(best - midY);
+      for (let i = 1; i < calCenters.length; i++) {
+        const c = calCenters[i]!;
+        const d = Math.abs(c - midY);
+        if (d < bestD) {
+          best = c;
+          bestD = d;
+        }
+      }
+      if (best >= r.y0 && best < r.y1) baselineHint = best;
+    }
+    const sig = extractBandMv(ink, w, r.y0, r.y1, r.x0, r.x1, mvPerPx, {
+      boxPx,
+      baselineHint,
+    });
     if (r.lead === "rhythm") {
       rhythmSignal = sig;
     } else {
@@ -650,8 +676,16 @@ function detectClassic12Rows(
   }));
 }
 
-/** Find ~4 calibration-pulse centers along the left margin. */
-function detectCalibrationRowCenters(ink: Float32Array, w: number, h: number): number[] {
+/**
+ * Left-margin 1 mV calibration pulses (Wave-Maven stacks four).
+ * Peak-picks row ink, then expands each hit to the pulse body so the center
+ * is the baseline (mid-pulse) — not the top plateau where row-sum peaks.
+ */
+function detectCalibrationPulses(
+  ink: Float32Array,
+  w: number,
+  h: number,
+): { centers: number[]; heights: number[] } {
   const x1 = Math.min(w, Math.floor(w * 0.09));
   const row = new Float32Array(h);
   for (let y = 0; y < h; y++) {
@@ -659,7 +693,6 @@ function detectCalibrationRowCenters(ink: Float32Array, w: number, h: number): n
     for (let x = 2; x < x1; x++) s += ink[y * w + x]!;
     row[y] = s;
   }
-  // Smooth
   const sm = new Float32Array(h);
   for (let y = 0; y < h; y++) {
     let s = 0;
@@ -673,16 +706,42 @@ function detectCalibrationRowCenters(ink: Float32Array, w: number, h: number): n
     sm[y] = s / n;
   }
   const max = Math.max(...sm, 1);
-  const thresh = max * 0.28;
-  const peaks: number[] = [];
+  const peakThresh = max * 0.28;
+  const bodyThresh = max * 0.16;
+  const minSep = h * 0.1;
+  const rawPeaks: number[] = [];
   for (let y = Math.floor(h * 0.04); y < Math.floor(h * 0.95); y++) {
-    if (sm[y]! < thresh) continue;
+    if (sm[y]! < peakThresh) continue;
     if (sm[y]! >= sm[y - 1]! && sm[y]! >= sm[y + 1]!) {
-      if (!peaks.length || y - peaks[peaks.length - 1]! > h * 0.1) peaks.push(y);
-      else if (sm[y]! > sm[peaks[peaks.length - 1]!]!) peaks[peaks.length - 1] = y;
+      if (!rawPeaks.length || y - rawPeaks[rawPeaks.length - 1]! > minSep) rawPeaks.push(y);
+      else if (sm[y]! > sm[rawPeaks[rawPeaks.length - 1]!]!) rawPeaks[rawPeaks.length - 1] = y;
     }
   }
-  return peaks.slice(0, 4);
+
+  const centers: number[] = [];
+  const heights: number[] = [];
+  // ~2.3 large boxes at typical printout scale — blocks merged multi-row ink
+  const maxSpan = Math.max(16, Math.floor(h * 0.09));
+  for (const peak of rawPeaks.slice(0, 4)) {
+    let y0 = peak;
+    let y1 = peak;
+    while (y0 > 1 && sm[y0 - 1]! >= bodyThresh) y0--;
+    while (y1 < h - 2 && sm[y1 + 1]! >= bodyThresh) y1++;
+    if (y1 - y0 + 1 > maxSpan) {
+      y0 = Math.max(y0, peak - Math.floor(maxSpan / 2));
+      y1 = Math.min(y1, peak + Math.floor(maxSpan / 2));
+    }
+    const span = y1 - y0 + 1;
+    if (span < Math.max(8, h * 0.01)) continue;
+    centers.push(Math.floor((y0 + y1) * 0.5));
+    heights.push(span);
+  }
+  return { centers, heights };
+}
+
+/** Find ~4 calibration-pulse centers along the left margin. */
+function detectCalibrationRowCenters(ink: Float32Array, w: number, h: number): number[] {
+  return detectCalibrationPulses(ink, w, h).centers;
 }
 
 /** Dark ink only — pink/red grid pixels are suppressed. */
@@ -735,43 +794,80 @@ function detectLargeBoxPitch(data: Uint8ClampedArray, w: number, h: number): num
       proj[x]! += pink;
     }
   }
-  const minLag = Math.max(6, Math.floor(w / 80));
-  const maxLag = Math.min(Math.floor(w / 12), 80);
-  let bestLag = 0;
-  let bestScore = -Infinity;
-  for (let lag = minLag; lag <= maxLag; lag++) {
+  const scoreAt = (lag: number): number => {
     let s = 0;
     for (let x = 0; x < w - lag; x += 2) s += proj[x]! * proj[x + lag]!;
+    return s;
+  };
+  // Cap search near ~1–2 expected large boxes. Autocorr often peaks at 2–3×
+  // the true pitch (Wave-Maven @1024px: 60 beats 20 by a hair) and that
+  // understates 10 mm/mV gain by the same factor.
+  const expected = Math.max(10, Math.round(w / 50));
+  const minLag = Math.max(6, Math.floor(expected * 0.45));
+  const maxLag = Math.min(Math.floor(expected * 2.2), Math.floor(w / 18), 72);
+  let bestLag = expected;
+  let bestScore = -Infinity;
+  for (let lag = minLag; lag <= maxLag; lag++) {
+    const s = scoreAt(lag);
     if (s > bestScore) {
       bestScore = s;
       bestLag = lag;
     }
   }
+  // Prefer the fundamental when a near-tied harmonic won (e.g. 60 vs 20)
+  let pitch = bestLag;
+  for (let k = 2; k <= 4; k++) {
+    if (bestLag % k !== 0) continue;
+    const sub = bestLag / k;
+    if (sub < minLag || sub > maxLag) continue;
+    if (scoreAt(sub) >= bestScore * 0.96) pitch = sub;
+  }
+  // Soft preference for the paper-typical size when scores are close
+  if (Math.abs(pitch - expected) > expected * 0.35) {
+    const near = Math.max(minLag, Math.min(maxLag, expected));
+    if (scoreAt(near) >= bestScore * 0.94) pitch = near;
+  }
   // Prefer multiples that look like 5 small boxes; bestLag is often 1 small box
-  // Large box = 5 small → try 5× if small
-  if (bestLag > 0 && bestLag < 14) return bestLag * 5;
-  return bestLag;
+  if (pitch > 0 && pitch < 14) return pitch * 5;
+  return pitch;
 }
 
 function estimateMvPerPx(ink: Float32Array, w: number, h: number, boxPx: number): number {
-  // Standard paper gain: 10 mm = 1 mV = 2 large boxes
-  const stdMvPerPx = 1 / (2 * boxPx);
-  // Look for the 1 mV calibration square-wave height on the left margin
-  const x1 = Math.min(w, Math.floor(boxPx * 4));
-  let calSpan = 0;
-  for (let x = 2; x < x1; x++) {
-    let yTop = -1;
-    let yBot = -1;
-    for (let y = 0; y < h; y++) {
-      if (ink[y * w + x]! > 40) {
-        if (yTop < 0) yTop = y;
-        yBot = y;
-      }
-    }
-    if (yTop >= 0) calSpan = Math.max(calSpan, yBot - yTop);
+  // Standard paper gain: 10 mm = 1 mV = 2 large boxes (from grid pitch)
+  const box = Math.max(1, boxPx);
+  const stdMvPerPx = 1 / (2 * box);
+
+  // Calibration pulses can refine gain when several agree and clearly differ
+  // from the grid estimate (e.g. nonstandard printing). Prefer grid otherwise —
+  // single noisy pulse heights (Wave-Maven) skew all amplitudes.
+  const { heights } = detectCalibrationPulses(ink, w, h);
+  const plausible = heights.filter((span) => span > box * 1.7 && span < box * 2.3);
+  if (plausible.length >= 2) {
+    const sorted = [...plausible].sort((a, b) => a - b);
+    const mid = sorted[Math.floor(sorted.length / 2)]!;
+    if (Math.abs(mid - 2 * box) > box * 0.3) return 1 / mid;
   }
-  if (calSpan > boxPx * 1.4 && calSpan < boxPx * 10) {
-    return 1 / calSpan;
+
+  // Fallback: contiguous ink runs in the far-left columns (rising edges)
+  const x1 = Math.min(w, Math.max(8, Math.floor(box * 4)));
+  const edgeHeights: number[] = [];
+  for (let x = 2; x < x1; x++) {
+    let y = 0;
+    while (y < h) {
+      while (y < h && ink[y * w + x]! <= 40) y++;
+      if (y >= h) break;
+      const y0 = y;
+      while (y < h && ink[y * w + x]! > 40) y++;
+      const span = y - y0;
+      if (span > box * 1.35 && span < box * 3.2) edgeHeights.push(span);
+    }
+  }
+  if (edgeHeights.length >= 3) {
+    edgeHeights.sort((a, b) => a - b);
+    const mid = edgeHeights[Math.floor(edgeHeights.length / 2)]!;
+    if (mid > box * 1.7 && mid < box * 2.3 && Math.abs(mid - 2 * box) > box * 0.3) {
+      return 1 / mid;
+    }
   }
   return stdMvPerPx;
 }
@@ -853,6 +949,35 @@ function detectInkBandsFromMask(ink: Float32Array, w: number, h: number): { y0: 
   return merged.slice(0, 8);
 }
 
+/**
+ * Suppress horizontally persistent ink (isoelectric stroke / grid ghosts) so
+ * Viterbi follows QRS spikes instead of riding the baseline highway.
+ * Only fills the active search lane for the current crop.
+ */
+function buildTrackInk(
+  ink: Float32Array,
+  w: number,
+  x0: number,
+  x1: number,
+  y0: number,
+  y1: number,
+): Float32Array {
+  const out = new Float32Array(ink.length);
+  const xL = Math.max(1, x0);
+  const xR = Math.min(w - 1, x1);
+  for (let y = y0; y < y1; y++) {
+    const row = y * w;
+    for (let x = xL; x < xR; x++) {
+      const v = ink[row + x]!;
+      if (v < 8) continue;
+      const l = ink[row + x - 1]!;
+      const r = ink[row + x + 1]!;
+      out[row + x] = Math.max(0, v - Math.min(l, r) * 0.9);
+    }
+  }
+  return out;
+}
+
 function extractBandMv(
   ink: Float32Array,
   w: number,
@@ -861,7 +986,13 @@ function extractBandMv(
   x0: number,
   x1: number,
   mvPerPx: number,
+  opts?: number | { boxPx?: number; baselineHint?: number },
 ): Float32Array {
+  const boxPx =
+    typeof opts === "number"
+      ? opts
+      : (opts?.boxPx ?? 1 / (2 * Math.max(1e-6, mvPerPx)));
+  const baselineHint = typeof opts === "number" ? undefined : opts?.baselineHint;
   const xStart = Math.max(0, Math.min(w - 1, x0));
   const xEnd = Math.max(xStart + 1, Math.min(w, x1));
   const width = Math.max(1, xEnd - xStart);
@@ -869,28 +1000,41 @@ function extractBandMv(
   const hCell = Math.max(1, y1 - y0);
   const yCore0 = y0 + Math.max(2, Math.floor(hCell * 0.12));
   const yCore1 = y1 - Math.max(1, Math.floor(hCell * 0.03));
-  // Wide lane: overflow QRS (V2 into V1, V3 into rhythm, etc.) must stay searchable
-  const lanePad = Math.max(64, Math.floor(hCell * 2.4));
-  const lane0 = Math.max(0, y0 - lanePad);
-  const lane1 = Math.min(hImg, y1 + lanePad);
+  const box = Math.max(8, boxPx);
+  // Allow deep QRS (~±2.5 mV) but do NOT open a lane into the neighboring
+  // lead's baseline — expanding the split box used to cause HF chatter as the
+  // path oscillated between two stacked traces (classic V1/V2/V3 failure).
+  const maxDeflect = Math.max(Math.floor(box * 5), 48);
+  const anchorY =
+    baselineHint != null && baselineHint >= y0 - box && baselineHint <= y1 + box
+      ? baselineHint
+      : (y0 + y1) * 0.5;
+  const lanePad = Math.max(Math.floor(box * 1.25), 16);
+  let lane0 = Math.max(0, Math.max(y0 - lanePad, Math.floor(anchorY - maxDeflect)));
+  let lane1 = Math.min(hImg, Math.min(y1 + lanePad, Math.ceil(anchorY + maxDeflect)));
+  if (lane1 - lane0 < box * 2) {
+    lane0 = Math.max(0, Math.floor(anchorY - maxDeflect));
+    lane1 = Math.min(hImg, Math.ceil(anchorY + maxDeflect));
+  }
   const H = Math.max(1, lane1 - lane0);
-  // Steep VT upstrokes can move most of a cell height in one pixel column
-  const maxStep = Math.max(48, Math.floor(hCell * 2.2));
+  // Steep QRS can fall ~2 mV in a few pixels; allow that, but make long hops costly.
+  const maxStep = Math.max(Math.floor(box * 3), 24);
 
-  // Viterbi path: follow continuous ink even when it leaves the labeled crop box.
-  // Emission favors dark ink; transition favors continuity; soft band keeps the
-  // path on THIS lead when multiple stacked traces share a column (V1/V2/V3).
+  const track = buildTrackInk(ink, w, xStart, xEnd, lane0, lane1);
+
   const INF = 1e12;
   let prevCost = new Float32Array(H);
   let currCost = new Float32Array(H);
   const back = new Int32Array(width * H);
+  const outBand = 3.2;
 
   for (let yi = 0; yi < H; yi++) {
     const y = lane0 + yi;
-    const v = ink[y * w + xStart]!;
+    const v = track[y * w + xStart]!;
     const band =
-      y < yCore0 ? (yCore0 - y) * 0.55 : y >= yCore1 ? (y - (yCore1 - 1)) * 0.55 : 0;
-    prevCost[yi] = (v < 8 ? 90 : -v * 1.35) + band;
+      y < yCore0 ? (yCore0 - y) * 0.85 : y >= yCore1 ? (y - (yCore1 - 1)) * 0.85 : 0;
+    const anchor = Math.abs(y - anchorY) * 0.08;
+    prevCost[yi] = (v < 6 ? 70 : -v * 1.6) + band + anchor;
   }
 
   for (let xi = 1; xi < width; xi++) {
@@ -898,11 +1042,11 @@ function extractBandMv(
     currCost.fill(INF);
     for (let yi = 0; yi < H; yi++) {
       const y = lane0 + yi;
-      const v = ink[y * w + x]!;
-      // Soft preference for the labeled cell — never a hard wall (overflow tips live outside)
+      const v = track[y * w + x]!;
       const band =
-        y < y0 ? (y0 - y) * 0.12 : y >= y1 ? (y - (y1 - 1)) * 0.12 : 0;
-      const emit = (v < 8 ? 55 : -v * 1.35) + band;
+        y < y0 ? (y0 - y) * outBand : y >= y1 ? (y - (y1 - 1)) * outBand : 0;
+      const anchor = Math.abs(y - anchorY) * 0.08;
+      const emit = (v < 6 ? 48 : -v * 1.6) + band + anchor;
 
       const j0 = Math.max(0, yi - maxStep);
       const j1 = Math.min(H - 1, yi + maxStep);
@@ -910,7 +1054,8 @@ function extractBandMv(
       let bestJ = yi;
       for (let j = j0; j <= j1; j++) {
         const step = Math.abs(yi - j);
-        const trans = step * 0.22 + (step > hCell ? (step - hCell) * 0.15 : 0);
+        // Quadratic-ish cost: cheap for QRS slopes, prohibitive for row hops.
+        const trans = step * 0.55 + (step * step) / Math.max(8, box);
         const c = prevCost[j]! + trans;
         if (c < best) {
           best = c;
@@ -925,14 +1070,13 @@ function extractBandMv(
     currCost = tmp;
   }
 
-  // Prefer an ending on ink near the row core (baseline after the last beat)
   let endYi = 0;
   let endBest = INF;
   for (let yi = 0; yi < H; yi++) {
     const y = lane0 + yi;
     const corePen =
-      y < yCore0 ? (yCore0 - y) * 0.4 : y >= yCore1 ? (y - (yCore1 - 1)) * 0.4 : 0;
-    const c = prevCost[yi]! + corePen;
+      y < yCore0 ? (yCore0 - y) * 0.55 : y >= yCore1 ? (y - (yCore1 - 1)) * 0.55 : 0;
+    const c = prevCost[yi]! + corePen + Math.abs(y - anchorY) * 0.05;
     if (c < endBest) {
       endBest = c;
       endYi = yi;
@@ -943,11 +1087,10 @@ function extractBandMv(
   let yi = endYi;
   for (let xi = width - 1; xi >= 0; xi--) {
     const y = lane0 + yi;
-    // Local ink centroid for sub-pixel stroke position
     let sumY = 0;
     let sumW = 0;
     const x = xStart + xi;
-    for (let yy = Math.max(lane0, y - 2); yy <= Math.min(lane1 - 1, y + 2); yy++) {
+    for (let yy = Math.max(lane0, y - 3); yy <= Math.min(lane1 - 1, y + 3); yy++) {
       const v = ink[yy * w + x]!;
       if (v < 8) continue;
       sumY += yy * v;
@@ -958,8 +1101,8 @@ function extractBandMv(
   }
 
   fillGaps(ys);
+  despikeTracePath(ys, Math.max(box * 1.8, 20));
 
-  // Isoelectric from flat segments in the row core (overflow peaks excluded)
   const rowCenterY = (yCore0 + yCore1) * 0.5;
   const flatYs: number[] = [];
   for (let i = 1; i < ys.length - 1; i++) {
@@ -968,8 +1111,12 @@ function extractBandMv(
     const dy = Math.abs(ys[i]! - ys[i - 1]!) + Math.abs(ys[i + 1]! - ys[i]!);
     if (dy < 4) flatYs.push(y);
   }
+  // Prefer left-margin calibration pulse center — flat-ink median often locks onto
+  // a dark mid-row stroke and shrinks QRS amplitude (Wave-Maven V2/V3).
   let baselineY = rowCenterY;
-  if (flatYs.length > 6) {
+  if (baselineHint != null && baselineHint >= y0 && baselineHint < y1) {
+    baselineY = baselineHint;
+  } else if (flatYs.length > 6) {
     flatYs.sort((a, b) => a - b);
     baselineY = flatYs[Math.floor(flatYs.length * 0.5)]!;
   }
@@ -1275,6 +1422,26 @@ function fillGaps(raw: Float32Array) {
     } else if (L >= 0) raw[x] = raw[L]!;
     else if (R < w) raw[x] = raw[R]!;
     else raw[x] = 0;
+  }
+}
+
+/** Remove single-sample row hops left by competing ink (stacked leads). */
+function despikeTracePath(ys: Float32Array, maxJump: number) {
+  if (ys.length < 3) return;
+  for (let pass = 0; pass < 3; pass++) {
+    for (let i = 1; i < ys.length - 1; i++) {
+      const a = ys[i - 1]!;
+      const b = ys[i]!;
+      const c = ys[i + 1]!;
+      if (!Number.isFinite(a) || !Number.isFinite(b) || !Number.isFinite(c)) continue;
+      const da = Math.abs(b - a);
+      const dc = Math.abs(b - c);
+      const ac = Math.abs(a - c);
+      // Isolated spike toward another row while neighbors agree
+      if (da > maxJump && dc > maxJump && ac < maxJump * 0.55) {
+        ys[i] = (a + c) * 0.5;
+      }
+    }
   }
 }
 

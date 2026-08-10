@@ -134,6 +134,8 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
   /** Full12 rhythm strip = 4 columns wide → 4× the column window */
   const GRID_COLS = 4;
   const MAX_WINDOW_SEC = COLUMN_WINDOW_SEC * GRID_COLS;
+  /** Shared playhead inset from each cell's right edge (keeps col-4 ‖ rhythm aligned). */
+  const PLAYHEAD_INSET_PX = 8;
   /**
    * Samples across the longest (rhythm) window.
    * With incremental fill we only sample new bins each frame; SUBSAMPLE stays
@@ -606,6 +608,11 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
     const doWave = paint === "all" || paint === "wave";
     const doOverlay = paint === "all" || paint === "overlay";
     const clipWave = opts?.clipWave !== false;
+    // Live edge = right of this cell. Same inset on every cell → column 4 lines up
+    // with the rhythm strip (both end at cssW - pad).
+    void cursorXLocal;
+    const cursorLocal = Math.max(PLAYHEAD_INSET_PX, w - PLAYHEAD_INSET_PX);
+    const playX = x + cursorLocal;
 
     // Square paper boxes: 1 mm small, 5 mm large (= 0.2 s horizontally)
     const mm = paperMmPx;
@@ -681,9 +688,8 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
       }
 
       if (!missing) {
-        const cx = x + cursorXLocal;
         c.fillStyle = "rgba(240, 192, 64, 0.06)";
-        c.fillRect(cx - 3, y, 6, h);
+        c.fillRect(playX - 3, y, 6, h);
       }
 
       c.restore();
@@ -700,7 +706,7 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
       }
       c.clip();
 
-      const cx = x + cursorXLocal;
+      const cx = playX;
 
       c.beginPath();
       for (let i = i0; i <= i1; i++) {
@@ -715,7 +721,7 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
       c.lineCap = "round";
       c.stroke();
 
-      const idx = Math.min(i1, Math.max(i0, i0 + Math.round((cursorXLocal / w) * span)));
+      const idx = Math.min(i1, Math.max(i0, i0 + Math.round((cursorLocal / w) * span)));
       const cy = mid - buf[idx]! * amp;
 
       const glowFrom = Math.max(i0, idx - 14);
@@ -736,13 +742,9 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
       c.stroke();
       c.shadowBlur = 0;
 
-      c.strokeStyle = "rgba(240, 192, 64, 0.35)";
-      c.lineWidth = 1;
-      c.beginPath();
-      c.moveTo(cx + 0.5, clipWave ? y : 0);
-      c.lineTo(cx + 0.5, clipWave ? y + h : cssH);
-      c.stroke();
-
+      // Cursor dot follows the wave tip (may sit in the spill zone).
+      // Vertical playhead is drawn in the overlay pass so it stays cell-bounded
+      // and is not covered by neighboring spilled waves.
       c.fillStyle = "rgba(240, 192, 64, 0.35)";
       c.beginPath();
       c.arc(cx, cy, 7, 0, Math.PI * 2);
@@ -774,6 +776,17 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
       c.strokeStyle = GRID.panelLine;
       c.lineWidth = 1;
       c.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+
+      // Playhead guide: always cell-bounded (drawn here so spilled waves cannot
+      // cover it). Inset keeps the last column + rhythm strip lines visible.
+      if (!missing) {
+        c.strokeStyle = "rgba(240, 192, 64, 0.55)";
+        c.lineWidth = 1.25;
+        c.beginPath();
+        c.moveTo(Math.floor(playX) + 0.5, y);
+        c.lineTo(Math.floor(playX) + 0.5, y + h);
+        c.stroke();
+      }
     }
   }
 
@@ -793,15 +806,18 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
         toFrac?: number;
         useRhythmBuffer?: boolean;
         restartCycleSec?: number;
+        /** When false, clip the wave to the cell (rhythm strip). Default true. */
+        spillWave?: boolean;
       };
     }>,
   ) {
     for (const paint of ["chrome", "wave", "overlay"] as const) {
       for (const cell of cells) {
+        const spill = cell.opts?.spillWave !== false;
         drawLeadCell(cell.lead, cell.x, cell.y, cell.w, cell.h, cell.cursorXLocal, {
           ...cell.opts,
           paint,
-          clipWave: false,
+          clipWave: !spill,
         });
       }
     }
@@ -916,7 +932,9 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
       ? "II"
       : available[0] ?? "II";
 
-    // Match classic paper: grid cells = 1 column window; rhythm strip = full width at same speed
+    // Match classic paper: grid cells = 1 column window; rhythm strip = full width at same speed.
+    // For uploads, size the column to the extracted lead duration so the full crop
+    // is visible (fixed 2.0s was chopping ~2.5s paper columns / widened split boxes).
     const isChannels = displayMode === "channels";
     const isSingleOrPair =
       !isChannels &&
@@ -930,9 +948,17 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
       !isSingleOrPair &&
       !isSixPack &&
       (layout === "full12" || shown.has("II") || available.length >= 6);
-    // 12-channel rows share the full rhythm-strip window so paper speed matches
-    viewWindowSec = isChannels || showRhythmStrip ? MAX_WINDOW_SEC : COLUMN_WINDOW_SEC;
-    const gridFromFrac = showRhythmStrip ? 1 - COLUMN_WINDOW_SEC / viewWindowSec : 0;
+    const columnSec = upload
+      ? Math.max(0.75, Math.min(6, upload.durationSec))
+      : COLUMN_WINDOW_SEC;
+    const stripSec =
+      upload?.rhythmDurationSec && upload.rhythmDurationSec > columnSec * 1.15
+        ? Math.min(30, upload.rhythmDurationSec)
+        : upload
+          ? columnSec * GRID_COLS
+          : MAX_WINDOW_SEC;
+    viewWindowSec = isChannels || showRhythmStrip ? stripSec : columnSec;
+    const gridFromFrac = showRhythmStrip ? Math.max(0, 1 - columnSec / viewWindowSec) : 0;
 
     const pad = 2;
     const traceW = Math.max(1, cssW - pad * 2);
@@ -1063,6 +1089,7 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
         toFrac?: number;
         useRhythmBuffer?: boolean;
         restartCycleSec?: number;
+        spillWave?: boolean;
       };
     }> = [];
     for (let col = 0; col < GRID_COLS; col++) {
@@ -1099,6 +1126,8 @@ export function createEkgTrace(host: HTMLElement): EkgTrace {
           toFrac: 1,
           useRhythmBuffer: !!upload?.rhythmSignal,
           restartCycleSec: paintRhythmCycleSec,
+          // Keep the bottom strip self-contained — no playhead/wave through the grid.
+          spillWave: false,
         },
       });
     }
