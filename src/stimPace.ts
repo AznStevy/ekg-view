@@ -88,8 +88,8 @@ export function branchesFromStim(site: StimSite): BranchWindow[] {
     out.push({
       id: site.segmentId,
       curveIndex: ci,
-      t0: 0.08,
-      t1: 0.2,
+      t0: 0.14,
+      t1: 0.26,
       group: "atrial",
       u0: u,
       u1: 1,
@@ -98,8 +98,8 @@ export function branchesFromStim(site: StimSite): BranchWindow[] {
       out.push({
         id: site.segmentId,
         curveIndex: ci,
-        t0: 0.08,
-        t1: 0.16,
+        t0: 0.14,
+        t1: 0.22,
         group: "atrial",
         u0: u,
         u1: 0,
@@ -119,10 +119,10 @@ export function branchesFromStim(site: StimSite): BranchWindow[] {
   }
 
   if (kind === "junctional") {
-    out.push({ id: site.segmentId, t0: 0.12, t1: 0.28, group: "av-delay" });
-    out.push({ id: "his", t0: 0.2, t1: 0.32, group: "his" });
+    out.push({ id: site.segmentId, t0: 0.2, t1: 0.34, group: "av-delay" });
+    out.push({ id: "his", t0: 0.26, t1: 0.38, group: "his" });
     // Retrograde atrial
-    out.push({ id: "internodal", t0: 0.22, t1: 0.36, group: "atrial", reverse: true });
+    out.push({ id: "internodal", t0: 0.28, t1: 0.42, group: "atrial", reverse: true });
     out.push(
       { id: "rbb", t0: 0.3, t1: 0.42, group: "bundles" },
       { id: "lbb", t0: 0.3, t1: 0.4, group: "bundles" },
@@ -136,8 +136,8 @@ export function branchesFromStim(site: StimSite): BranchWindow[] {
     out.push({
       id: "accessory",
       curveIndex: ci,
-      t0: 0.12,
-      t1: 0.32,
+      t0: 0.2,
+      t1: 0.4,
       group: "accessory",
       u0: u,
       u1: 1,
@@ -150,12 +150,12 @@ export function branchesFromStim(site: StimSite): BranchWindow[] {
     return out;
   }
 
-  // Ventricular / bundle / Purkinje origin — after pace spike @ 0.12
+  // Ventricular / bundle / Purkinje origin — after pace spike @ 0.10 + capture latency
   out.push({
     id: site.segmentId,
     curveIndex: ci,
-    t0: 0.16,
-    t1: 0.42,
+    t0: 0.22,
+    t1: 0.48,
     group: "ectopy",
     u0: u,
     u1: 1,
@@ -164,8 +164,8 @@ export function branchesFromStim(site: StimSite): BranchWindow[] {
     out.push({
       id: site.segmentId,
       curveIndex: ci,
-      t0: 0.16,
-      t1: 0.34,
+      t0: 0.22,
+      t1: 0.4,
       group: "ectopy",
       u0: u,
       u1: 0,

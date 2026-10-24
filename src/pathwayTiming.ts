@@ -31,18 +31,96 @@ export const PURKINJE_L_LPF_CURVES = new Set([3, 4, 5, 6]);
  *  including isolated LAFB / LPFB (not part of either free-wall fascicle fan). */
 export const PURKINJE_L_SEPTAL_CURVES = new Set([7]);
 
+export function isAtrialSeg(id: SegmentId): boolean {
+  return id === "sa" || id === "internodal" || id === "myocardiumA" || id === "flutter";
+}
+
+export function isVentricularSeg(id: SegmentId): boolean {
+  return (
+    id === "his" ||
+    id === "rbb" ||
+    id === "lbb" ||
+    id === "lbba" ||
+    id === "lbbp" ||
+    id === "purkinjeR" ||
+    id === "purkinjeL" ||
+    id === "myocardiumV"
+  );
+}
+
+/** Sinus / AV-block findings where impulse balls follow EKG `active` + mark gates. */
+export function usesEkgSyncedImpulseBalls(finding: string | undefined): boolean {
+  switch (finding) {
+    case "nsr":
+    case "sinusBrady":
+    case "sinusTachy":
+    case "av1":
+    case "av2i":
+    case "av2ii":
+    case "av21":
+    case "av31":
+    case "av3Junctional":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/**
+ * Whether an impulse ball should render — tied to EKG phase/active for sinus rhythms.
+ * SA node never shows as a traveling ball; internodal tracts carry the atrial wave.
+ */
+export function impulseBallVisible(opts: {
+  id: SegmentId;
+  mark: string;
+  active: Iterable<SegmentId>;
+  finding: string;
+  allowVentBalls: boolean;
+  reentryFinding: boolean;
+}): boolean {
+  const active = new Set(opts.active);
+  const { id, mark, finding, allowVentBalls, reentryFinding } = opts;
+
+  const hisPrHandoff = id === "his" && mark === "PR" && active.has("his");
+
+  if (isVentricularSeg(id) && !allowVentBalls && !hisPrHandoff) return false;
+
+  if (finding === "afib" && (id === "sa" || id === "internodal")) return false;
+
+  // Pacemaker node is not a traveling ball — internodal curves originate at SA.
+  if (id === "sa" && usesEkgSyncedImpulseBalls(finding)) return false;
+
+  if (!usesEkgSyncedImpulseBalls(finding) || reentryFinding) return true;
+
+  if (!active.has(id)) return false;
+
+  if (isAtrialSeg(id)) return mark === "P" || mark === "PR";
+  if (id === "av") return mark === "PR";
+  if (isVentricularSeg(id)) return allowVentBalls || hisPrHandoff;
+
+  return true;
+}
+
+/** Tip-hold only for long Purkinje/Kent tracts — landmarks should not linger. */
+export function impulseTipHoldFrac(id: SegmentId): number {
+  if (id === "sa" || id === "internodal" || id === "av" || id === "his") return 0;
+  if (id === "rbb" || id === "lbb" || id === "lbba" || id === "lbbp") return 0.04;
+  if (id === "purkinjeL" || id === "purkinjeR") return 0.16;
+  if (id === "avnrtSlow" || id === "avnrtFast") return 0.12;
+  if (id === "accessory" || id === "accessoryR") return 0.12;
+  if (id === "flutter") return 0.04;
+  return 0.06;
+}
+
 /**
  * Schedule aligned to NSR EKG marks / waveform:
- * P ~0.05–0.15 · PR/AV ~0.15–0.22 · His–Purkinje ~0.22–0.31.
- * The intact myocardial field reaches full ventricular involvement at the
- * main QRS peak (~0.32), then remains visible through the rest of QRS.
- * Windows are sequential at junctions so balls don't light before upstream arrives.
+ * P ~0.05–0.15 · internodal completes toward AV during PR · His at QRS onset.
  */
 export const NSR_BRANCHES: BranchWindow[] = [
-  { id: "sa", t0: 0.05, t1: 0.1, group: "pacemaker" },
-  { id: "internodal", t0: 0.09, t1: 0.15, group: "atrial" },
+  { id: "sa", t0: 0.05, t1: 0.08, group: "pacemaker" },
+  { id: "internodal", t0: 0.06, t1: 0.18, group: "atrial" },
   { id: "av", t0: 0.15, t1: 0.22, group: "av-delay" },
-  { id: "his", t0: 0.22, t1: 0.24, group: "his" },
+  { id: "his", t0: 0.19, t1: 0.245, group: "his" },
   { id: "rbb", t0: 0.24, t1: 0.26, group: "bundles" },
   { id: "lbb", t0: 0.24, t1: 0.26, group: "bundles" },
   { id: "lbba", t0: 0.26, t1: 0.28, group: "fascicles" },
@@ -50,6 +128,54 @@ export const NSR_BRANCHES: BranchWindow[] = [
   { id: "purkinjeR", t0: 0.28, t1: 0.305, group: "purkinje" },
   { id: "purkinjeL", t0: 0.28, t1: 0.305, group: "purkinje" },
 ];
+
+/** Authored NSR cycle length — P/QRS/HPS durations are milliseconds of this paper. */
+export const NSR_PAPER_SEC = 0.86;
+
+/** True when this finding's schedule is a single NSR-like beat that should keep absolute P/QRS ms. */
+export function findingUsesNsrPaperTiming(finding: string | undefined): boolean {
+  switch (finding) {
+    case "nsr":
+    case "sinusBrady":
+    case "sinusTachy":
+    case "av1":
+    case "stemiAnt":
+    case "stemiInferior":
+    case "stemiLateral":
+    case "stemiAnterolateral":
+    case "stemiPosterior":
+    case "stemiAvr":
+    case "dewinter":
+    case "wellens":
+    case "sgarbossa":
+    case "lbbb":
+    case "rbbb":
+    case "lafb":
+    case "lpfb":
+    case "rbbbLafb":
+    case "rbbbLpfb":
+    case "ivcd":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** Re-express NSR-authored cycle fractions as fractions of the live cycle (constant paper ms). */
+export function scaleNsrPaperBranches(branches: BranchWindow[], cycleSec: number): BranchWindow[] {
+  const s = NSR_PAPER_SEC / Math.max(0.25, cycleSec);
+  if (Math.abs(s - 1) < 0.02) return branches;
+  return branches.map((b) => ({ ...b, t0: b.t0 * s, t1: b.t1 * s }));
+}
+
+/** Scale default NSR-like schedules so P/QRS/HPS stay the same milliseconds when RR changes. */
+export function scaleIfNsrPaper(
+  finding: string | undefined,
+  branches: BranchWindow[],
+  cycleSec: number,
+): BranchWindow[] {
+  return findingUsesNsrPaperTiming(finding) ? scaleNsrPaperBranches(branches, cycleSec) : branches;
+}
 
 /** Fraction of an upstream window that must elapse before the next tract may start.
  *  Near 1 so the ball is visually at the junction before the child lights. */
@@ -890,21 +1016,6 @@ export function branchesForFinding(finding: FindingId | string | undefined): Bra
 function buildBranchesForFinding(finding: FindingId | string | undefined): BranchWindow[] {
   const base = NSR_BRANCHES.map((b) => ({ ...b }));
 
-  if (finding === "sinusTachy") {
-    return [
-      { id: "sa", t0: 0.04, t1: 0.1, group: "pacemaker" },
-      { id: "internodal", t0: 0.06, t1: 0.14, group: "atrial" },
-      { id: "av", t0: 0.14, t1: 0.22, group: "av-delay" },
-      { id: "his", t0: 0.22, t1: 0.26, group: "his" },
-      { id: "rbb", t0: 0.24, t1: 0.34, group: "bundles" },
-      { id: "lbb", t0: 0.24, t1: 0.32, group: "bundles" },
-      { id: "lbba", t0: 0.26, t1: 0.35, group: "fascicles" },
-      { id: "lbbp", t0: 0.26, t1: 0.35, group: "fascicles" },
-      { id: "purkinjeR", t0: 0.28, t1: 0.36, group: "purkinje" },
-      { id: "purkinjeL", t0: 0.28, t1: 0.36, group: "purkinje" },
-    ];
-  }
-
   if (finding === "avnrtTypical" || finding === "avnrt") {
     // Typical slow–fast: anterograde slow → His–Purkinje; retrograde fast → atria
     // Overlap limbs so the field never goes dark at dual-pathway handoffs.
@@ -988,104 +1099,98 @@ function buildBranchesForFinding(finding: FindingId | string | undefined): Branc
   }
 
   if (finding === "rbbb") return branchesFromBundleBlocks(["rbb"]);
-  if (finding === "lbbb") return branchesFromBundleBlocks(["lbb"]);
+  if (finding === "lbbb" || finding === "sgarbossa") return branchesFromBundleBlocks(["lbb"]);
   if (finding === "lafb") return branchesFromBundleBlocks(["lbba"]);
   if (finding === "lpfb") return branchesFromBundleBlocks(["lbbp"]);
   if (finding === "rbbbLafb") return branchesFromBundleBlocks(["rbb", "lbba"]);
   if (finding === "rbbbLpfb") return branchesFromBundleBlocks(["rbb", "lbbp"]);
 
   if (finding === "pacedVentricular") {
-    // Spike @ 0.22 — myocardial wall capture first, then Purkinje/bundle engagement
+    // Spike then ~60 ms latency, then myocardial capture (matches samplePacedVentricular)
     return [
-      { id: "purkinjeR", t0: 0.3, t1: 0.48, group: "ectopy" },
-      { id: "rbb", t0: 0.32, t1: 0.46, group: "ectopy", reverse: true },
-      { id: "purkinjeL", t0: 0.38, t1: 0.54, group: "ectopy" },
-      { id: "lbb", t0: 0.4, t1: 0.52, group: "ectopy", reverse: true, u0: 0.4 },
+      { id: "purkinjeR", t0: 0.36, t1: 0.54, group: "ectopy" },
+      { id: "rbb", t0: 0.38, t1: 0.52, group: "ectopy", reverse: true },
+      { id: "purkinjeL", t0: 0.44, t1: 0.6, group: "ectopy" },
+      { id: "lbb", t0: 0.46, t1: 0.58, group: "ectopy", reverse: true, u0: 0.4 },
     ];
   }
   if (finding === "pacedDual") {
-    // A spike 0.08 · V spike 0.28 — RA wall field fills atria through AV delay
+    // A spike · captured P · AV delay · V spike · captured QRS
     return [
-      { id: "internodal", t0: 0.08, t1: 0.28, group: "atrial" },
-      { id: "av", t0: 0.18, t1: 0.28, group: "av-delay" },
-      { id: "purkinjeR", t0: 0.36, t1: 0.54, group: "ectopy" },
-      { id: "rbb", t0: 0.38, t1: 0.5, group: "ectopy", reverse: true },
-      { id: "purkinjeL", t0: 0.42, t1: 0.56, group: "ectopy" },
+      { id: "internodal", t0: 0.14, t1: 0.3, group: "atrial" },
+      { id: "av", t0: 0.22, t1: 0.32, group: "av-delay" },
+      { id: "purkinjeR", t0: 0.46, t1: 0.64, group: "ectopy" },
+      { id: "rbb", t0: 0.48, t1: 0.6, group: "ectopy", reverse: true },
+      { id: "purkinjeL", t0: 0.52, t1: 0.66, group: "ectopy" },
     ];
   }
   if (finding === "pacedRvSeptal") {
-    // Mid-septal myocardial capture — earlier left engagement than apical
     return [
-      { id: "internodal", t0: 0.08, t1: 0.27, group: "atrial" },
-      { id: "av", t0: 0.18, t1: 0.27, group: "av-delay" },
-      { id: "purkinjeR", t0: 0.34, t1: 0.5, group: "ectopy" },
-      { id: "rbb", t0: 0.35, t1: 0.48, group: "ectopy", reverse: true, u0: 0.35 },
-      { id: "purkinjeL", t0: 0.38, t1: 0.52, group: "ectopy" },
-      { id: "lbb", t0: 0.4, t1: 0.52, group: "ectopy", reverse: true, u0: 0.45 },
+      { id: "internodal", t0: 0.14, t1: 0.3, group: "atrial" },
+      { id: "av", t0: 0.22, t1: 0.32, group: "av-delay" },
+      { id: "purkinjeR", t0: 0.44, t1: 0.6, group: "ectopy" },
+      { id: "rbb", t0: 0.45, t1: 0.58, group: "ectopy", reverse: true, u0: 0.35 },
+      { id: "purkinjeL", t0: 0.48, t1: 0.62, group: "ectopy" },
+      { id: "lbb", t0: 0.5, t1: 0.62, group: "ectopy", reverse: true, u0: 0.45 },
     ];
   }
   if (finding === "pacedRvot") {
-    // RVOT myocardial capture — superior exit, late apical/left
     return [
-      { id: "internodal", t0: 0.08, t1: 0.27, group: "atrial" },
-      { id: "av", t0: 0.18, t1: 0.27, group: "av-delay" },
-      { id: "rbb", t0: 0.34, t1: 0.48, group: "ectopy", reverse: true, u0: 0.15 },
-      { id: "purkinjeR", t0: 0.36, t1: 0.52, group: "ectopy" },
-      { id: "purkinjeL", t0: 0.42, t1: 0.58, group: "ectopy" },
-      { id: "lbb", t0: 0.44, t1: 0.56, group: "ectopy", reverse: true, u0: 0.5 },
+      { id: "internodal", t0: 0.14, t1: 0.3, group: "atrial" },
+      { id: "av", t0: 0.22, t1: 0.32, group: "av-delay" },
+      { id: "rbb", t0: 0.44, t1: 0.58, group: "ectopy", reverse: true, u0: 0.15 },
+      { id: "purkinjeR", t0: 0.46, t1: 0.62, group: "ectopy" },
+      { id: "purkinjeL", t0: 0.52, t1: 0.68, group: "ectopy" },
+      { id: "lbb", t0: 0.54, t1: 0.66, group: "ectopy", reverse: true, u0: 0.5 },
     ];
   }
   if (finding === "pacedHis") {
-    // His conduction capture → both bundles nearly physiologic
     return [
-      { id: "internodal", t0: 0.08, t1: 0.26, group: "atrial" },
-      { id: "av", t0: 0.18, t1: 0.26, group: "av-delay" },
-      { id: "his", t0: 0.26, t1: 0.36, group: "his" },
-      { id: "rbb", t0: 0.32, t1: 0.46, group: "bundles" },
-      { id: "lbb", t0: 0.32, t1: 0.46, group: "bundles" },
-      { id: "lbba", t0: 0.34, t1: 0.48, group: "fascicles" },
-      { id: "lbbp", t0: 0.34, t1: 0.48, group: "fascicles" },
-      { id: "purkinjeR", t0: 0.36, t1: 0.5, group: "purkinje" },
-      { id: "purkinjeL", t0: 0.36, t1: 0.5, group: "purkinje" },
+      { id: "internodal", t0: 0.14, t1: 0.3, group: "atrial" },
+      { id: "av", t0: 0.22, t1: 0.32, group: "av-delay" },
+      { id: "his", t0: 0.36, t1: 0.46, group: "his" },
+      { id: "rbb", t0: 0.42, t1: 0.56, group: "bundles" },
+      { id: "lbb", t0: 0.42, t1: 0.56, group: "bundles" },
+      { id: "lbba", t0: 0.44, t1: 0.58, group: "fascicles" },
+      { id: "lbbp", t0: 0.44, t1: 0.58, group: "fascicles" },
+      { id: "purkinjeR", t0: 0.46, t1: 0.6, group: "purkinje" },
+      { id: "purkinjeL", t0: 0.46, t1: 0.6, group: "purkinje" },
     ];
   }
   if (finding === "pacedLbap") {
-    // LBAP tip fires conduction tissue, then engages left bundle
     return [
-      { id: "internodal", t0: 0.08, t1: 0.26, group: "atrial" },
-      { id: "av", t0: 0.18, t1: 0.26, group: "av-delay" },
-      { id: "lbb", t0: 0.32, t1: 0.46, group: "ectopy", u0: 0.35 },
-      { id: "lbba", t0: 0.34, t1: 0.48, group: "fascicles" },
-      { id: "lbbp", t0: 0.34, t1: 0.48, group: "fascicles" },
-      { id: "purkinjeL", t0: 0.36, t1: 0.5, group: "purkinje" },
-      { id: "his", t0: 0.34, t1: 0.42, group: "his", reverse: true },
-      { id: "rbb", t0: 0.38, t1: 0.5, group: "bundles" },
-      { id: "purkinjeR", t0: 0.4, t1: 0.52, group: "purkinje" },
+      { id: "internodal", t0: 0.14, t1: 0.3, group: "atrial" },
+      { id: "av", t0: 0.22, t1: 0.32, group: "av-delay" },
+      { id: "lbb", t0: 0.42, t1: 0.56, group: "ectopy", u0: 0.35 },
+      { id: "lbba", t0: 0.44, t1: 0.58, group: "fascicles" },
+      { id: "lbbp", t0: 0.44, t1: 0.58, group: "fascicles" },
+      { id: "purkinjeL", t0: 0.46, t1: 0.6, group: "purkinje" },
+      { id: "his", t0: 0.44, t1: 0.52, group: "his", reverse: true },
+      { id: "rbb", t0: 0.48, t1: 0.6, group: "bundles" },
+      { id: "purkinjeR", t0: 0.5, t1: 0.62, group: "purkinje" },
     ];
   }
   if (finding === "pacedBiv") {
-    // BiV spike @ 0.27 — RV + LV wall fields fuse, then tracts
     return [
-      { id: "internodal", t0: 0.08, t1: 0.27, group: "atrial" },
-      { id: "av", t0: 0.18, t1: 0.27, group: "av-delay" },
-      { id: "purkinjeR", t0: 0.34, t1: 0.52, group: "ectopy" },
-      { id: "purkinjeL", t0: 0.34, t1: 0.52, group: "ectopy" },
-      { id: "rbb", t0: 0.36, t1: 0.48, group: "ectopy", reverse: true },
-      { id: "lbb", t0: 0.36, t1: 0.48, group: "ectopy", reverse: true },
+      { id: "internodal", t0: 0.14, t1: 0.3, group: "atrial" },
+      { id: "av", t0: 0.22, t1: 0.32, group: "av-delay" },
+      { id: "purkinjeR", t0: 0.44, t1: 0.62, group: "ectopy" },
+      { id: "purkinjeL", t0: 0.44, t1: 0.62, group: "ectopy" },
+      { id: "rbb", t0: 0.46, t1: 0.58, group: "ectopy", reverse: true },
+      { id: "lbb", t0: 0.46, t1: 0.58, group: "ectopy", reverse: true },
     ];
   }
   if (finding === "pacedAtrial") {
-    // RA appendage wall capture → AV → His–Purkinje (narrow QRS)
     return [
-      { id: "internodal", t0: 0.08, t1: 0.28, group: "atrial" },
-      { id: "av", t0: 0.2, t1: 0.3, group: "av-delay" },
-      { id: "his", t0: 0.28, t1: 0.36, group: "his" },
-      { id: "rbb", t0: 0.32, t1: 0.46, group: "bundles" },
-      { id: "lbb", t0: 0.32, t1: 0.46, group: "bundles" },
-      { id: "lbba", t0: 0.34, t1: 0.48, group: "fascicles" },
-      { id: "lbbp", t0: 0.34, t1: 0.48, group: "fascicles" },
-      { id: "purkinjeR", t0: 0.36, t1: 0.5, group: "purkinje" },
-      { id: "purkinjeL", t0: 0.36, t1: 0.5, group: "purkinje" },
+      { id: "internodal", t0: 0.14, t1: 0.32, group: "atrial" },
+      { id: "av", t0: 0.24, t1: 0.36, group: "av-delay" },
+      { id: "his", t0: 0.34, t1: 0.42, group: "his" },
+      { id: "rbb", t0: 0.38, t1: 0.52, group: "bundles" },
+      { id: "lbb", t0: 0.38, t1: 0.52, group: "bundles" },
+      { id: "lbba", t0: 0.4, t1: 0.54, group: "fascicles" },
+      { id: "lbbp", t0: 0.4, t1: 0.54, group: "fascicles" },
+      { id: "purkinjeR", t0: 0.42, t1: 0.56, group: "purkinje" },
+      { id: "purkinjeL", t0: 0.42, t1: 0.56, group: "purkinje" },
     ];
   }
   if (finding === "av1") {
@@ -1323,7 +1428,7 @@ export function groupsForMark(mark: string): string[] {
     case "P":
       return ["pacemaker", "atrial"];
     case "PR":
-      return ["av-delay", "accessory", "avnrt"];
+      return ["av-delay", "his", "accessory", "avnrt"];
     case "QRS":
       return ["his", "bundles", "fascicles", "purkinje", "ectopy", "accessory", "transseptal", "avnrt"];
     case "ST":
@@ -1355,9 +1460,10 @@ export function groupsForMark(mark: string): string[] {
 export function refractoryFrac(id: SegmentId): number {
   switch (id) {
     case "sa":
+      return 0.09;
     case "internodal":
     case "myocardiumA":
-      return 0.22;
+      return 0.14;
     case "flutter":
       // Short — circuit reenters each F wave (~0.25 of the 0.8 s pattern)
       return 0.09;

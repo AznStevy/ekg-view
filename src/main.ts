@@ -48,7 +48,14 @@ import {
   type StimState,
 } from "./stimPace";
 import { createDeviceLeads, deviceModeForFinding, PACED_BASE_MODES, isPacingFailureFinding, type DeviceLeadMode } from "./deviceLeads";
-import { blockSiteForFinding, branchesFromBundleBlocks, branchesForPvcSite } from "./pathwayTiming";
+import {
+  blockSiteForFinding,
+  branchesForFinding,
+  branchesFromBundleBlocks,
+  branchesForPvcSite,
+  findingUsesNsrPaperTiming,
+  scaleNsrPaperBranches,
+} from "./pathwayTiming";
 import {
   BUNDLE_BLOCK_OPTIONS,
   blocksForFinding,
@@ -2064,14 +2071,6 @@ function main() {
     }
   }
 
-  function ensureTeachOverlaysForFinding(id: FindingId) {
-    // Teaching field for BBB / antidromic AVRT — never auto-toggle Vectors
-    // (PAC/PVC used to flip Vectors on and felt random).
-    if (isAvrtAntiFinding(id) || BBB_FINDING_IDS.has(id)) {
-      if (!state.fieldOn) setField(true);
-    }
-  }
-
   function syncFindingUI() {
     const f = getFinding(state.finding);
     const stimSite = state.stim.site;
@@ -2346,7 +2345,6 @@ function main() {
     syncFindingUI();
     if (id === "pvc") applyPvcConfig({ resetElapsed: true });
     if (id === "pac") applyPacConfig({ resetElapsed: true });
-    ensureTeachOverlaysForFinding(id);
   }
 
   function setPlaying(playing: boolean) {
@@ -2524,7 +2522,6 @@ function main() {
       );
       syncFindingUI();
       syncViewLabel();
-      if (blocks.length > 0) ensureTeachOverlaysForFinding(state.finding);
       setPlaying(true);
       return;
     }
@@ -3259,7 +3256,6 @@ function main() {
     const id = (chip as HTMLElement).dataset.ectopySite as EctopySiteId;
     state.ectopySite = id;
     syncEctopySiteUI();
-    if (!state.fieldOn) setField(true);
   });
   els["btn-leads"].addEventListener("click", () => setLeads(!state.leadsOn));
 
@@ -3893,7 +3889,6 @@ function main() {
         : getFinding("nsr").ventRateBpm,
     );
     syncFindingUI();
-    if (blocks.length > 0) ensureTeachOverlaysForFinding(state.finding);
   });
 
   renderer.domElement.addEventListener("pointermove", (e) => {
@@ -4181,7 +4176,18 @@ function main() {
       }
       return cachedPvcBranches;
     })();
-    const pathBranches = stimBranches ?? blockBranches ?? bbbPresetBranches ?? pvcBranches;
+    let pathBranches = stimBranches ?? blockBranches ?? bbbPresetBranches ?? pvcBranches;
+    if (!pathBranches && !state.upload) {
+      pathBranches = branchesForFinding(state.finding);
+    }
+    if (
+      pathBranches &&
+      findingUsesNsrPaperTiming(state.finding) &&
+      !stimBranches &&
+      !pvcBranches
+    ) {
+      pathBranches = scaleNsrPaperBranches(pathBranches, cycleSec);
+    }
     const blockGating = gatingLesionSegments(activeBundleBlocks());
     const passiveEngage = passiveBlockEngage(tCycle, activeBundleBlocks());
     conduction.setSegmentActive({
@@ -4245,6 +4251,7 @@ function main() {
         tCycle,
         finding: state.finding,
         mark,
+        active: lit,
         cycleSec,
         branches: pathBranches,
         lesionIds: blockGating,

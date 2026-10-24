@@ -4,6 +4,11 @@ import {
   branchesForFinding,
   refractoryGlow,
   effectiveImpulseWindow,
+  impulseBallVisible,
+  impulseTipHoldFrac,
+  isAtrialSeg,
+  isVentricularSeg,
+  scaleIfNsrPaper,
   PURKINJE_L_LAF_CURVES,
   PURKINJE_L_LPF_CURVES,
   type PathwayProbePoint,
@@ -1567,6 +1572,7 @@ export type ConductionSystem = {
     tCycle: number;
     finding?: string;
     mark?: string;
+    active?: SegmentId[];
     cycleSec?: number;
     branches?: import("./pathwayTiming").BranchWindow[];
     lesionIds?: SegmentId[];
@@ -1602,18 +1608,6 @@ export function createConductionSystem(): ConductionSystem {
   const curveEntries: CurveEntry[] = [];
   const curvesBySegment = new Map<SegmentId, THREE.Curve<THREE.Vector3>[]>();
 
-  function isVentricularSeg(id: SegmentId): boolean {
-    return (
-      id === "his" ||
-      id === "rbb" ||
-      id === "lbb" ||
-      id === "lbba" ||
-      id === "lbbp" ||
-      id === "purkinjeR" ||
-      id === "purkinjeL" ||
-      id === "myocardiumV"
-    );
-  }
   for (const path of PATHS) {
     const mesh = createPathMesh(path);
     pathways.add(mesh);
@@ -2088,7 +2082,9 @@ export function createConductionSystem(): ConductionSystem {
     passiveEngage?: { left: number; right: number; laf: number; lpf: number };
   }) {
     const peak = opts.intensity ?? 0.95;
-    const branches = opts.branches ?? branchesForFinding(opts.finding);
+    const branches =
+      opts.branches ??
+      scaleIfNsrPaper(opts.finding, branchesForFinding(opts.finding), opts.cycleSec ?? 0.86);
     const ekgActive = new Set(opts.active);
     const lesions = new Set(opts.lesionIds ?? []);
     const engage = opts.passiveEngage ?? { left: 0, right: 0, laf: 0, lpf: 0 };
@@ -2214,6 +2210,12 @@ export function createConductionSystem(): ConductionSystem {
 
       // Schedule alone must not light ventricles during atrial / idle marks
       if (isVentricularSeg(id) && !ventPhase && !ekgActive.has(id)) glow = 0;
+      // SA is a landmark — only glow when EKG explicitly lists it (not refractory tail)
+      if (id === "sa" && !ekgActive.has(id)) glow = 0;
+      // Atrial tracts only glow during P / PR (SA refractory is brief)
+      if (isAtrialSeg(id) && id !== "sa" && mark !== "P" && mark !== "PR" && !ekgActive.has(id)) glow = 0;
+      if (id === "av" && mark !== "PR" && mark !== "QRS" && !ekgActive.has(id)) glow = 0;
+      if (id === "his" && mark !== "PR" && mark !== "QRS" && !ekgActive.has(id)) glow = 0;
 
       // EKG active must not force peak before the causal handoff window opens
       const curveOnSchedule =
@@ -2297,12 +2299,15 @@ export function createConductionSystem(): ConductionSystem {
     tCycle: number;
     finding?: string;
     mark?: string;
+    active?: SegmentId[];
     cycleSec?: number;
     branches?: import("./pathwayTiming").BranchWindow[];
     lesionIds?: SegmentId[];
   }): import("./pathwayTiming").ActiveFront[] {
     const t = ((opts.tCycle % 1) + 1) % 1;
-    const branches = opts.branches ?? branchesForFinding(opts.finding);
+    const branches =
+      opts.branches ??
+      scaleIfNsrPaper(opts.finding, branchesForFinding(opts.finding), opts.cycleSec ?? 0.86);
     const lesions = new Set(opts.lesionIds ?? []);
     const mark = opts.mark ?? "TP";
     const ventPhase = mark === "QRS" || mark === "ST" || mark === "T";
@@ -2317,6 +2322,13 @@ export function createConductionSystem(): ConductionSystem {
     // keep ventricular balls visible through the whole reentry loop (not only QRS/ST/T).
     const allowVentBalls = ventPhase || (reentryFinding && mark !== "TP");
     const isAfib = finding === "afib";
+    const ballGate = {
+      mark,
+      active: opts.active ?? [],
+      finding,
+      allowVentBalls,
+      reentryFinding,
+    };
     const out: import("./pathwayTiming").ActiveFront[] = [];
 
     // Prefer the newest live window per (segment, curve, direction, schedule start)
@@ -2342,19 +2354,11 @@ export function createConductionSystem(): ConductionSystem {
       }
       // Hold at the distal tip long enough that the next wavefront can start
       // behind without making this one vanish mid-tract.
-      const tipHold =
-        b.id === "purkinjeL" || b.id === "purkinjeR"
-          ? 0.16
-          : b.id === "flutter"
-            ? 0.04
-            : b.id === "avnrtSlow" || b.id === "avnrtFast"
-              ? 0.12
-              : b.id === "accessory" || b.id === "accessoryR"
-                ? 0.12
-                : 0.08;
+      const tipHold = impulseTipHoldFrac(b.id);
       const scaledTipHold = tipHold * holdScale;
       // AFib: atrial fronts stay live on TP; ventricles only during QRS/ST/T (or reentry)
-      if (!allowVentBalls && isVentricularSeg(b.id)) continue;
+      if (!allowVentBalls && isVentricularSeg(b.id) && !(b.id === "his" && mark === "PR" && (opts.active ?? []).includes("his"))) continue;
+      if (!impulseBallVisible({ id: b.id, ...ballGate })) continue;
       // AVRT/AVNRT: EKG often labels the atrial echo as TP after T — do not kill the
       // still-traveling Kent / dual-pathway fronts the instant that mark flips.
       if (!isAfib && mark === "TP") {
@@ -2508,7 +2512,9 @@ export function createConductionSystem(): ConductionSystem {
     lesionIds?: SegmentId[];
   }) {
     const t = ((opts.tCycle % 1) + 1) % 1;
-    const branches = opts.branches ?? branchesForFinding(opts.finding);
+    const branches =
+      opts.branches ??
+      scaleIfNsrPaper(opts.finding, branchesForFinding(opts.finding), opts.cycleSec ?? 0.86);
     const lesions = new Set(opts.lesionIds ?? []);
     const activeSet = new Set(opts.active);
     const mark = opts.mark ?? "TP";
@@ -2521,6 +2527,13 @@ export function createConductionSystem(): ConductionSystem {
       finding === "avnrtAtypical" ||
       finding === "avnrt";
     const allowVentBalls = ventPhase || (reentryFinding && mark !== "TP");
+    const ballGate = {
+      mark,
+      active: opts.active,
+      finding,
+      allowVentBalls,
+      reentryFinding,
+    };
 
     type Desired = {
       key: string;
@@ -2554,16 +2567,10 @@ export function createConductionSystem(): ConductionSystem {
       ) {
         continue;
       }
-      if (!allowVentBalls && isVentricularSeg(b.id)) continue;
+      if (!allowVentBalls && isVentricularSeg(b.id) && !(b.id === "his" && mark === "PR" && (opts.active ?? []).includes("his"))) continue;
+      if (!impulseBallVisible({ id: b.id, ...ballGate })) continue;
       const curves = curvesBySegment.get(b.id);
-      const tipHold =
-        b.id === "purkinjeL" || b.id === "purkinjeR"
-          ? 0.16
-          : b.id === "avnrtSlow" || b.id === "avnrtFast"
-            ? 0.12
-            : b.id === "accessory" || b.id === "accessoryR"
-              ? 0.12
-              : 0.08;
+      const tipHold = impulseTipHoldFrac(b.id);
       const scaledTipHold = tipHold * holdScale;
 
       const pushFront = (ci: number, win: { t0: number; t1: number }) => {

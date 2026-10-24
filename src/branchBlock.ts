@@ -179,6 +179,7 @@ export function blocksForFinding(finding: string | undefined): BundleBlockId[] {
     case "rbbb":
       return ["rbb"];
     case "lbbb":
+    case "sgarbossa":
       return ["lbb"];
     case "lafb":
       return ["lbba"];

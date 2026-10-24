@@ -294,16 +294,16 @@ export function defaultPvcPattern(): PvcPatternId {
 export function ectopyCaptureT0(finding: FindingId): number {
   switch (finding) {
     case "pacedVentricular":
-      return 0.22;
+      return 0.26;
     case "pacedDual":
     case "pacedBiv":
-      return 0.28;
+      return 0.38;
     case "pacedRvSeptal":
     case "pacedRvot":
-      return 0.27;
+      return 0.36;
     case "pacedHis":
     case "pacedLbap":
-      return 0.26;
+      return 0.36;
     case "pvc":
       return 0.245;
     case "pac":
@@ -422,32 +422,32 @@ export type CaptureFocus = {
 function pacedSpikeT0(finding: FindingId, lead: DeviceLeadId): number | null {
   switch (finding) {
     case "pacedAtrial":
-      return lead === "ra" ? 0.08 : null;
+      return lead === "ra" ? 0.06 : null;
     case "pacedVentricular":
-      return lead === "rvApex" ? 0.22 : null;
+      return lead === "rvApex" ? 0.18 : null;
     case "pacedDual":
-      if (lead === "ra") return 0.08;
-      if (lead === "rvApex") return 0.28;
+      if (lead === "ra") return 0.06;
+      if (lead === "rvApex") return 0.3;
       return null;
     case "pacedRvSeptal":
-      if (lead === "ra") return 0.08;
-      if (lead === "rvSeptal") return 0.27;
+      if (lead === "ra") return 0.06;
+      if (lead === "rvSeptal") return 0.3;
       return null;
     case "pacedRvot":
-      if (lead === "ra") return 0.08;
-      if (lead === "rvOt") return 0.27;
+      if (lead === "ra") return 0.06;
+      if (lead === "rvOt") return 0.3;
       return null;
     case "pacedHis":
-      if (lead === "ra") return 0.08;
-      if (lead === "his") return 0.26;
+      if (lead === "ra") return 0.06;
+      if (lead === "his") return 0.3;
       return null;
     case "pacedLbap":
-      if (lead === "ra") return 0.08;
-      if (lead === "lbap") return 0.26;
+      if (lead === "ra") return 0.06;
+      if (lead === "lbap") return 0.3;
       return null;
     case "pacedBiv":
-      if (lead === "ra") return 0.08;
-      if (lead === "rvApex" || lead === "lvCs") return 0.27;
+      if (lead === "ra") return 0.06;
+      if (lead === "rvApex" || lead === "lvCs") return 0.3;
       return null;
     default:
       return null;
@@ -463,10 +463,12 @@ export function pacedCaptureFoci(finding: FindingId): CaptureFocus[] {
   if (mode === "none") return [];
   const out: CaptureFocus[] = [];
   for (const lead of deviceLeadsForMode(mode)) {
-    const t0 = pacedSpikeT0(finding, lead);
-    if (t0 == null) continue;
+    const spikeT = pacedSpikeT0(finding, lead);
+    if (spikeT == null) continue;
     const tissue = deviceLeadTissue(lead);
     const capture = deviceLeadCapture(lead);
+    const t0 =
+      spikeT + (capture === "conduction" ? 0.055 : tissue === "atrial" ? 0.06 : 0.08);
     const tip = deviceLeadTip(lead);
     // Conduction tips stay near the lead (His/LBAP); septal myocardium stays on the septum;
     // free-wall myocardium projects to the ovoid shell — ventricular tips stay below AV plane.

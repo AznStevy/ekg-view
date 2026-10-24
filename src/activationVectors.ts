@@ -32,7 +32,10 @@ import type { ActiveFront, BranchWindow, PathwayProbePoint } from "./pathwayTimi
 import {
   branchesForFinding,
   effectiveImpulseWindow,
+  findingUsesNsrPaperTiming,
   groupsForMark,
+  NSR_PAPER_SEC,
+  scaleIfNsrPaper,
   PURKINJE_L_LAF_CURVES,
   PURKINJE_L_LPF_CURVES,
   PURKINJE_L_SEPTAL_CURVES,
@@ -491,25 +494,44 @@ function fillChamberLocalRepolDir(
  * EKG QRS mark window (cycle fraction) — ventricular field depol must live here.
  * Matches NSR_WINDOWS in ekgWaveforms (His → end of Purkinje depolarization).
  */
-function qrsDepolWindow(finding: FindingId): { t0: number; t1: number } {
+function paperScaleFrac(cycleSec: number): number {
+  return NSR_PAPER_SEC / Math.max(0.25, cycleSec);
+}
+
+function qrsDepolWindow(finding: FindingId, cycleSec = NSR_PAPER_SEC): { t0: number; t1: number } {
+  const s = findingUsesNsrPaperTiming(finding) ? paperScaleFrac(cycleSec) : 1;
   switch (finding) {
-    case "sinusTachy":
-      return { t0: 0.22, t1: 0.38 };
     case "avrtAntiLeft":
     case "avrtAntiRight":
       return { t0: 0.08, t1: 0.4 };
     case "lbbb":
+    case "sgarbossa":
     case "rbbb":
+    case "lafb":
+    case "lpfb":
     case "rbbbLafb":
     case "rbbbLpfb":
-      return { t0: 0.26, t1: 0.52 };
+    case "ivcd":
+      return { t0: 0.26 * s, t1: 0.52 * s };
+    case "pacedVentricular":
+      return { t0: 0.28, t1: 0.54 };
+    case "pacedDual":
+    case "pacedRvSeptal":
+    case "pacedRvot":
+    case "pacedBiv":
+      return { t0: 0.38, t1: 0.64 };
+    case "pacedHis":
+    case "pacedLbap":
+      return { t0: 0.36, t1: 0.54 };
+    case "pacedAtrial":
+      return { t0: 0.32, t1: 0.44 };
     case "pvc":
     case "vt":
     case "vtMonoLbbb":
     case "vtMonoRbbb":
       return { t0: 0.28, t1: 0.55 };
     default:
-      return { t0: 0.275, t1: 0.32 };
+      return { t0: 0.275 * s, t1: 0.38 * s };
   }
 }
 
@@ -536,6 +558,7 @@ function findingUsesFixedQrsAlign(finding: FindingId): boolean {
     case "failureToCapture":
     case "failureToSense":
     case "torsades":
+    case "vtPoly":
     case "av3":
     case "av3Junctional":
     case "vfCoarse":
@@ -546,29 +569,90 @@ function findingUsesFixedQrsAlign(finding: FindingId): boolean {
   }
 }
 
+/** QRS onsets in a multi-beat schedule (His windows; Purkinje if no His). */
+function qrsBeatOnsets(branches: BranchWindow[]): number[] {
+  const his = branches.filter((b) => b.id === "his").map((b) => b.t0);
+  const src = his.length
+    ? his
+    : branches.filter((b) => b.id === "purkinjeL" || b.id === "purkinjeR").map((b) => b.t0);
+  src.sort((a, b) => a - b);
+  const out: number[] = [];
+  for (const t0 of src) {
+    if (!out.length || t0 - out[out.length - 1]! > 0.03) out.push(t0);
+  }
+  return out;
+}
+
+/**
+ * Dijkstra LAT is a single time per sample. On multi-QRS strips, re-express that
+ * offset onto the beat that is currently depolarizing so later QRS complexes
+ * still light the ventricles.
+ */
+function reanchorToBeat(
+  lat: number,
+  recovery: number,
+  t: number,
+  onsets: number[],
+  leadIn: number,
+): { lat: number; recovery: number } {
+  if (!(lat < 1e8) || onsets.length < 2) return { lat, recovery };
+  const apd = Math.max(0.03, recovery - lat);
+  let home = onsets[0]!;
+  for (const q of onsets) {
+    if (lat + 0.015 >= q) home = q;
+  }
+  let now = onsets[0]!;
+  for (const q of onsets) {
+    if (t + leadIn >= q) now = q;
+  }
+  if (Math.abs(now - home) < 0.008) return { lat, recovery };
+  const nLat = now + (lat - home);
+  return { lat: nLat, recovery: nLat + apd };
+}
+
 /**
  * EKG T-wave mark window — both ventricles' grey recovery must live here together.
  * Matches NSR_WINDOWS T (ventricular repolarization).
  */
-function tWaveRepolWindow(finding: FindingId): { t0: number; t1: number } {
+function tWaveRepolWindow(finding: FindingId, cycleSec = NSR_PAPER_SEC): { t0: number; t1: number } {
+  const s = findingUsesNsrPaperTiming(finding) ? paperScaleFrac(cycleSec) : 1;
   switch (finding) {
-    case "sinusTachy":
-      return { t0: 0.42, t1: 0.62 };
     case "avrtAntiLeft":
     case "avrtAntiRight":
       return { t0: 0.48, t1: 0.72 };
     case "lbbb":
+    case "sgarbossa":
     case "rbbb":
+    case "lafb":
+    case "lpfb":
     case "rbbbLafb":
     case "rbbbLpfb":
+    case "ivcd":
+      return { t0: 0.54 * s, t1: 0.78 * s };
+    case "pacedVentricular":
+      return { t0: 0.56, t1: 0.82 };
+    case "pacedDual":
+    case "pacedRvSeptal":
+    case "pacedRvot":
+    case "pacedBiv":
+      return { t0: 0.66, t1: 0.9 };
+    case "pacedHis":
+    case "pacedLbap":
+    case "pacedAtrial":
       return { t0: 0.54, t1: 0.78 };
     case "pvc":
     case "vt":
     case "vtMonoLbbb":
     case "vtMonoRbbb":
       return { t0: 0.56, t1: 0.82 };
-    default:
-      return { t0: 0.54, t1: 0.74 };
+    default: {
+      if (!findingUsesNsrPaperTiming(finding)) return { t0: 0.54, t1: 0.74 };
+      const qrsOn = 0.29 * s;
+      const qtSec = Math.max(0.26, Math.min(0.5, 0.4 * Math.sqrt(cycleSec)));
+      const tMu = Math.min(0.9, qrsOn + (qtSec * 0.62) / cycleSec);
+      const tSig = Math.min(0.09, (qtSec * 0.15) / cycleSec);
+      return { t0: Math.max(qrsOn + 0.04, tMu - 1.6 * tSig), t1: Math.min(0.96, tMu + 2.2 * tSig) };
+    }
   }
 }
 
@@ -583,8 +667,9 @@ function alignVentricularLatToQrs(
   finding: FindingId,
   samples: { tissue: string; pos: THREE.Vector3 }[],
   syncChambers: boolean,
+  cycleSec = NSR_PAPER_SEC,
 ): void {
-  const { t0: q0, t1: q1 } = qrsDepolWindow(finding);
+  const { t0: q0, t1: q1 } = qrsDepolWindow(finding, cycleSec);
   const targetSpan = Math.max(0.04, q1 - q0);
 
   const sideOf = (pos: THREE.Vector3): "left" | "right" | "septum" => {
@@ -705,8 +790,9 @@ function alignVentricularRecoveryToT(
   finding: FindingId,
   samples: { tissue: string; pos: THREE.Vector3 }[],
   syncChambers: boolean,
+  cycleSec = NSR_PAPER_SEC,
 ): void {
-  const { t0: r0Target, t1: r1Target } = tWaveRepolWindow(finding);
+  const { t0: r0Target, t1: r1Target } = tWaveRepolWindow(finding, cycleSec);
   const targetSpan = Math.max(0.12, r1Target - r0Target);
 
   const sideOf = (pos: THREE.Vector3): "left" | "right" | "septum" => {
@@ -791,7 +877,7 @@ function alignVentricularRecoveryToT(
 
 /**
  * Mean + field vectors driven by the same physiologic timeline as the EKG / impulse.
- * Main arrow tracks the activation (and recovery) front — not the ECG lead dipole.
+ * Resultant direction/strength follow the lead dipole; field follows myocardial LAT.
  */
 export function createActivationVectors(probes: PathwayProbePoint[]): VectorView {
   const root = new THREE.Group();
@@ -1271,6 +1357,7 @@ export function createActivationVectors(probes: PathwayProbePoint[]): VectorView
   let smoothMeanReady = false;
   let smoothMeanColor = new THREE.Color(0xf0c040);
   let smoothWaveColor = new THREE.Color(0xf0c040);
+  let lastFindingForMean: FindingId | null = null;
   const tmpWaveColor = new THREE.Color();
   const tmpEctopyColor = new THREE.Color();
   /** Latest ventricular LAT span (cycle fraction) from activation map */
@@ -1282,8 +1369,7 @@ export function createActivationVectors(probes: PathwayProbePoint[]): VectorView
  * heart model: +X left, +Y superior, +Z anterior → negate Y.
  *
  * Mean QRS teaching axis is mostly frontal (~+40° left-inferior, mild anterior).
- * Precordial residuals (late S in V1–V2) are damped so they don't yank the
- * arrow strongly posterior through the R peak.
+ * Keep enough precordial Z so RBBB (anterior) / LBBB (posterior) read on the arrow.
  */
 function meanFromLeads(leads?: Partial<Record<LeadId, number>>): {
   dir: THREE.Vector3;
@@ -1291,13 +1377,13 @@ function meanFromLeads(leads?: Partial<Record<LeadId, number>>): {
 } | null {
   if (!leads) return null;
   const v = fitCardiacVector(leads);
-  const z = (v.z ?? 0) * 0.4;
+  const z = (v.z ?? 0) * 0.85;
   const model = new THREE.Vector3(v.x, -v.y, z);
   const m = model.length();
   if (m < 1e-5) return null;
   return {
     dir: model.multiplyScalar(1 / m),
-    strength: Math.min(1.05, m * 0.72),
+    strength: Math.min(1.15, m * 0.78),
   };
 }
 
@@ -1537,7 +1623,9 @@ function pathwayVectorVisible(f: ActiveFront): boolean {
     const t = ((opts.tCycle % 1) + 1) % 1;
     const cycleSec = Math.max(0.25, opts.cycleSec ?? 0.86);
     const arrowDelayFrac = ARROW_AFTER_DEPOL_SEC / cycleSec;
-    const branches = opts.branches ?? branchesForFinding(opts.finding);
+    const branches =
+      opts.branches ??
+      scaleIfNsrPaper(opts.finding, branchesForFinding(opts.finding), cycleSec);
     const lesions = new Set(opts.lesionIds ?? []);
     const pathwayHoldScale = Math.min(1, 0.86 / cycleSec);
     const liveSegments = new Set<SegmentId>();
@@ -1695,7 +1783,8 @@ function pathwayVectorVisible(f: ActiveFront): boolean {
       list.push(b);
       bySeg.set(b.id, list);
     }
-    const tipHoldMeta = 0.14;
+    // Paper-time hold (~120 ms). A raw 0.14 of a 3 s AFib/PAC window swallowed the next QRS.
+    const tipHoldMeta = 0.14 * Math.min(1, NSR_PAPER_SEC / cycleSec);
     for (const [id, list] of bySeg) {
       let best: BranchWindow | null = null;
       let bestWin: { t0: number; t1: number } | null = null;
@@ -1704,7 +1793,8 @@ function pathwayVectorVisible(f: ActiveFront): boolean {
         const win = effectiveImpulseWindow(b, branches, lesions, b.curveIndex);
         if (!win) continue;
         let score: number;
-        if (t >= win.t0 && t <= win.t1 + tipHoldMeta) score = 2000 + win.t0;
+        if (t >= win.t0 && t <= win.t1) score = 3000 + win.t0;
+        else if (t >= win.t0 && t <= win.t1 + tipHoldMeta) score = 2000 + win.t0;
         else if (t < win.t0) score = 1000 - (win.t0 - t);
         else score = 500 - (t - win.t1);
         if (score > bestScore) {
@@ -1850,7 +1940,15 @@ function pathwayVectorVisible(f: ActiveFront): boolean {
 
     // Show insulator whenever field is on
     insulator.visible = fieldGroup.visible;
+    const prHisCorridor =
+      opts.mark === "PR" &&
+      (liveSegments.has("av") || liveSegments.has("his") || opts.active.includes("his"));
     hisGap.visible = fieldGroup.visible;
+    if (hisGap.material instanceof THREE.MeshBasicMaterial) {
+      hisGap.material.opacity = prHisCorridor
+        ? 0.48 + 0.32 * Math.sin(t * Math.PI * 2 * 2.8)
+        : 0.2;
+    }
 
     // One focus marker per pace lead / ectopy site.
     // AVRT: no focus orb — field rides the Kent tube only.
@@ -2059,13 +2157,13 @@ function pathwayVectorVisible(f: ActiveFront): boolean {
     // BBB: slower myocardial fill so the intact → blocked wavefront stays readable
     const myoSpeed =
       leftComplete || rightComplete ? 0.14 : lesions.size ? 0.09 : 0.01;
-    const mapKey = activationSeedKey(
+    const mapKey = `${activationSeedKey(
       mapSeeds,
       opts.lesionIds,
       myoSpeed,
       blockedChamber,
       blockedFascicle,
-    );
+    )}|${opts.finding}|${cycleSec.toFixed(3)}`;
     let actMap = activationMapCache.get(mapKey);
     if (!actMap) {
       actMap = buildActivationMap({
@@ -2085,8 +2183,19 @@ function pathwayVectorVisible(f: ActiveFront): boolean {
       // branch-timed LATs — remapping onto a fixed NSR QRS kills every other beat.
       const syncChambers = !leftComplete && !rightComplete;
       if (findingUsesFixedQrsAlign(opts.finding)) {
-        alignVentricularLatToQrs(actMap, opts.finding, sampleInputs, syncChambers);
-        alignVentricularRecoveryToT(actMap, opts.finding, sampleInputs, syncChambers);
+        alignVentricularLatToQrs(actMap, opts.finding, sampleInputs, syncChambers, cycleSec);
+        alignVentricularRecoveryToT(actMap, opts.finding, sampleInputs, syncChambers, cycleSec);
+      } else {
+        // Multi-beat strips: APD is authored in NSR cycle-fraction (~0.26 of 0.86 s).
+        // Keep ~224 ms of plateau so T matches the strip instead of 0.26 of a 3 s loop.
+        const paper = NSR_PAPER_SEC / cycleSec;
+        for (let i = 0; i < actMap.samples.length; i++) {
+          if (sampleInputs[i]?.tissue !== "ventricular") continue;
+          const st = actMap.samples[i]!;
+          if (st.lat >= 1e8) continue;
+          st.apd = Math.max(0.035, st.apd * paper);
+          st.recovery = st.lat + st.apd;
+        }
       }
       activationMapCache.set(mapKey, actMap);
       if (activationMapCache.size > ACTIVATION_MAP_CACHE_LIMIT) {
@@ -2099,6 +2208,10 @@ function pathwayVectorVisible(f: ActiveFront): boolean {
       activationMapCache.set(mapKey, actMap);
     }
     lastQrsFrac = actMap.qrsFrac;
+    const beatOnsets = findingUsesFixedQrsAlign(opts.finding)
+      ? []
+      : qrsBeatOnsets(branches);
+    const beatLeadIn = 0.02 * Math.min(1, NSR_PAPER_SEC / cycleSec);
 
     // Impulse fronts drive the resultant whenever they are live — including retrograde
     // atrial / Kent limbs that the EKG marks as ST or T (P-on-T). Pure myocardial
@@ -2161,7 +2274,8 @@ function pathwayVectorVisible(f: ActiveFront): boolean {
       }
       const hisWaveLocal =
         !!liveHisFront &&
-        s.pos.distanceToSquared(liveHisFront.pos) < 0.34 * 0.34;
+        s.pos.distanceToSquared(liveHisFront.pos) <
+          (opts.mark === "PR" ? 0.42 * 0.42 : 0.34 * 0.34);
 
       // Blocked free-wall territory stays dark until myocardial LAT arrives —
       // including on ST/T. Never show grey recovery on tissue that has not
@@ -2505,8 +2619,14 @@ function pathwayVectorVisible(f: ActiveFront): boolean {
         opts.finding === "av3"
       ) {
         chamberOk = s.tissue === "ventricular" || s.nearestId === "accessory" || s.nearestId === "accessoryR";
-      } else if (!isAvrt && fromMyoFocus && focusTissue === "atrial") {
-        // PAC / AFib / atrial pace — AV-plane rule (accessory / AV corridor exceptions)
+      } else if (
+        !isAvrt &&
+        fromMyoFocus &&
+        focusTissue === "atrial" &&
+        s.tissue !== "ventricular"
+      ) {
+        // PAC / AFib / atrial pace — AV-plane rule. Never let an atrial focus
+        // darken the ventricles while the EKG is in QRS/ST/T.
         chamberOk = atrialSourceMayDriveSample(
           s.pos,
           s.tissue,
@@ -2530,7 +2650,7 @@ function pathwayVectorVisible(f: ActiveFront): boolean {
       // Ventricular: use map LAT + remapped recovery so L/R grey crest together on T.
       // Free-wall myocardium with no map LAT must stay unactivated (no pathway fallback
       // that would invent a recovery clock on blocked tissue).
-      const lat =
+      let lat =
         fromMyoFocus
           ? act
           : s.tissue === "atrial" || opts.mark === "P" || (opts.mark === "PR" && s.tissue !== "ventricular")
@@ -2550,7 +2670,7 @@ function pathwayVectorVisible(f: ActiveFront): boolean {
           : s.tissue === "atrial"
             ? 0.16
             : 0.27;
-      const recovery =
+      let recovery =
         s.tissue === "ventricular"
           ? mapSt && mapSt.recovery < 1e8 && lat < 1e8
             ? mapSt.recovery
@@ -2558,6 +2678,11 @@ function pathwayVectorVisible(f: ActiveFront): boolean {
           : lat < 1e8
             ? lat + apdLocal
             : act + apdLocal;
+      if (s.tissue === "ventricular" && beatOnsets.length > 1 && !fromMyoFocus) {
+        const shifted = reanchorToBeat(lat, recovery, t, beatOnsets, beatLeadIn);
+        lat = shifted.lat;
+        recovery = shifted.recovery;
+      }
       const apdSpan = Math.max(0.06, recovery - (lat < 1e8 ? lat : act));
       let depolAge = fieldAge(t, lat < 1e8 ? lat : act, longCycle);
       const delayedAge = depolAge - arrowDelayFrac;
@@ -2812,12 +2937,37 @@ function pathwayVectorVisible(f: ActiveFront): boolean {
       // explicit red emitter so the pre-bifurcation ventricular vector is visible.
       if (chamberOk && liveHisFront && hisWaveLocal && depolMute > 0.04) {
         const d = s.pos.distanceTo(liveHisFront.pos);
-        const edge = Math.max(0, 1 - d / 0.28);
-        const w = edge * edge * 1.3 * depolMute;
+        const reach = opts.mark === "PR" ? 0.36 : 0.28;
+        const edge = Math.max(0, 1 - d / reach);
+        const gain = opts.mark === "PR" ? 1.75 : 1.3;
+        const w = edge * edge * gain * depolMute;
         if (w > 0.012) {
           setHisPropagationDir(tmpContribDir, s.pos, liveHisFront.pos);
           addContrib(w, tmpContribDir, SEGMENT_FIELD_COLOR.his ?? 0xff5e6c);
           frontIntensity = Math.max(frontIntensity, w);
+        }
+      }
+
+      // Late PR: AV→His penetration — orange at the node, red in the His gap corridor
+      const prHisHandoff =
+        opts.mark === "PR" &&
+        (liveSegments.has("av") || liveSegments.has("his") || opts.active.includes("his"));
+      if (chamberOk && prHisHandoff && nearHisPenetration(s.pos, AV_JUNCTION.hisGapR * 2.4) && depolMute > 0.04) {
+        const handoffT = Math.min(1, Math.max(0, (t - 0.17) / 0.055));
+        if (handoffT > 0.02) {
+          const frontPos = liveHisFront?.pos ?? AV_JUNCTION.hisGap;
+          const d = s.pos.distanceTo(frontPos);
+          const edge = Math.max(0, 1 - d / 0.34);
+          const w = edge * edge * (0.75 + 1.05 * handoffT) * depolMute;
+          if (w > 0.01) {
+            setHisPropagationDir(tmpContribDir, s.pos, frontPos);
+            const col =
+              handoffT < 0.42
+                ? SEGMENT_FIELD_COLOR.av ?? 0xff7a4a
+                : SEGMENT_FIELD_COLOR.his ?? 0xff5e6c;
+            addContrib(w, tmpContribDir, col);
+            frontIntensity = Math.max(frontIntensity, w);
+          }
         }
       }
 
@@ -3493,7 +3643,7 @@ function pathwayVectorVisible(f: ActiveFront): boolean {
         targetStrength = fromLeads.strength;
         hasSignal = true;
         if (isAfib && (opts.mark === "TP" || opts.mark === "P")) {
-          // Fine f-wave atrial mean
+          // Fine f-wave atrial mean — never use this while a QRS is on the strip
           targetStrength = Math.min(0.5, 0.2 + fromLeads.strength);
           targetColor = 0xe8a838;
           targetWave = 0xe8a838;
@@ -3536,6 +3686,10 @@ function pathwayVectorVisible(f: ActiveFront): boolean {
         }
       }
 
+      if (lastFindingForMean !== opts.finding) {
+        lastFindingForMean = opts.finding;
+        smoothMeanReady = false;
+      }
       if (!smoothMeanReady) {
         if (hasSignal && targetStrength > 0.02) smoothMeanDir.copy(targetDir);
         smoothMeanStrength = targetStrength;
@@ -3544,14 +3698,14 @@ function pathwayVectorVisible(f: ActiveFront): boolean {
         smoothMeanReady = true;
       } else {
         if (hasSignal && targetStrength > 0.02) {
-          // Responsive so scrubbing the strip updates the arrow with the leads
-          smoothMeanDir.lerp(targetDir, 0.32);
+          // Follow the strip closely so BBB / ectopic axes aren't leftover NSR
+          smoothMeanDir.lerp(targetDir, 0.55);
           if (smoothMeanDir.lengthSq() > 1e-8) smoothMeanDir.normalize();
         }
-        const sFollow = targetStrength >= smoothMeanStrength ? 0.32 : 0.2;
+        const sFollow = targetStrength >= smoothMeanStrength ? 0.55 : 0.35;
         smoothMeanStrength += (targetStrength - smoothMeanStrength) * sFollow;
-        smoothMeanColor.lerp(new THREE.Color(targetColor), 0.18);
-        smoothWaveColor.lerp(new THREE.Color(targetWave), 0.18);
+        smoothMeanColor.lerp(new THREE.Color(targetColor), 0.28);
+        smoothWaveColor.lerp(new THREE.Color(targetWave), 0.28);
       }
 
       // Resultant stays at model center; only its direction tracks the lead dipole / field mean
